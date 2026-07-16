@@ -1,7 +1,8 @@
 # reseact_3d_chem — Stage C1: SuperFast lifted onto the GEOS-FP grid
 
-**Status: architecture PROVEN, the full 12-species assembly does NOT yet build.**
-One open bug, with a probe ladder that isolates it. Read this before touching it.
+**Status: the blocking bug is ROOT-CAUSED and FIXED (upstream, in EarthSciAST).**
+It was the `constant: true` reservoir species — see "The bug that blocked this"
+below. Read that section before touching anything here.
 
 ## What this is
 
@@ -50,39 +51,49 @@ Run one with e.g. `julia probes/probe6.jl` (they build in ~4 min; they use the S
 ANALYTIC winds deliberately, since the GEOS-FP forcing is verified separately by
 `../reseact_3d/probe3.jl`).
 
-## The open bug
+## The bug that blocked this (root-caused + fixed 2026-07-17)
 
-The full 12-species `reseact_3d_chem.esm` validates clean (`is_valid=true`) and then
-fails during index resolution:
+It was hypothesis (2) of the two candidates this README used to list — the
+`constant: true` species — **not** the rate template. The failure was:
 
 ```
 ERROR: LoadError: E_TREEWALK_UNBOUND_LOOP_VAR: gj
   _resolve_indices_op  @ tree_walk/resolve.jl:581
 ```
 
-An `index(X, …, gj, …)` survives outside the aggregate that binds `gj` — i.e. an
-observed's aggregate is being inlined into the lifted equation WITHOUT its wrapper,
-leaving its `output_idx` loop vars unbound. The reported name tracks whichever loop var
-survives (it becomes `gk` once `PS` is made constant), which is the signature of a
-systematic inlining problem rather than one bad expression.
+The chain, end to end:
 
-**What is ruled OUT** — by the probe ladder above: the lift itself, coupling a gridded
-observed into a scalar reaction param, nested aggregates, rank-3 and rank-4 live loader
-gathers, and (separately) the GEOS-FP flux observeds — swapping in the analytic
-`Mx`/`My`/`Mz` does NOT fix it.
+1. **`Species.constant` was silently ignored on the tree-walk path.** It is read in
+   only three places, all in `codegen.jl` (the Catalyst `[isconstantspecies=true]`
+   emitter). So O2/CH4/H2O got full ODEs — despite esm-spec §7.4 saying a reservoir
+   gets none.
+2. Having no advection term, their RHS carries no `makearray`, so
+   `_pointwise_lifted_species` skips them: **they stay SCALAR** while the other 12 lift.
+3. Their Arrhenius rates reference `Transport3D.Tc`/`Pc` — which by then are
+   `aggregate(output_idx=[gi,gj,gk])` **array** observeds — as **bare** scalar operands.
+4. At build, `_resolve_observed` (helpers.jl:151) substitutes an observed NAME with its
+   whole RHS via a naive `_sub_preserving`, dropping a rank-3 aggregate into a scalar
+   slot.
+5. `resolve.jl:650` then falls through ("non-scalar arrayop without index() — pass
+   through") and walks its body with an EMPTY index env → `gj` unbound → throw. The
+   "compile-time error with a helpful message" that comment promises never arrives,
+   because resolve throws first.
 
-**What is still untested** — the two things real SuperFast has that the toy does not:
-1. its rates go through the `arrh_per_molecule` expression template
-   (`A*P*exp(B/T)/(8314000*T)`), so EVERY one of the 27 rate expressions carries bare
-   `Tc`/`Pc` refs through a template inlining;
-2. it has 3 `constant: true` species (O2/CH4/H2O) that have no ODE and so do not lift,
-   sitting in a system where the other 12 do.
+**The fix is upstream in EarthSciAST** (`fix/reservoir-species-no-ode`), not in this
+model: reservoirs now lower to PARAMETERS with no ODE, per §7.4. It was also a live
+physics bug for every `simulate` user of superfast.esm — **CH4 drifted -0.4%/hour**.
 
-**Do NOT trust `gen_c1mini.py` as a repro.** It truncates the advected set to 2 species,
-which leaves SuperFast's other 10 unlifted (scalar) while their rate expressions
-reference the now-array NO/CO — an inconsistent system by construction. It reproduces an
-`UNBOUND_LOOP_VAR`, but that may be an artifact of the truncation rather than the real
-bug. A valid fast repro needs a genuinely small reaction system, not a truncated one.
+**The diagnostic that cracked it, worth reusing:** don't bisect. Flatten the model and
+scan for a BARE `VarExpr` reference to an ARRAY-shaped observed (one not sitting at
+`args[1]` of an `index`). That named eq70/71/72 = `D(SuperFast.O2/CH4/H2O)` in seconds.
+Note an earlier scan for *nested* aggregates with free loop vars found NOTHING — flatten
+output is structurally clean, because the corruption is introduced later, at build time,
+by observed substitution.
+
+**Correction to this README's earlier claim:** `gen_c1mini.py` was NOT a confounded
+non-repro. Truncating the advected set leaves other species unlifted while referencing
+lifted ones — the SAME defect class (an unlifted scalar reading a gridded array). It was
+reproducing the real bug; the note dismissing it was wrong.
 
 ## Cost
 
@@ -93,11 +104,13 @@ Measured: 9 instantiations = 277 s (analytic winds) / 814 s (GEOS-FP winds). The
 
 ## Known limitations (beyond the open bug)
 
-- **All 12 species share ONE inflow field.** `qbc_{w,e,s,n}` is a FREE NAME in the ESD
-  inflow stencils, not a rule param, so there is no way to give O3 a 40 ppb inflow and NO
-  a 0.0004 ppb one. Set to clean air (0 ppb) here. A per-species inflow needs `qbc`
-  promoted to a rule param. (The EarthSciAST fixture's `grad` rule avoids this by taking
-  inflow as an explicit arg: `grad(Chemistry.O3, O3_inflow)`.)
+- ~~All 12 species share ONE inflow field.~~ **FIXED 2026-07-17.** `qbc_{w,e,s,n}` is now
+  a rule PARAM, carried as operands of the matched derivative:
+  `D(Mx*SuperFast.O3, qbc_w_O3, qbc_e_O3, wrt: lon)`. Each species has its own halo on
+  each of the 4 walls (48 fields), seeded from that species' declared `default` in
+  superfast.esm — i.e. the background the mechanism ships with. So **O3 flows in at
+  40 ppb while NO flows in at 0.0004 ppb**, which the old free-name contract made
+  impossible. Gated upstream by ESD's `latlon3d_transport_per_tracer_inflow` case.
 - **The lift picks grid axes by EXTENT.** On the cubic 7x7x7 grid lon/lat/lev are
   indistinguishable, so species land on synthetic `_liftdim1_7`-style axes instead of
   `[lon,lat,lev]` (a warning, not an error — probe6-10 are numerically correct anyway).

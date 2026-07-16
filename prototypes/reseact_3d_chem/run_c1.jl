@@ -14,9 +14,16 @@ const T0    = 64800.0
 const T_END = T0 + (length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0)
 const BASE  = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/2013/01/GEOSFP.20130101"
 
+# Julia BLOCK-buffers stdout when it is a file rather than a tty, so a run that
+# is killed (a `timeout`, an OOM) loses every line it ever printed and looks like
+# it produced nothing. The build here is tens of minutes, so flush each progress
+# line as it happens — a killed run must still tell you how far it got.
+say(s) = (println(s); flush(stdout))
+
+say("validate: begin")
 r = EA.validate(MODEL)
-println("validate: is_valid=$(r.is_valid) schema=$(length(r.schema_errors)) struct=$(length(r.structural_errors))")
-for e in r.structural_errors[1:min(8,end)]; println("  ", e.error_type, " @ ", e.path, " :: ", e.message); end
+say("validate: is_valid=$(r.is_valid) schema=$(length(r.schema_errors)) struct=$(length(r.structural_errors))")
+for e in r.structural_errors[1:min(8,end)]; say("  $(e.error_type) @ $(e.path) :: $(e.message)"); end
 r.is_valid || error("model does not validate")
 
 # --- providers: 2 bracketing records per solver time, blended in-model by w_time.
@@ -48,12 +55,14 @@ const_arrays = Dict{String,Any}("Transport3D.dA" => Float64.(co.dA),
 
 insp = EA.BuildInspection()
 t0 = time()
+say("simulate: begin (39 PPM rule instantiations to lower — this is TENS OF MINUTES;")
+say("          cost tracks rule instantiations, not the 7x7x7 cell count)")
 sim = EA.simulate(EA.load(MODEL), (T0, T_END);
                   alg=OrdinaryDiffEqTsit5.Tsit5(), saveat=[T0, T_END],
                   providers=providers, parameters=params,
                   const_arrays=const_arrays, inspect=insp)
-@printf("simulate: %.1f s  success=%s retcode=%s nstates=%d\n",
-        time()-t0, sim.success, sim.retcode, length(sim.u[1]))
+say(@sprintf("simulate: %.1f s  success=%s retcode=%s nstates=%d",
+             time()-t0, sim.success, sim.retcode, length(sim.u[1])))
 sim.success || error("solver failed: $(sim.retcode) — $(sim.message)")
 
 # --- what forcing did the model actually see? (read it out of the build)

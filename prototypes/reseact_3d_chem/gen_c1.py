@@ -14,8 +14,17 @@ and only chemistry is added:
     T/P params (param_to_var carries the grid shape, so the lift indexes them per cell).
 
 Only the 12 NON-constant species are transported: O2/CH4/H2O are `constant: true`
-reservoir species with no ODE, so they neither advect nor lift (correct — they stay
-uniform and simply broadcast into the rate expressions).
+reservoir species with no ODE, so they neither advect nor lift — they stay uniform and
+simply broadcast into the rate expressions.
+
+That last sentence only became TRUE on 2026-07-17. EarthSciAST had been ignoring
+`Species.constant` on the tree-walk path (it was read only by the Catalyst emitter in
+codegen.jl), so the three reservoirs DID get ODEs and DID integrate. Here that made them
+the one thing in the system that was neither lifted nor scalar-consistent: with no
+advection term they carry no makearray, so the lift skips them, leaving scalar equations
+whose Arrhenius rates read the now-gridded Tc/Pc — which is what produced the
+`E_TREEWALK_UNBOUND_LOOP_VAR` that blocked this file. Fixed upstream (§7.4: a reservoir
+gets no ODE and lowers to a parameter). See README.md.
 """
 import json, collections, os
 
@@ -46,33 +55,48 @@ d["metadata"]["name"] = "ReSEACT3DChem"
 for k in ["mq","dev","q"]:
     V.pop(k, None)
 
-# --- 1b. inflow boundary fields ------------------------------------------------
-# qbc_{w,e,s,n} are NOT part of the CWC pair: the regional inflow PPM rule consumes
-# them as FREE NAMES inside its boundary stencils, so they must stay.
+# --- 1b. inflow boundary fields (PER SPECIES) ----------------------------------
+# The regional-inflow PPM rule now takes each wall's halo as an OPERAND of the
+# matched derivative — D(Mx*q, qbc_w, qbc_e, wrt: lon) — so `qbc` is a rule PARAM
+# bound per call site, not a free name read out of this model's scope. Each species
+# therefore carries its OWN lateral boundary concentration, which is what a regional
+# CTM actually needs: O3 flows in at ~40 ppb while NO flows in at ~0.4 ppt.
 #
-# LIMITATION worth knowing: `qbc_*` is a free name, not a rule PARAM, so ALL 12
-# species advected by this rule SHARE ONE inflow field — there is no way to give O3
-# a 40 ppb inflow and NO a 0.0004 ppb inflow. (The EarthSciAST fixture's `grad` rule
-# avoids this by taking the inflow as an explicit ARG: grad(Chemistry.O3, O3_inflow).)
-# So set a CLEAN-AIR inflow (0 ppb) for first light: honest and interpretable, rather
-# than the exemplar's q == 1 which is meaningless as a concentration. Making the
-# inflow per-species needs an ESD rule change (qbc as a param).
+# The inflow value used is each species' own declared `default` in superfast.esm —
+# i.e. the background concentration the mechanism ships with. That is the principled
+# choice for a first-light regional run: the lateral boundary holds the unperturbed
+# background, and the interior is free to depart from it. (Before qbc became a param,
+# every species was forced to share ONE field, so this file set a clean-air 0 ppb for
+# all 12 — defensible only because it was interpretable, not because it was right.)
 #
-# Authored with the CORRECT output_idx: the exemplar's own qbc_w declares
+# Authored with the CORRECT output_idx: the ESD exemplar's own qbc_w declares
 # shape ["lat","lev"] but has output_idx ["gl","gl"] over only a `lev` range — a
-# latent bug masked because q == 1 everywhere. Do not copy that.
-for nm, ax in [("qbc_w",["lat","lev"]), ("qbc_e",["lat","lev"]),
-               ("qbc_s",["lon","lev"]), ("qbc_n",["lon","lev"])]:
-    V[nm] = collections.OrderedDict([
-        ("type","observed"), ("units","ppb"), ("shape",list(ax)),
-        ("description", f"Inflow boundary mixing ratio on the {nm[-1]} wall, over [{ax[0]},{ax[1]}]. "
-                        "CLEAN AIR (0 ppb): consumed as a FREE NAME by the regional inflow PPM "
-                        "stencils, so every advected species SHARES this one field — a per-species "
-                        "inflow would need qbc to be a rule param."),
-        ("expression", agg(["ga","gb"], [("ga",ax[0]),("gb",ax[1])], 0.0, []))])
+# latent bug masked because q == 1 everywhere there. Do not copy that.
+WALL_AX = collections.OrderedDict([("w",["lat","lev"]), ("e",["lat","lev"]),
+                                   ("s",["lon","lev"]), ("n",["lon","lev"])])
+
+def qbc_name(sp, wall):
+    return f"qbc_{wall}_{sp}"
+
+def add_qbc(sp, bg):
+    for wall, ax in WALL_AX.items():
+        V[qbc_name(sp, wall)] = collections.OrderedDict([
+            ("type","observed"), ("units","ppb"), ("shape",list(ax)),
+            ("description", f"{sp} inflow mixing ratio on the {wall} wall, over "
+                            f"[{ax[0]},{ax[1]}] = {bg} ppb — SuperFast's declared background "
+                            f"for {sp}. Bound to the PPM inflow rule's `qbc_{wall}` PARAM at "
+                            f"this species' call site, so it is independent of every other "
+                            f"species' halo."),
+            ("expression", agg(["ga","gb"], [("ga",ax[0]),("gb",ax[1])], float(bg), []))])
 T["equations"] = [e for e in T["equations"]
                   if not any(f'"{n}"' in json.dumps(e["lhs"]) for n in ("mq","dev"))]
 T.pop("tests", None)
+
+# Stage A's single shared halo set (one field per wall for the whole model) is
+# what the per-species fields above replace. Its only readers were the mq/dev CWC
+# pair just dropped, so leaving them would declare four dead variables.
+for stale in ("qbc_w", "qbc_e", "qbc_s", "qbc_n"):
+    V.pop(stale, None)
 
 # --- 2. GEOS-FP temperature on the local slice --------------------------------
 V["F_T"] = collections.OrderedDict([
@@ -117,16 +141,32 @@ species = sf["reaction_systems"]["SuperFast"]["species"]
 advected = [s for s,v in species.items() if not v.get("constant", False)]
 d["reaction_systems"] = {"SuperFast": {"ref": SF}}
 
+def D_bc(x, lo, hi, wrt):
+    """A lateral flux divergence, carrying this species' own inflow halo.
+
+    The halo travels as the 2nd/3rd OPERANDS of the derivative, which is how the
+    ESD regional-inflow rule binds its `qbc_*` params. `lev` takes no halo — the
+    vertical rule is no-flux, top and bottom.
+    """
+    return {"op":"D","args":[x, lo, hi],"wrt":wrt}
+
 def adv_eq(sp):
     s = f"SuperFast.{sp}"
-    divMq = op("+", D(op("*","Mx",s),"lon"), D(op("*","My",s),"lat"), D(op("*","Mz",s),"lev"))
+    divMq = op("+",
+        D_bc(op("*","Mx",s), qbc_name(sp,"w"), qbc_name(sp,"e"), "lon"),
+        D_bc(op("*","My",s), qbc_name(sp,"s"), qbc_name(sp,"n"), "lat"),
+        D(op("*","Mz",s),"lev"))
     divM  = op("+", D("Mx","lon"), D("My","lat"), D("Mz","lev"))
     return collections.OrderedDict([
         ("_comment", f"d({sp})/dt advection contribution, flux-form PPM in CWC mixing-ratio form: "
-                     f"[-div(M q) + q div(M)]/m. operator_compose merges this with {sp}'s reaction "
+                     f"[-div(M q) + q div(M)]/m, with {sp}'s OWN lateral inflow halo bound to the "
+                     f"rule's qbc params. operator_compose merges this with {sp}'s reaction "
                      f"tendency and the pointwise lift array-ifies the result."),
         ("lhs", D(s,"t")),
         ("rhs", op("/", op("+", op("-", divMq), op("*", s, divM)), "m"))])
+
+for sp in advected:
+    add_qbc(sp, species[sp].get("default", 0.0))
 T["equations"] += [adv_eq(s) for s in advected]
 
 # --- 5. coupling --------------------------------------------------------------

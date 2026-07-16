@@ -999,110 +999,6 @@
             }
           }
         },
-        "qbc_w": {
-          "type": "observed",
-          "units": "ppb",
-          "shape": [
-            "lat",
-            "lev"
-          ],
-          "description": "Inflow boundary mixing ratio on the w wall, over [lat,lev]. CLEAN AIR (0 ppb): consumed as a FREE NAME by the regional inflow PPM stencils, so every advected species SHARES this one field — a per-species inflow would need qbc to be a rule param.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "ga",
-              "gb"
-            ],
-            "args": [],
-            "ranges": {
-              "ga": {
-                "from": "lat"
-              },
-              "gb": {
-                "from": "lev"
-              }
-            },
-            "expr": 0.0
-          }
-        },
-        "qbc_e": {
-          "type": "observed",
-          "units": "ppb",
-          "shape": [
-            "lat",
-            "lev"
-          ],
-          "description": "Inflow boundary mixing ratio on the e wall, over [lat,lev]. CLEAN AIR (0 ppb): consumed as a FREE NAME by the regional inflow PPM stencils, so every advected species SHARES this one field — a per-species inflow would need qbc to be a rule param.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "ga",
-              "gb"
-            ],
-            "args": [],
-            "ranges": {
-              "ga": {
-                "from": "lat"
-              },
-              "gb": {
-                "from": "lev"
-              }
-            },
-            "expr": 0.0
-          }
-        },
-        "qbc_s": {
-          "type": "observed",
-          "units": "ppb",
-          "shape": [
-            "lon",
-            "lev"
-          ],
-          "description": "Inflow boundary mixing ratio on the s wall, over [lon,lev]. CLEAN AIR (0 ppb): consumed as a FREE NAME by the regional inflow PPM stencils, so every advected species SHARES this one field — a per-species inflow would need qbc to be a rule param.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "ga",
-              "gb"
-            ],
-            "args": [],
-            "ranges": {
-              "ga": {
-                "from": "lon"
-              },
-              "gb": {
-                "from": "lev"
-              }
-            },
-            "expr": 0.0
-          }
-        },
-        "qbc_n": {
-          "type": "observed",
-          "units": "ppb",
-          "shape": [
-            "lon",
-            "lev"
-          ],
-          "description": "Inflow boundary mixing ratio on the n wall, over [lon,lev]. CLEAN AIR (0 ppb): consumed as a FREE NAME by the regional inflow PPM stencils, so every advected species SHARES this one field — a per-species inflow would need qbc to be a rule param.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "ga",
-              "gb"
-            ],
-            "args": [],
-            "ranges": {
-              "ga": {
-                "from": "lon"
-              },
-              "gb": {
-                "from": "lev"
-              }
-            },
-            "expr": 0.0
-          }
-        },
         "dA": {
           "type": "parameter",
           "units": "Pa",
@@ -1920,6 +1816,1254 @@
               ]
             }
           }
+        },
+        "qbc_w_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the w wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_e_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the e wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_s_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the s wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_n_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the n wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_w_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the w wall, over [lat,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_e_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the e wall, over [lat,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_s_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the s wall, over [lon,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_n_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the n wall, over [lon,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_w_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the w wall, over [lat,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_e_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the e wall, over [lat,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_s_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the s wall, over [lon,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_n_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the n wall, over [lon,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_w_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the w wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_e_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the e wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_s_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the s wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_n_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the n wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_w_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the w wall, over [lat,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_e_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the e wall, over [lat,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_s_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the s wall, over [lon,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_n_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the n wall, over [lon,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_w_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
         }
       },
       "equations": [
@@ -2064,7 +3208,7 @@
           }
         },
         {
-          "_comment": "d(NO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with NO's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(NO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with NO's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with NO's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2093,7 +3237,9 @@
                                   "Mx",
                                   "SuperFast.NO"
                                 ]
-                              }
+                              },
+                              "qbc_w_NO",
+                              "qbc_e_NO"
                             ],
                             "wrt": "lon"
                           },
@@ -2106,7 +3252,9 @@
                                   "My",
                                   "SuperFast.NO"
                                 ]
-                              }
+                              },
+                              "qbc_s_NO",
+                              "qbc_n_NO"
                             ],
                             "wrt": "lat"
                           },
@@ -2166,7 +3314,7 @@
           }
         },
         {
-          "_comment": "d(CO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with CO's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(CO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CO's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CO's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2195,7 +3343,9 @@
                                   "Mx",
                                   "SuperFast.CO"
                                 ]
-                              }
+                              },
+                              "qbc_w_CO",
+                              "qbc_e_CO"
                             ],
                             "wrt": "lon"
                           },
@@ -2208,7 +3358,9 @@
                                   "My",
                                   "SuperFast.CO"
                                 ]
-                              }
+                              },
+                              "qbc_s_CO",
+                              "qbc_n_CO"
                             ],
                             "wrt": "lat"
                           },
@@ -2268,7 +3420,7 @@
           }
         },
         {
-          "_comment": "d(ISOP)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with ISOP's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(ISOP)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with ISOP's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with ISOP's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2297,7 +3449,9 @@
                                   "Mx",
                                   "SuperFast.ISOP"
                                 ]
-                              }
+                              },
+                              "qbc_w_ISOP",
+                              "qbc_e_ISOP"
                             ],
                             "wrt": "lon"
                           },
@@ -2310,7 +3464,9 @@
                                   "My",
                                   "SuperFast.ISOP"
                                 ]
-                              }
+                              },
+                              "qbc_s_ISOP",
+                              "qbc_n_ISOP"
                             ],
                             "wrt": "lat"
                           },
@@ -2370,7 +3526,7 @@
           }
         },
         {
-          "_comment": "d(HNO3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with HNO3's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(HNO3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with HNO3's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with HNO3's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2399,7 +3555,9 @@
                                   "Mx",
                                   "SuperFast.HNO3"
                                 ]
-                              }
+                              },
+                              "qbc_w_HNO3",
+                              "qbc_e_HNO3"
                             ],
                             "wrt": "lon"
                           },
@@ -2412,7 +3570,9 @@
                                   "My",
                                   "SuperFast.HNO3"
                                 ]
-                              }
+                              },
+                              "qbc_s_HNO3",
+                              "qbc_n_HNO3"
                             ],
                             "wrt": "lat"
                           },
@@ -2472,7 +3632,7 @@
           }
         },
         {
-          "_comment": "d(NO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with NO2's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(NO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with NO2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with NO2's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2501,7 +3661,9 @@
                                   "Mx",
                                   "SuperFast.NO2"
                                 ]
-                              }
+                              },
+                              "qbc_w_NO2",
+                              "qbc_e_NO2"
                             ],
                             "wrt": "lon"
                           },
@@ -2514,7 +3676,9 @@
                                   "My",
                                   "SuperFast.NO2"
                                 ]
-                              }
+                              },
+                              "qbc_s_NO2",
+                              "qbc_n_NO2"
                             ],
                             "wrt": "lat"
                           },
@@ -2574,7 +3738,7 @@
           }
         },
         {
-          "_comment": "d(HO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with HO2's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(HO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with HO2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with HO2's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2603,7 +3767,9 @@
                                   "Mx",
                                   "SuperFast.HO2"
                                 ]
-                              }
+                              },
+                              "qbc_w_HO2",
+                              "qbc_e_HO2"
                             ],
                             "wrt": "lon"
                           },
@@ -2616,7 +3782,9 @@
                                   "My",
                                   "SuperFast.HO2"
                                 ]
-                              }
+                              },
+                              "qbc_s_HO2",
+                              "qbc_n_HO2"
                             ],
                             "wrt": "lat"
                           },
@@ -2676,7 +3844,7 @@
           }
         },
         {
-          "_comment": "d(CH3OOH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with CH3OOH's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(CH3OOH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH3OOH's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH3OOH's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2705,7 +3873,9 @@
                                   "Mx",
                                   "SuperFast.CH3OOH"
                                 ]
-                              }
+                              },
+                              "qbc_w_CH3OOH",
+                              "qbc_e_CH3OOH"
                             ],
                             "wrt": "lon"
                           },
@@ -2718,7 +3888,9 @@
                                   "My",
                                   "SuperFast.CH3OOH"
                                 ]
-                              }
+                              },
+                              "qbc_s_CH3OOH",
+                              "qbc_n_CH3OOH"
                             ],
                             "wrt": "lat"
                           },
@@ -2778,7 +3950,7 @@
           }
         },
         {
-          "_comment": "d(OH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with OH's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(OH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with OH's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with OH's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2807,7 +3979,9 @@
                                   "Mx",
                                   "SuperFast.OH"
                                 ]
-                              }
+                              },
+                              "qbc_w_OH",
+                              "qbc_e_OH"
                             ],
                             "wrt": "lon"
                           },
@@ -2820,7 +3994,9 @@
                                   "My",
                                   "SuperFast.OH"
                                 ]
-                              }
+                              },
+                              "qbc_s_OH",
+                              "qbc_n_OH"
                             ],
                             "wrt": "lat"
                           },
@@ -2880,7 +4056,7 @@
           }
         },
         {
-          "_comment": "d(O3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with O3's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(O3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with O3's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with O3's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -2909,7 +4085,9 @@
                                   "Mx",
                                   "SuperFast.O3"
                                 ]
-                              }
+                              },
+                              "qbc_w_O3",
+                              "qbc_e_O3"
                             ],
                             "wrt": "lon"
                           },
@@ -2922,7 +4100,9 @@
                                   "My",
                                   "SuperFast.O3"
                                 ]
-                              }
+                              },
+                              "qbc_s_O3",
+                              "qbc_n_O3"
                             ],
                             "wrt": "lat"
                           },
@@ -2982,7 +4162,7 @@
           }
         },
         {
-          "_comment": "d(H2O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with H2O2's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(H2O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with H2O2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with H2O2's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -3011,7 +4191,9 @@
                                   "Mx",
                                   "SuperFast.H2O2"
                                 ]
-                              }
+                              },
+                              "qbc_w_H2O2",
+                              "qbc_e_H2O2"
                             ],
                             "wrt": "lon"
                           },
@@ -3024,7 +4206,9 @@
                                   "My",
                                   "SuperFast.H2O2"
                                 ]
-                              }
+                              },
+                              "qbc_s_H2O2",
+                              "qbc_n_H2O2"
                             ],
                             "wrt": "lat"
                           },
@@ -3084,7 +4268,7 @@
           }
         },
         {
-          "_comment": "d(CH3O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with CH3O2's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(CH3O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH3O2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH3O2's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -3113,7 +4297,9 @@
                                   "Mx",
                                   "SuperFast.CH3O2"
                                 ]
-                              }
+                              },
+                              "qbc_w_CH3O2",
+                              "qbc_e_CH3O2"
                             ],
                             "wrt": "lon"
                           },
@@ -3126,7 +4312,9 @@
                                   "My",
                                   "SuperFast.CH3O2"
                                 ]
-                              }
+                              },
+                              "qbc_s_CH3O2",
+                              "qbc_n_CH3O2"
                             ],
                             "wrt": "lat"
                           },
@@ -3186,7 +4374,7 @@
           }
         },
         {
-          "_comment": "d(CH2O)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m. operator_compose merges this with CH2O's reaction tendency and the pointwise lift array-ifies the result.",
+          "_comment": "d(CH2O)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH2O's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH2O's reaction tendency and the pointwise lift array-ifies the result.",
           "lhs": {
             "op": "D",
             "args": [
@@ -3215,7 +4403,9 @@
                                   "Mx",
                                   "SuperFast.CH2O"
                                 ]
-                              }
+                              },
+                              "qbc_w_CH2O",
+                              "qbc_e_CH2O"
                             ],
                             "wrt": "lon"
                           },
@@ -3228,7 +4418,9 @@
                                   "My",
                                   "SuperFast.CH2O"
                                 ]
-                              }
+                              },
+                              "qbc_s_CH2O",
+                              "qbc_n_CH2O"
                             ],
                             "wrt": "lat"
                           },
