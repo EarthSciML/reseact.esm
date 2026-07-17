@@ -117,9 +117,20 @@ species = sf["reaction_systems"]["SuperFast"]["species"]
 advected = [s for s,v in species.items() if not v.get("constant", False)][:2]  # MINI: 2 species to bisect fast
 d["reaction_systems"] = {"SuperFast": {"ref": SF}}
 
+def Dbc(x, lo, hi, wrt):
+    """Lateral flux divergence carrying its inflow halo as operands 2 and 3.
+
+    ESD binds `qbc_*` as rule PARAMS, so a 1-operand `D(Mx*q, wrt:lon)` matches
+    nothing and dies with `unlowered_operator` -- which would make this probe
+    fail for a reason that has nothing to do with what it is bisecting.
+    """
+    return {"op":"D","args":[x, lo, hi],"wrt":wrt}
+
 def adv_eq(sp):
     s = f"SuperFast.{sp}"
-    divMq = op("+", D(op("*","Mx",s),"lon"), D(op("*","My",s),"lat"), D(op("*","Mz",s),"lev"))
+    divMq = op("+", Dbc(op("*","Mx",s),"qbc_w","qbc_e","lon"),
+                    Dbc(op("*","My",s),"qbc_s","qbc_n","lat"),
+                    D(op("*","Mz",s),"lev"))
     divM  = op("+", D("Mx","lon"), D("My","lat"), D("Mz","lev"))
     return collections.OrderedDict([
         ("_comment", f"d({sp})/dt advection contribution, flux-form PPM in CWC mixing-ratio form: "

@@ -35,9 +35,21 @@ d["reaction_systems"] = {"Chem": {
 # reaction system's species by SCOPED name -- the advection_reaction_loaded_ic_bc.esm
 # pattern, with the ESD PPM rules (which emit `makearray`) instead of `grad`.
 # Mixing-ratio CWC form: dq/dt = [ -div(M q) + q*div(M) ] / m
+def Dbc(x, lo, hi, wrt):
+    """A lateral flux divergence carrying its inflow halo as the 2nd/3rd OPERANDS.
+
+    ESD's regional-inflow rule binds `qbc_*` as rule PARAMS, so a 1-operand
+    `D(Mx*q, wrt:lon)` matches NOTHING -- facediv's `where` guard on the
+    staggered wind rejects the product -- and dies with `unlowered_operator` at
+    build, which `validate` CANNOT see. `lev` is no-flux and stays 1-operand.
+    """
+    return {"op":"D","args":[x, lo, hi],"wrt":wrt}
+
 def adv(sp):
     s = f"Chem.{sp}"
-    divMq = op("+", D(op("*","Mx",s),"lon"), D(op("*","My",s),"lat"), D(op("*","Mz",s),"lev"))
+    divMq = op("+", Dbc(op("*","Mx",s),"qbc_w","qbc_e","lon"),
+                    Dbc(op("*","My",s),"qbc_s","qbc_n","lat"),
+                    D(op("*","Mz",s),"lev"))
     divM  = op("+", D("Mx","lon"), D("My","lat"), D("Mz","lev"))
     return {"_comment": f"d({sp})/dt advection contribution, CWC mixing-ratio form; "
                         f"merged with the reaction tendency by operator_compose.",
