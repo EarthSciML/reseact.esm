@@ -18,7 +18,10 @@ SRC = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/transport_3d/transp
 OUT = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d/reseact_3d.esm"
 GEOSFP_REF = "../../../EarthSciModels/components/earthsci_data/geosfp.esm"
 
-NLON = NLAT = NLEV = 7
+NLON = NLAT = 7
+NLEV = 72   # FULL GEOS-FP column to the true TOA: the no-flux top BC is now PHYSICAL
+            # (air mass doesn't cross TOA, OMEGA->0 there), so m no longer piles up at
+            # a false 906 hPa lid. Ap/Bp/dA/dB supplied via const_arrays as 73/72 values.
 A_EARTH = 6371000.0          # IUGG mean radius (m); the grid metrics are unit-sphere, so `a` only scales Mx/My.
 HPA_TO_PA = 100.0            # PS is hPa in file, declared Pa by the loader. MEASURED.
 LON_OFF, LAT_OFF = 14, 29    # native index shifts (verified against the real coord arrays)
@@ -55,6 +58,16 @@ def wind_at(F, gk, nj, ni):
 d = json.load(open(SRC), object_pairs_hook=collections.OrderedDict)
 M = d["models"]["Transport3D"]
 V = M["variables"]
+
+# Rebind the ESD grid imports to the FULL GEOS-FP column (NLEV=72). The Stage-B
+# base (transport_3d.esm) stays 7-level; only ReSEACT gets the full column, so its
+# no-flux top is the TRUE TOA (OMEGA->0) and air-mass m no longer piles up at a
+# false ~906 hPa lid. NLON/NLAT are unchanged. The "lev"/"lev_nodes" index sets,
+# the dA/dB shapes, and the species lift shape all derive from this binding.
+for _imp in M.get("expression_template_imports", []):
+    _b = _imp.get("bindings")
+    if isinstance(_b, dict) and "NLEV" in _b:
+        _b["NLEV"] = NLEV   # 72
 
 d["metadata"]["name"] = "ReSEACT3D"
 d["metadata"]["description"] = (

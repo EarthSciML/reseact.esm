@@ -1,8 +1,19 @@
 #!/usr/bin/env julia
-# Stage A first light: the verified 7x7x7 PPM transport driven by REAL GEOS-FP 4x5,
-# sliced natively over the central US. t=0 := 2013-01-01T00:00Z.
+# Stage C1: the verified 7x7x7 PPM transport driven by REAL GEOS-FP 4x5 (native
+# CONUS slice), with SuperFast gas chemistry lifted pointwise onto the grid.
+# t=0 := 2013-01-01T00:00Z.
+#
+# SOLVER: SuperFast is STIFF (fast radical chemistry), so this uses
+# Rosenbrock23(autodiff=false) — Tsit5 (fine for Stage A pure transport) goes
+# Unstable at the first step on the lifted chemistry. autodiff=false because the
+# tree-walk RHS is not ForwardDiff-compatible (finite-difference Jacobian).
+#
+# BUILD: `preserve_refs=true` carries the PPM stencil references to the build
+# boundary so the compile-once tier factors each body once (RFC step c) instead
+# of fusing 39 rule instantiations into ~200M node-lowerings — the difference
+# between a ~20 min build and a build that never finishes at 12 species.
 import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
-using EarthSciAST; import OrdinaryDiffEqTsit5; import DiffEqCallbacks
+using EarthSciAST; import OrdinaryDiffEqRosenbrock; import DiffEqCallbacks
 using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 
@@ -55,15 +66,17 @@ const_arrays = Dict{String,Any}("Transport3D.dA" => Float64.(co.dA),
 
 insp = EA.BuildInspection()
 t0 = time()
-say("simulate: begin (39 PPM rule instantiations to lower — this is TENS OF MINUTES;")
-say("          cost tracks rule instantiations, not the 7x7x7 cell count)")
+say("simulate: begin (compile-once TIER via preserve_refs; stiff Rosenbrock23)")
 sim = EA.simulate(EA.load(MODEL), (T0, T_END);
-                  alg=OrdinaryDiffEqTsit5.Tsit5(), saveat=[T0, T_END],
-                  providers=providers, parameters=params,
+                  alg=OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false),
+                  reltol=1e-4, abstol=1e-9, saveat=[T0, T_END],
+                  providers=providers, parameters=params, preserve_refs=true,
                   const_arrays=const_arrays, inspect=insp)
 say(@sprintf("simulate: %.1f s  success=%s retcode=%s nstates=%d",
              time()-t0, sim.success, sim.retcode, length(sim.u[1])))
-sim.success || error("solver failed: $(sim.retcode) — $(sim.message)")
+# Print the forcing + chemistry diagnostics BELOW even on a solver failure — a
+# failed solve still built the RHS and populated `inspect`, and the t0 state / the
+# forcing arrays are exactly what tells an Unstable/blowup apart from stiffness.
 
 # --- what forcing did the model actually see? (read it out of the build)
 for k in ["Transport3D.PS", "Transport3D.PBLH", "Transport3D.Mx", "Transport3D.My", "Transport3D.Mz", "Transport3D.dp"]
@@ -76,16 +89,20 @@ end
 # --- chemistry: did the species lift onto the grid, and do they move?
 vm = sim.var_map; names = collect(keys(vm))
 cells(pat) = Dict(n[findfirst('[', n):end] => vm[n] for n in names if occursin(".$pat[", n))
-for sp in ["O3","NO","NO2","OH","HO2","CO","ISOP","CH2O"]
-    c = cells(sp); isempty(c) && (println("  $sp: NOT LIFTED"); continue)
-    v0 = [sim.u[1][i]   for i in values(c)]
-    v1 = [sim.u[end][i] for i in values(c)]
-    @printf("  %-6s %4d cells   t0 = %-12.6g   t1 in [%.6g, %.6g]\n",
-            sp, length(c), v0[1], minimum(v1), maximum(v1))
+if !isempty(sim.u)
+    for sp in ["O3","NO","NO2","OH","HO2","CO","ISOP","CH2O"]
+        c = cells(sp); isempty(c) && (println("  $sp: NOT LIFTED"); continue)
+        v0 = [sim.u[1][i]   for i in values(c)]
+        v1 = [sim.u[end][i] for i in values(c)]
+        @printf("  %-6s %4d cells   t0 in [%.6g, %.6g]   t1 in [%.6g, %.6g]\n",
+                sp, length(c), minimum(v0), maximum(v0), minimum(v1), maximum(v1))
+    end
+    mi = cells("m")
+    if !isempty(mi)
+        m1 = [sim.u[end][i] for i in values(mi)]
+        @printf("  %-6s %4d cells   t1 in [%.4f, %.4f] Pa  all positive: %s\n",
+                "m", length(mi), minimum(m1), maximum(m1), all(>(0), m1))
+    end
 end
-mi = cells("m")
-if !isempty(mi)
-    m1 = [sim.u[end][i] for i in values(mi)]
-    @printf("  %-6s %4d cells   t1 in [%.4f, %.4f] Pa  all positive: %s\n",
-            "m", length(mi), minimum(m1), maximum(m1), all(>(0), m1))
-end
+sim.success || error("solver failed: $(sim.retcode) — $(sim.message)")
+say("DONE")

@@ -26,7 +26,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         },
         {
@@ -34,7 +34,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         },
         {
@@ -42,7 +42,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         },
         {
@@ -50,7 +50,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         },
         {
@@ -58,7 +58,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         },
         {
@@ -66,7 +66,7 @@
           "bindings": {
             "NLON": 7,
             "NLAT": 7,
-            "NLEV": 7
+            "NLEV": 72
           }
         }
       ],
@@ -1502,7 +1502,7 @@
                                       "op": "min",
                                       "args": [
                                         "gke",
-                                        7
+                                        72
                                       ]
                                     },
                                     {
@@ -1536,7 +1536,7 @@
                                       "op": "min",
                                       "args": [
                                         "gke",
-                                        7
+                                        72
                                       ]
                                     },
                                     {
