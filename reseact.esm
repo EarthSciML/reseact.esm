@@ -1,0 +1,4596 @@
+{
+  "esm": "0.8.0",
+  "metadata": {
+    "name": "ReSEACT3DChem",
+    "description": "ReSEACT 3-D transport on a 7x7x7 NATIVE slice of the GEOS-FP 4x5 grid centred over the central US, driven by real GEOS-FP meteorology. NO REGRIDDING: the local grid IS the native grid (lon cells 15..21 -> centres -110..-80; lat points 30..36 -> 26..50; levels 1..7, k=1 = surface), so the whole conservative-overlap chain collapses to an index shift.\n\nTransport is the monotone flux-form PPM stack imported BY REFERENCE from EarthSciDiscretizations: regional open-wall inflow BCs on lon/lat, and the HYBRID sigma-pressure massform vertical (dp = dA[k] + dB[k]*PS(i,j,t)) on lev. The horizontal and vertical rule stack is byte-identical to the verified prototypes/transport_3d/transport_3d.esm; only the FORCING differs — the analytic test winds and constant PS are replaced by GEOS-FP U/V/OMEGA/PS, each supplied by an EarthSciIO discrete_provider returning the TWO records bracketing the solver time and blended continuously in time (records_per_sample=2 + w_time, the era5 pattern).\n\nGEOS-FP's collections are not co-phased, so three independent weights are used: w_I3 (PS, 3-hourly instantaneous at 00:00Z), w_A3 (U/V/OMEGA, 3-hourly means at 01:30Z) and w_A1 (PBLH, hourly means at 00:30Z).\n\nFace fluxes follow the metric the ESD divergence stencils imply on the unit sphere: Mx = dp_face*U_face/a and My = dp_face*V_face/a (Pa/s, matching m in Pa), with the A-grid GEOS-FP winds averaged to faces. Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD; Mz is +ve UPWARD at each cell's LOWER edge).\n\nCAVEATS. (1) PS is read in hPa and scaled by 100 — the loader declares Pa but EarthSciIO returns raw file values. (2) The lev no-flux BC is baked into the stencils (they never read Mz[1] or Mz[NLEV+1]), so the 7-level slab is CLOSED at its ~906 hPa top even though real air flows through it — a truncated-column artifact, negligible over the 1 s first-light window but not for long runs. (3) The two end lat rows are half-width (lat_edge clamps them) while native lat cells are a full 4 deg. (4) Using OMEGA directly means m drifts from dp: the mass fluxes are not the ones that reproduce the observed surface-pressure tendency (Jockel et al. 2001). CWC still holds EXACTLY — both continuity and tracer use the same fluxes — which is what the q == 1 gate tests.",
+    "license": "MIT",
+    "tags": [
+      "esd:problem",
+      "grid:latlon3d",
+      "family:finite_volume",
+      "op:D",
+      "axes:lon,lat,lev",
+      "scheme:flux_form",
+      "property:free_stream",
+      "bc:inflow"
+    ]
+  },
+  "models": {
+    "GEOSFP": {
+      "ref": "../EarthSciModels/components/earthsci_data/geosfp.esm"
+    },
+    "Transport3D": {
+      "expression_template_imports": [
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lon_open_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lat_open_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lon_mono_inflow_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lat_mono_inflow_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lev_mono_hybrid_noflux_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lev_massform_noflux_bc.esm",
+          "bindings": {
+            "NLON": 7,
+            "NLAT": 7,
+            "NLEV": 72
+          }
+        }
+      ],
+      "variables": {
+        "m": {
+          "type": "state",
+          "units": "1",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Air mass per cell (a pressure thickness). Strictly positive."
+        },
+        "lon0_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": -112.5,
+          "description": "West EDGE of the slice. GEOS-FP 4x5 lon cell edges are -182.5+5*(i-1); -112.5 is the edge of native cell i=15, so cells i=15..21 (centers -110..-80) map to lon_local 1..7 with NO interpolation."
+        },
+        "lat0_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 26.0,
+          "description": "Southern-most lat POINT of the slice. GEOS-FP 4x5 lat points are -90+4*(j-1); 26 is native j=30, so points j=30..36 (26..50) map to lat_local 1..7 with NO interpolation."
+        },
+        "dlon_deg": {
+          "type": "observed",
+          "units": "deg",
+          "expression": 5.0,
+          "description": "GEOS-FP 4x5 native zonal spacing. Open west/east walls (regional, not periodic)."
+        },
+        "dlat_deg": {
+          "type": "observed",
+          "units": "deg",
+          "expression": 4.0,
+          "description": "GEOS-FP 4x5 native meridional spacing. Open south/north walls (regional, not polar)."
+        },
+        "phie": {
+          "type": "observed",
+          "units": "deg",
+          "shape": [
+            "lat_nodes"
+          ],
+          "description": "Latitude cell EDGES from the grid's lat_edge template; the half-polar caps fall out of the clamp at +/-90.",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lat_edge",
+            "bindings": {}
+          }
+        },
+        "coslat_e": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lat_nodes"
+          ],
+          "description": "cos of the latitude edges. Zero-length face at each pole. Never read at faces 1 or NLAT+1 -- the pole terms are structurally omitted.",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "coslat_edge",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        "dS_lat": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lat"
+          ],
+          "description": "Exact spherical cell-area weight sin(phie[j+1]) - sin(phie[j]).",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "latcell_area",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        "dphi_lat": {
+          "type": "observed",
+          "units": "rad",
+          "shape": [
+            "lat"
+          ],
+          "description": "Meridional cell extent; HALF-width at the two polar caps.",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "latcell_dphi",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        "Mx": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon_nodes",
+            "lat",
+            "lev"
+          ],
+          "description": "Zonal face-normal AIR-MASS flux (Pa/s) at each lon face: Mx = dp_face * U_face / a, the metric the ESD divergence stencil implies on the unit sphere (cell area dlon_rad*dS_lat, zonal face length dphi_lat). dp_face and U_face are 2-point averages of the two native cells flanking the face (13+ie, 14+ie) — exact, because each local lon cell has the same footprint as native cell 14+i and the local edges sit on native cell midpoints. Replaces the Stage-B analytic wind. The west/east wall faces (ie=1, ie=NLON+1) are GENUINE faces on an open domain, and their halo cells (native 14 and 22) exist in the native array — no extrapolation needed.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gie",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_PS",
+              "F_U",
+              "dA",
+              "dB"
+            ],
+            "ranges": {
+              "gie": {
+                "from": "lon_nodes"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        13,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        13,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            13,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            13,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                6371000.0
+              ]
+            }
+          }
+        },
+        "My": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat_nodes",
+            "lev"
+          ],
+          "description": "Meridional face-normal AIR-MASS flux (Pa/s) at each lat face: My = dp_face * V_face / a, the metric the ESD divergence stencil implies on the unit sphere (meridional face length dlon_rad*cos(phi), supplied by the stencil's coslat_e factor). Because lat is POINT-based with lat_edge CLAMPING the two end edges onto the end points, the flanking native points are jL = 28+max(je,2) and jR = 29+min(je,7): the walls (je=1, je=8) collapse to the single native point that the face sits on, and interior faces bisect their two neighbours. Replaces the Stage-B analytic wind.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gje",
+              "gk"
+            ],
+            "args": [
+              "F_PS",
+              "F_V",
+              "dA",
+              "dB"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gje": {
+                "from": "lat_nodes"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        28,
+                                                        {
+                                                          "op": "max",
+                                                          "args": [
+                                                            "gje",
+                                                            2
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        28,
+                                                        {
+                                                          "op": "max",
+                                                          "args": [
+                                                            "gje",
+                                                            2
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        {
+                                                          "op": "min",
+                                                          "args": [
+                                                            "gje",
+                                                            7
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        {
+                                                          "op": "min",
+                                                          "args": [
+                                                            "gje",
+                                                            7
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            28,
+                                            {
+                                              "op": "max",
+                                              "args": [
+                                                "gje",
+                                                2
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            28,
+                                            {
+                                              "op": "max",
+                                              "args": [
+                                                "gje",
+                                                2
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "gje",
+                                                7
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "gje",
+                                                7
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                6371000.0
+              ]
+            }
+          }
+        },
+        "dA": {
+          "type": "parameter",
+          "units": "Pa",
+          "shape": [
+            "lev"
+          ],
+          "default": 0.0,
+          "description": "dA[k] = Ap[k]-Ap[k+1] from the native GEOS-FP hybrid table at integer edges k=1..8. Supplied via const_arrays."
+        },
+        "dB": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev"
+          ],
+          "default": 0.0,
+          "description": "dB[k] = Bp[k]-Bp[k+1] from the native GEOS-FP hybrid table at integer edges k=1..8. Supplied via const_arrays."
+        },
+        "PS": {
+          "type": "observed",
+          "units": "Pa",
+          "shape": [
+            "lon",
+            "lat"
+          ],
+          "description": "Surface pressure (Pa) on the local grid: the GEOS-FP I3 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_I3 and scaled hPa->Pa. Replaces the Stage-B constant 101325. Drives dp = dA[k] + dB[k]*PS, so the hybrid vertical breathes with the real surface pressure.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "F_PS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                100.0,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            1.0,
+                            "w_I3"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            1,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "w_I3",
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            2,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "dp": {
+          "type": "observed",
+          "units": "Pa",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Physical pressure thickness dp = dA[k] + dB[k]*Ps(i,j,t) on the GEOS-FP hybrid sigma-pressure grid; the CW84 parabola is built on these (ppmflux_D_lev_hyb_*). dA/dB are differences of the native GEOS-FP Ap(Pa)/Bp tables at integer edges k=1..8 -- read directly, NOT via interp.linear, which keeps the transport RHS pure arithmetic and therefore autodiff-capable.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "PS",
+              "dA",
+              "dB"
+            ],
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "dA",
+                    "gk"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "dB",
+                        "gk"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "PS",
+                        "gi",
+                        "gj"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Mz": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat",
+            "lev_nodes"
+          ],
+          "description": "Vertical face-normal AIR-MASS flux (Pa/s) at each cell's LOWER edge, +ve UPWARD: Mz = -OMEGA (GEOS-FP OMEGA is dP/dt, +ve DOWNWARD). OMEGA is CELL-CENTRED in the archived files, so the edge value averages the two flanking cells, clamped at the walls. The values at ke=1 and ke=NLEV+1 are NEVER READ: facediv_lev_mass_nf_k1/_kN hardcode the no-flux wall to 0, which is what makes the 7-level slab closed at its ~906 hPa top. Replaces the Stage-B analytic profile.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gke"
+            ],
+            "args": [
+              "F_OM"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gke": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    1.0,
+                                    "w_A3"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    1,
+                                    {
+                                      "op": "max",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "gke",
+                                            1
+                                          ]
+                                        },
+                                        1
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "w_A3",
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    2,
+                                    {
+                                      "op": "max",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "gke",
+                                            1
+                                          ]
+                                        },
+                                        1
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    1.0,
+                                    "w_A3"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    1,
+                                    {
+                                      "op": "min",
+                                      "args": [
+                                        "gke",
+                                        72
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "w_A3",
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    2,
+                                    {
+                                      "op": "min",
+                                      "args": [
+                                        "gke",
+                                        72
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "F_PS": {
+          "type": "parameter",
+          "units": "hPa",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP I3 surface pressure on the NATIVE 4x5 grid, the two records bracketing the current time: [time,lat,lon] = [gf_t,gf_lat,gf_lon]. Coupled from GEOSFP.GEOSFP_I3.PS. UNITS ARE hPa, not the Pa the loader declares — the file says hPa and EarthSciIO returns raw values, so every consumer here scales by 100."
+        },
+        "F_U": {
+          "type": "parameter",
+          "units": "m/s",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3dyn eastward wind, two bracketing records, NATIVE [time,lev,lat,lon]. Coupled from GEOSFP.GEOSFP_A3dyn.U. CELL-CENTRED (A-grid) despite the loader's 'x-edge-staggered' note — the archived GEOS-Chem files are A-grid — so it is averaged to lon faces here."
+        },
+        "F_V": {
+          "type": "parameter",
+          "units": "m/s",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3dyn northward wind, two bracketing records, NATIVE [time,lev,lat,lon]. Coupled from GEOSFP.GEOSFP_A3dyn.V. Cell-centred; averaged to lat faces here."
+        },
+        "F_OM": {
+          "type": "parameter",
+          "units": "Pa/s",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3dyn vertical pressure velocity OMEGA = dP/dt, +ve DOWNWARD, two bracketing records, NATIVE [time,lev,lat,lon]. Coupled from GEOSFP.GEOSFP_A3dyn.OMEGA. Cell-centred; averaged to lev edges and NEGATED to give Mz (+ve upward)."
+        },
+        "F_PBLH": {
+          "type": "parameter",
+          "units": "m",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 planetary boundary layer height, two bracketing records, NATIVE [time,lat,lon]. Coupled from GEOSFP.GEOSFP_A1.PBLH. Carried for the Kzz parameterization."
+        },
+        "w_I3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Time-interpolation weight for the I3 cadence (PS): 3-hourly INSTANTANEOUS records at 00:00, 03:00, ... UTC. Coupled from GEOSFP.w_time_I3."
+        },
+        "w_A3": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Time-interpolation weight for the A3 cadence (U/V/OMEGA): 3-hourly time-AVERAGED records centred 01:30, 04:30, ... UTC. Coupled from GEOSFP.w_time_A3. Distinct from w_I3 because GEOS-FP's collections are not co-phased."
+        },
+        "w_A1": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "Time-interpolation weight for the A1 cadence (PBLH): hourly time-AVERAGED records centred 00:30, 01:30, ... UTC. Coupled from GEOSFP.w_time_A1."
+        },
+        "PBLH": {
+          "type": "observed",
+          "units": "m",
+          "shape": [
+            "lon",
+            "lat"
+          ],
+          "description": "Planetary boundary layer height (m) on the local grid: the GEOS-FP A1 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_A1. Carried for the Kzz parameterization; not yet consumed by the transport RHS.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "F_PBLH"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_PBLH",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_PBLH",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "F_T": {
+          "type": "parameter",
+          "units": "K",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP I3 temperature, two bracketing records, NATIVE [time,lev,lat,lon]. Coupled from GEOSFP.GEOSFP_I3.T. Declared K and delivered K — unlike PS, no unit gap here (verified against the file)."
+        },
+        "Tc": {
+          "type": "observed",
+          "units": "K",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Air temperature (K) on the local grid: the GEOS-FP I3 field at NATIVE (lev=k, lat=29+j, lon=14+i), blended across its two bracketing records with w_I3. Coupled into SuperFast.T; param_to_var carries this grid shape onto the scalar param so the pointwise lift indexes it per cell.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_T"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_I3"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_T",
+                        1,
+                        "gk",
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_I3",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_T",
+                        2,
+                        "gk",
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Ap": {
+          "type": "parameter",
+          "units": "Pa",
+          "shape": [
+            "lev_nodes"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP hybrid sigma-pressure Ap coefficients at the NLEV+1 layer edges (Pa). k=1 is the surface (Ap[1]=0, Bp[1]=1 => P_edge(1)=PS). Supplied via const_arrays."
+        },
+        "Bp": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "lev_nodes"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP hybrid sigma-pressure Bp coefficients at the NLEV+1 layer edges (dimensionless). Supplied via const_arrays."
+        },
+        "Pc": {
+          "type": "observed",
+          "units": "Pa",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Air pressure (Pa) at each layer's mid-point: the mean of its two hybrid sigma-pressure edges, P_edge(k) = Ap[k] + Bp[k]*PS(i,j,t). Breathes with the real surface pressure. Coupled into SuperFast.P.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "Ap",
+              "Bp",
+              "PS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "Ap",
+                            "gk"
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "Bp",
+                                "gk"
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "PS",
+                                "gi",
+                                "gj"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "Ap",
+                            {
+                              "op": "+",
+                              "args": [
+                                "gk",
+                                1
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "Bp",
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    "gk",
+                                    1
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "PS",
+                                "gi",
+                                "gj"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "qbc_w_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the w wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_e_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the e wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_s_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the s wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_n_NO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO inflow mixing ratio on the n wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_w_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the w wall, over [lat,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_e_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the e wall, over [lat,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_s_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the s wall, over [lon,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_n_CO": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CO inflow mixing ratio on the n wall, over [lon,lev] = 100 ppb — SuperFast's declared background for CO. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 100.0
+          }
+        },
+        "qbc_w_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the w wall, over [lat,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_e_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the e wall, over [lat,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_s_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the s wall, over [lon,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_n_ISOP": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "ISOP inflow mixing ratio on the n wall, over [lon,lev] = 1e-11 ppb — SuperFast's declared background for ISOP. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 1e-11
+          }
+        },
+        "qbc_w_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_HNO3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HNO3 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HNO3. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the w wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_e_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the e wall, over [lat,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_s_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the s wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_n_NO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "NO2 inflow mixing ratio on the n wall, over [lon,lev] = 0.0004 ppb — SuperFast's declared background for NO2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 0.0004
+          }
+        },
+        "qbc_w_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_HO2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "HO2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for HO2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH3OOH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3OOH inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3OOH. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_OH": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "OH inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for OH. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the w wall, over [lat,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_e_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the e wall, over [lat,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_s_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the s wall, over [lon,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_n_O3": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "O3 inflow mixing ratio on the n wall, over [lon,lev] = 40 ppb — SuperFast's declared background for O3. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 40.0
+          }
+        },
+        "qbc_w_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_H2O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "H2O2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for H2O2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH3O2": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH3O2 inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH3O2. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_w_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the w wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_w` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_e_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lat",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the e wall, over [lat,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_e` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lat"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_s_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the s wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_s` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        },
+        "qbc_n_CH2O": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lev"
+          ],
+          "description": "CH2O inflow mixing ratio on the n wall, over [lon,lev] = 4e-06 ppb — SuperFast's declared background for CH2O. Bound to the PPM inflow rule's `qbc_n` PARAM at this species' call site, so it is independent of every other species' halo.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "ga",
+              "gb"
+            ],
+            "args": [],
+            "ranges": {
+              "ga": {
+                "from": "lon"
+              },
+              "gb": {
+                "from": "lev"
+              }
+            },
+            "expr": 4e-06
+          }
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "ic",
+            "args": [
+              "m"
+            ]
+          },
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "i",
+              "j",
+              "k"
+            ],
+            "ranges": {
+              "i": {
+                "from": "lon"
+              },
+              "j": {
+                "from": "lat"
+              },
+              "k": {
+                "from": "lev"
+              }
+            },
+            "args": [],
+            "expr": {
+              "op": "+",
+              "args": [
+                2.0,
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "sin",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            0.017453292519943295,
+                            {
+                              "op": "+",
+                              "args": [
+                                20.0,
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        "j",
+                                        1
+                                      ]
+                                    },
+                                    5.0
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.1,
+                    {
+                      "op": "cos",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            0.017453292519943295,
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "i",
+                                    0.5
+                                  ]
+                                },
+                                5.0
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "m"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "D",
+                    "args": [
+                      "Mx"
+                    ],
+                    "wrt": "lon"
+                  },
+                  {
+                    "op": "D",
+                    "args": [
+                      "My"
+                    ],
+                    "wrt": "lat"
+                  },
+                  {
+                    "op": "D",
+                    "args": [
+                      "Mz"
+                    ],
+                    "wrt": "lev"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "_comment": "d(NO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with NO's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with NO's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.NO"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.NO"
+                                ]
+                              },
+                              "qbc_w_NO",
+                              "qbc_e_NO"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.NO"
+                                ]
+                              },
+                              "qbc_s_NO",
+                              "qbc_n_NO"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.NO"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.NO",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(CO)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CO's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CO's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CO"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.CO"
+                                ]
+                              },
+                              "qbc_w_CO",
+                              "qbc_e_CO"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.CO"
+                                ]
+                              },
+                              "qbc_s_CO",
+                              "qbc_n_CO"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.CO"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.CO",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(ISOP)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with ISOP's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with ISOP's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.ISOP"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.ISOP"
+                                ]
+                              },
+                              "qbc_w_ISOP",
+                              "qbc_e_ISOP"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.ISOP"
+                                ]
+                              },
+                              "qbc_s_ISOP",
+                              "qbc_n_ISOP"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.ISOP"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.ISOP",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(HNO3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with HNO3's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with HNO3's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.HNO3"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.HNO3"
+                                ]
+                              },
+                              "qbc_w_HNO3",
+                              "qbc_e_HNO3"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.HNO3"
+                                ]
+                              },
+                              "qbc_s_HNO3",
+                              "qbc_n_HNO3"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.HNO3"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.HNO3",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(NO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with NO2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with NO2's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.NO2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.NO2"
+                                ]
+                              },
+                              "qbc_w_NO2",
+                              "qbc_e_NO2"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.NO2"
+                                ]
+                              },
+                              "qbc_s_NO2",
+                              "qbc_n_NO2"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.NO2"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.NO2",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(HO2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with HO2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with HO2's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.HO2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.HO2"
+                                ]
+                              },
+                              "qbc_w_HO2",
+                              "qbc_e_HO2"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.HO2"
+                                ]
+                              },
+                              "qbc_s_HO2",
+                              "qbc_n_HO2"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.HO2"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.HO2",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(CH3OOH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH3OOH's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH3OOH's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CH3OOH"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.CH3OOH"
+                                ]
+                              },
+                              "qbc_w_CH3OOH",
+                              "qbc_e_CH3OOH"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.CH3OOH"
+                                ]
+                              },
+                              "qbc_s_CH3OOH",
+                              "qbc_n_CH3OOH"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.CH3OOH"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.CH3OOH",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(OH)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with OH's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with OH's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.OH"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.OH"
+                                ]
+                              },
+                              "qbc_w_OH",
+                              "qbc_e_OH"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.OH"
+                                ]
+                              },
+                              "qbc_s_OH",
+                              "qbc_n_OH"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.OH"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.OH",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(O3)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with O3's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with O3's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.O3"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.O3"
+                                ]
+                              },
+                              "qbc_w_O3",
+                              "qbc_e_O3"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.O3"
+                                ]
+                              },
+                              "qbc_s_O3",
+                              "qbc_n_O3"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.O3"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.O3",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(H2O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with H2O2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with H2O2's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.H2O2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.H2O2"
+                                ]
+                              },
+                              "qbc_w_H2O2",
+                              "qbc_e_H2O2"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.H2O2"
+                                ]
+                              },
+                              "qbc_s_H2O2",
+                              "qbc_n_H2O2"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.H2O2"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.H2O2",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(CH3O2)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH3O2's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH3O2's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CH3O2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.CH3O2"
+                                ]
+                              },
+                              "qbc_w_CH3O2",
+                              "qbc_e_CH3O2"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.CH3O2"
+                                ]
+                              },
+                              "qbc_s_CH3O2",
+                              "qbc_n_CH3O2"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.CH3O2"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.CH3O2",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        },
+        {
+          "_comment": "d(CH2O)/dt advection contribution, flux-form PPM in CWC mixing-ratio form: [-div(M q) + q div(M)]/m, with CH2O's OWN lateral inflow halo bound to the rule's qbc params. operator_compose merges this with CH2O's reaction tendency and the pointwise lift array-ifies the result.",
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CH2O"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mx",
+                                  "SuperFast.CH2O"
+                                ]
+                              },
+                              "qbc_w_CH2O",
+                              "qbc_e_CH2O"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "My",
+                                  "SuperFast.CH2O"
+                                ]
+                              },
+                              "qbc_s_CH2O",
+                              "qbc_n_CH2O"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              {
+                                "op": "*",
+                                "args": [
+                                  "Mz",
+                                  "SuperFast.CH2O"
+                                ]
+                              }
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      "SuperFast.CH2O",
+                      {
+                        "op": "+",
+                        "args": [
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mx"
+                            ],
+                            "wrt": "lon"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "My"
+                            ],
+                            "wrt": "lat"
+                          },
+                          {
+                            "op": "D",
+                            "args": [
+                              "Mz"
+                            ],
+                            "wrt": "lev"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "m"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "index_sets": {
+    "gf_t": {
+      "kind": "interval",
+      "size": 2
+    },
+    "gf_lev": {
+      "kind": "interval",
+      "size": 72
+    },
+    "gf_lat": {
+      "kind": "interval",
+      "size": 46
+    },
+    "gf_lon": {
+      "kind": "interval",
+      "size": 72
+    }
+  },
+  "coupling": [
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_I3.PS",
+      "to": "Transport3D.F_PS",
+      "transform": "param_to_var",
+      "description": "GEOS-FP I3 surface pressure (hPa in file) -> the native-slice PS. Note the subsystem key is GEOSFP_I3, not I3."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3dyn.U",
+      "to": "Transport3D.F_U",
+      "transform": "param_to_var",
+      "description": "GEOS-FP A3dyn eastward wind -> the zonal face flux Mx."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3dyn.V",
+      "to": "Transport3D.F_V",
+      "transform": "param_to_var",
+      "description": "GEOS-FP A3dyn northward wind -> the meridional face flux My."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3dyn.OMEGA",
+      "to": "Transport3D.F_OM",
+      "transform": "param_to_var",
+      "description": "GEOS-FP A3dyn OMEGA -> the vertical face flux Mz = -OMEGA."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.PBLH",
+      "to": "Transport3D.F_PBLH",
+      "transform": "param_to_var",
+      "description": "GEOS-FP A1 boundary-layer height -> carried for Kzz."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.w_time_I3",
+      "to": "Transport3D.w_I3",
+      "transform": "param_to_var",
+      "description": "I3 cadence weight -> the PS two-record blend."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.w_time_A3",
+      "to": "Transport3D.w_A3",
+      "transform": "param_to_var",
+      "description": "A3 cadence weight -> the U/V/OMEGA two-record blend."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.w_time_A1",
+      "to": "Transport3D.w_A1",
+      "transform": "param_to_var",
+      "description": "A1 cadence weight -> the PBLH two-record blend."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_I3.T",
+      "to": "Transport3D.F_T",
+      "transform": "param_to_var",
+      "description": "GEOS-FP I3 temperature -> the native-slice Tc."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Tc",
+      "to": "SuperFast.T",
+      "transform": "param_to_var",
+      "description": "Per-cell GEOS-FP temperature -> SuperFast's scalar T param. param_to_var carries the [lon,lat,lev] shape so the pointwise lift indexes it per cell; the rate constants then vary with the real 3-D temperature field."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Pc",
+      "to": "SuperFast.P",
+      "transform": "param_to_var",
+      "description": "Per-cell hybrid mid-layer pressure -> SuperFast's scalar P param."
+    },
+    {
+      "type": "operator_compose",
+      "systems": [
+        "SuperFast",
+        "Transport3D"
+      ],
+      "lifting": "pointwise",
+      "description": "Lift the 0-D SuperFast mechanism onto the 7x7x7 grid and add each species' PPM advection contribution to its reaction tendency. pointwise lifting evaluates the network independently per cell; the merged reaction+advection state ODEs are array-ified by the flattener's lift. Only the 12 non-constant species lift — O2/CH4/H2O are constant:true reservoirs with no ODE, so they broadcast into the rates instead."
+    }
+  ],
+  "reaction_systems": {
+    "SuperFast": {
+      "ref": "../EarthSciModels/components/gaschem/superfast.esm"
+    }
+  }
+}
