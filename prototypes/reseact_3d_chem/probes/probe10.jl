@@ -1,4 +1,4 @@
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqTsit5; import DiffEqCallbacks; using EarthSciIO, JSON3, Printf
 const EA = EarthSciAST
 const T0 = 64800.0

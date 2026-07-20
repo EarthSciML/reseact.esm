@@ -6,12 +6,12 @@
 #   * NEI's timezone offset + delp_dry_surface interpolation (radians),
 #   * which NEI grid cell the emission fluxes are read from.
 import Pkg
-Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 try; @eval import OrdinaryDiffEqRosenbrock; catch; Pkg.add("OrdinaryDiffEqRosenbrock"; io=devnull); @eval import OrdinaryDiffEqRosenbrock; end
 using EarthSciAST, Dates, Printf
 const EA = EarthSciAST
 
-HERE = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/box_model"
+HERE = @__DIR__
 include(joinpath(HERE, "nei_provider.jl"))
 
 site = length(ARGS) >= 1 ? lowercase(ARGS[1]) : "kansas"

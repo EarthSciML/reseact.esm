@@ -1,12 +1,12 @@
 #!/usr/bin/env julia
 # Stage A first light: the verified 7x7x7 PPM transport driven by REAL GEOS-FP 4x5,
 # sliced natively over the central US. t=0 := 2013-01-01T00:00Z.
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqTsit5; import DiffEqCallbacks
 using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 
-const MODEL = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d/reseact_3d.esm"
+const MODEL = joinpath(@__DIR__, "reseact_3d.esm")
 # t=0 := 2013-01-01T00:00Z. Start at 18:00Z: every collection has a record on BOTH
 # sides there (A1's first is 00:30Z, so t=0 itself is un-bracketable), and it is
 # daytime over CONUS — which Stage C's photolysis will want.

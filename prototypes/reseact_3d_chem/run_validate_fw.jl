@@ -5,13 +5,13 @@
 # path was thrashing (>30 min, 22% CPU, 4-5 GB swap) PER solver compile; the wrapper
 # should cut both compile time AND memory to ~minutes. Runtime cost is one indirect
 # call per RHS eval — negligible for a few hundred steps. ADVECTION STAYS EXPLICIT.
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqSDIRK, OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
 import LinearSolve
 import FunctionWrappers: FunctionWrapper
 using LinearAlgebra, Printf
-const DIR = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d_chem"
+const DIR = @__DIR__
 include(joinpath(DIR, "split_common.jl"))
 include(joinpath(DIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(DIR, "block_jac.jl"))

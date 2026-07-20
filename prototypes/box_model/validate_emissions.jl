@@ -9,7 +9,7 @@
 #
 # The model RHS is evaluated at u = 0, where every chemical production/loss term (each a
 # product of species concentrations) vanishes, leaving only the emission source.
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST, Dates, Printf
 const EA = EarthSciAST
 HERE = @__DIR__

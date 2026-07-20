@@ -1,7 +1,7 @@
 # G2 de-risk: does an additive `couple` connector add -k*c to a reaction-system species ODE?
 # Simulate SuperFast for 1 s with and without the deposition-sink coupling and compare.
 import Pkg
-ENV_DIR = "/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"
+ENV_DIR = get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl")))
 Pkg.activate(ENV_DIR; io=devnull)
 # stiff solver for gas-phase chemistry (radical chemistry is stiff)
 try
@@ -13,7 +13,7 @@ end
 using EarthSciAST
 const EA = EarthSciAST
 
-HERE = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/g2_depsink"
+HERE = @__DIR__
 # tree-walk RHS is not ForwardDiff-compatible -> use a finite-difference Jacobian.
 alg = OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false)
 

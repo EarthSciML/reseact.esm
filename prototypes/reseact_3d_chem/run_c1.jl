@@ -12,12 +12,12 @@
 # boundary so the compile-once tier factors each body once (RFC step c) instead
 # of fusing 39 rule instantiations into ~200M node-lowerings — the difference
 # between a ~20 min build and a build that never finishes at 12 species.
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqRosenbrock; import DiffEqCallbacks
 using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 
-const MODEL = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d_chem/reseact_3d_chem.esm"
+const MODEL = joinpath(@__DIR__, "reseact_3d_chem.esm")
 # t=0 := 2013-01-01T00:00Z. Start at 18:00Z: every collection has a record on BOTH
 # sides there (A1's first is 00:30Z, so t=0 itself is un-bracketable), and it is
 # daytime over CONUS — which Stage C's photolysis will want.

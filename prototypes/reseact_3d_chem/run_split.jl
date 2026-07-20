@@ -13,12 +13,12 @@
 # no-flux top is the TRUE TOA (OMEGA->0 there), so m no longer accumulates and
 # explicit advection is stable. PositiveDomain is added as a safety net for
 # stiff-chemistry tiny-negatives (NOT as a fix for the m blowup — that's the grid).
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqSDIRK, OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
 import LinearSolve
 using LinearAlgebra, Printf
-const DIR = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d_chem"
+const DIR = @__DIR__
 include(joinpath(DIR, "split_common.jl"))
 include(joinpath(DIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(DIR, "block_jac.jl"))

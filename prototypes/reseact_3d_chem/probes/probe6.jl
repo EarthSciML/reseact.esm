@@ -1,4 +1,4 @@
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqTsit5; using JSON3, Printf
 const EA = EarthSciAST
 r = EA.validate("probe6.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")

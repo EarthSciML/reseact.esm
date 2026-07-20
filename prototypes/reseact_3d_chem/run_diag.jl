@@ -6,12 +6,12 @@
 #   3. transport-ONLY explicit solve (SSPRK43) at 60/300 s, retcode checked
 #   4. chem-ONLY implicit solve (confirm still stable)
 #   5. transport-ONLY IMPLICIT via a sparse-stencil Jacobian? (report only)
-import Pkg; Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqSSPRK, OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSDIRK
 import LinearSolve
 using LinearAlgebra, Printf
-const DIR = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d_chem"
+const DIR = @__DIR__
 include(joinpath(DIR, "split_common.jl"))
 include(joinpath(DIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(DIR, "block_jac.jl"))

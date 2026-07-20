@@ -2,7 +2,7 @@
 # expressible AND correctly evaluable in v0.8.0? Simulate the accumulator model at several
 # levels and compare P_lo/P_hi/dP/dz to a direct Ap/Bp computation.
 import Pkg
-Pkg.activate("/Users/ctessum/code/earthsciml/reseact.esm/run-model-jl"; io=devnull)
+Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 import OrdinaryDiffEqTsit5
 using EarthSciAST
 const EA = EarthSciAST
@@ -10,7 +10,7 @@ const EA = EarthSciAST
 getmod(name) = (for (p,m) in Base.loaded_modules; p.name==name && return m; end; error("no $name"))
 J = getmod("JSON3")
 
-HERE = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/g1_layergeom"
+HERE = @__DIR__
 path = joinpath(HERE, "g1.esm")
 
 # reference Ap/Bp arrays (1-based level index) from the same source the model was built from
