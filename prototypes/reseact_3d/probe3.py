@@ -1,7 +1,8 @@
 """Probe the Mx/My/Mz forcing expressions ALONE (no PPM rules -> fast build), so
 their values can be checked against an independent computation from the netCDF."""
 import json, collections
-SRC = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d/reseact_3d.esm"
+import os
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reseact_3d.esm")
 d = json.load(open(SRC), object_pairs_hook=collections.OrderedDict)
 M = d["models"]["Transport3D"]; V = M["variables"]
 
@@ -41,6 +42,6 @@ M["equations"] = [{"lhs":{"op":"aggregate","output_idx":["p"],"args":[],
                    "rhs":{"op":"aggregate","output_idx":["p"],
                           "args":[v for _,v,_ in PROBES],
                           "ranges":{"p":{"from":"probe"}}, "expr":expr}}]
-d["models"]["GEOSFP"]["ref"] = "/Users/ctessum/code/earthsciml/EarthSciModels/components/earthsci_data/geosfp.esm"
+d["models"]["GEOSFP"]["ref"] = "../../../EarthSciModels/components/earthsci_data/geosfp.esm"
 json.dump(d, open("probe3.esm","w"), indent=1)
 print("wrote probe3.esm with", len(PROBES), "probes:", [p[0] for p in PROBES])
