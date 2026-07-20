@@ -1,0 +1,46 @@
+validate …
+  is_valid=true  struct_errs=0
+DataRefreshExt loaded ✓ (forcing refresh callback available)
+split + build …
+  part[1] build: 82.6 s  tier body_variants=262 compile_calls=160391  (tier ON)
+  part[2] build: 1.7 s  tier body_variants=0 compile_calls=1083  (tier OFF/fused)
+build: 105.3 s   nstates=45864   ntstops=32
+layout: NS=13 bases  NC=3528 cells  N=45864
+seeded m(0)=dp: m∈[1.000e+00, 5.008e+03] over 3528 cells (was ~analytic test mass)
+
+=== transport-only explicit (SSPRK43) — is m bounded now? ===
+  transport |f|_inf@t0 = 2.557e-01   m@t0 ∈ [1.0000, 5007.7977]
+  tend=60s: retcode=Success nsteps=2  m∈[0.9986,5017.3625] all_pos=true finite=true
+  tend=300s: retcode=Success nsteps=3  m∈[0.9932,5055.3002] all_pos=true finite=true
+
+=== Option B: IMEX (KenCarp47) ===
+
+[IMEX KenCarp47] retcode=Success wall=1234.5s
+  O3               t0∈[4.0000e+01,4.0000e+01]  t1∈[1.6494e+01,2.7601e+01]
+  NO               t0∈[4.0000e-04,4.0000e-04]  t1∈[1.7291e-09,7.9996e-04]
+  NO2              t0∈[4.0000e-04,4.0000e-04]  t1∈[5.2202e-09,1.3837e-04]
+  OH               t0∈[4.0000e-06,4.0000e-06]  t1∈[5.2329e-03,4.3483e+01]
+  HO2              t0∈[4.0000e-06,4.0000e-06]  t1∈[2.0747e-05,8.5819e-02]
+  CO               t0∈[1.0000e+02,1.0000e+02]  t1∈[7.3796e+01,9.9633e+01]
+  CH2O             t0∈[4.0000e-06,4.0000e-06]  t1∈[2.9363e-06,1.0206e+00]
+  m                t0∈[2.2553e+00,2.4829e+00]  t1∈[9.2144e-01,5.5248e+03]
+  m all positive: true
+
+=== Option A: operator splitting (SSPRK43 transport + Rosenbrock23/BD chem) ===
+  Lie-Trotter steps: 12 (macro_dt=300.0 s)
+
+[split SSPRK43+Rosenbrock23] retcode=ok wall=710.4s
+  O3               t0∈[4.0000e+01,4.0000e+01]  t1∈[1.6494e+01,2.6668e+01]
+  NO               t0∈[4.0000e-04,4.0000e-04]  t1∈[1.7243e-09,7.9996e-04]
+  NO2              t0∈[4.0000e-04,4.0000e-04]  t1∈[5.2029e-09,1.3841e-04]
+  OH               t0∈[4.0000e-06,4.0000e-06]  t1∈[5.2328e-03,4.3483e+01]
+  HO2              t0∈[4.0000e-06,4.0000e-06]  t1∈[2.0748e-05,8.5859e-02]
+  CO               t0∈[1.0000e+02,1.0000e+02]  t1∈[7.3794e+01,9.9617e+01]
+  CH2O             t0∈[4.0000e-06,4.0000e-06]  t1∈[2.9240e-06,1.0258e+00]
+  m                t0∈[2.2553e+00,2.4829e+00]  t1∈[9.2144e-01,5.5248e+03]
+  m all positive: true
+
+Option A vs B  max|Δ|=1.478e+00  (rel 2.676e-04)
+DONE
+
+[trimmed: 36 identical 'pointwise lift ... synthetic dense axis _liftdimN' warnings suppressed — the lift picks grid axes by extent and the 7x7 lon/lat and 72 lev/gf_lev tie by size; a documented cosmetic limitation, numerically inert]
