@@ -64,8 +64,25 @@ jac_cm!, mkjp = block_fd_jac(f_chem_cm!, P.NS, P.NC)
 u0_cm = run.u0[P.sm_of_cm]
 zerof!(du,u,p,t) = (fill!(du,0); nothing)
 tgz(g,u,p,t) = (fill!(g,0); nothing)
-mb = P.base_pos["Transport3D.m"]; mrng() = (mb-1)*P.NC+1 : mb*P.NC
+mb = P.base_pos["Transport3D.m"]; mrng() = mb:P.NS:P.N   # cell-major: base mb at stride NS
 foreach(d->d.materialize!(), run.dms)
+
+# --- STAGE-A INITIAL CONDITION: seed m(0) = dp = dA[k] + dB[k]*PS ------------------
+# The .esm keeps the Stage-B analytic test mass m (~0..100, scale-invariant for the
+# CWC gate). The fluxes, however, use the REAL dp (~1..5000 Pa over 72 levels), so a
+# ~2 Pa mass is driven negative by continuity within seconds and the explicit advection
+# blows up. gen_t3d.py says Stage A must supply m(0)=dp; that override was never wired
+# into run_split.jl (run_validate_fw.jl already does it). Seed it here — same mechanism.
+# PS_REF gives the profile; the ~10-30% horizontal PS variation is a gentle continuity
+# transient (the 1000x SCALE error is the blowup). k is the vertical index (c[3]).
+const PS_REF = 101325.0
+let dA = Float64.(fo.const_arrays["Transport3D.dA"]), dB = Float64.(fo.const_arrays["Transport3D.dB"])
+    for c in P.cells
+        u0_cm[(P.cell_pos[c]-1)*P.NS + mb] = dA[c[3]] + dB[c[3]]*PS_REF
+    end
+    say(@sprintf("seeded m(0)=dp: m∈[%.3e, %.3e] over %d cells (was ~analytic test mass)",
+                 minimum(u0_cm[mrng()]), maximum(u0_cm[mrng()]), P.NC))
+end
 
 # --- transport-only explicit PRE-CHECK: did 72 levels fix the m blowup? -----------
 say("\n=== transport-only explicit (SSPRK43) — is m bounded now? ===")
@@ -88,7 +105,7 @@ report(tag, uf_cm, wall, rc) = begin
         @printf("  %-16s t0∈[%.4e,%.4e]  t1∈[%.4e,%.4e]\n", split(sp,'.')[2],
                 minimum(run.u0[rng]),maximum(run.u0[rng]),minimum(uf[rng]),maximum(uf[rng]))
     end
-    say(@sprintf("  m all positive: %s", all(>(0), uf[mrng()])))
+    say(@sprintf("  m all positive: %s", all(>(0), uf[(mb-1)*P.NC+1 : mb*P.NC])))  # uf is species-major
     uf
 end
 
