@@ -3,7 +3,7 @@
 # run_reseact.jl -- run the full ReSEACT model with the NATIVE in-place runner.
 # ===========================================================================
 # Builds the operator-split model as two in-place `f!(du,u,p,t)` closures and
-# drives the Lie-Trotter scheme entirely on the CPU:
+# drives a Lie-Trotter operator split entirely on the CPU:
 #
 #   transport (non-stiff, stencil terms)   -> SSPRK43            (explicit)
 #   chemistry (stiff, cell-local pointwise) -> Rosenbrock23      (implicit,
@@ -11,37 +11,38 @@
 #                                              343 blocks of NS x NS, one per cell)
 #
 # The two halves share ONE state vector and ONE set of live GEOS-FP forcing
-# buffers, so f_full(u) = f_transport(u) + f_chemistry(u) exactly and a single
-# refresh callback drives both. This is the reference runner: it is what the
-# Reactant runner (run_reseact_reactant.jl) is validated against.
+# buffers, so f_full(u) = f_transport(u) + f_chemistry(u) exactly. This is the
+# reference runner: it is what the Reactant runner (run_reseact_reactant.jl) is
+# validated against.
 #
-# Why a HAND-ROLLED Lie-Trotter loop and not OrdinaryDiffEqOperatorSplitting.jl or
-# a single SplitODEProblem(transport, chemistry)? Both were tried and measured
-# (prototypes/reseact_3d_chem/SPLIT_SOLVER.md); the block-diagonal chemistry
-# Jacobian is what rules them out:
-#   * OrdinaryDiffEqOperatorSplitting.jl wraps each sub-operator in a *plain*
-#     ODEProblem, whose init() silently replaces our BlockDiagonal jac_prototype
-#     with a dense 45864x45864 matrix -> O(N^3) LU, the exact cost the split exists
-#     to avoid. (Still true on the package's current main, verified 2026-07-22.)
-#   * A true SplitODEProblem(f_chem[implicit,BlockDiagonal], f_transport[explicit])
-#     solved by an IMEX method (KenCarp47) DOES work and has no splitting error,
-#     but is ~1.7x slower (1235 s vs 710 s over a 3600 s window): one additive-RK
-#     integrator whose step is paced by the stiff chemistry, so transport can't take
-#     its own large explicit steps. It is the accuracy-insurance fallback, not the
-#     default. See SPLIT_SOLVER.md "Option B".
-# So we drive each operator with the integrator it wants, coupled by a first-order
-# Lie-Trotter step over the window.
+# The Lie-Trotter coupling is done by the REAL SciML operator-splitting solver,
+# OrdinaryDiffEqOperatorSplitting.LieTrotterGodunov, via the thin `lie_trotter_solve`
+# driver in tools/reactant_handoff/op_split.jl. That package USED to be unusable
+# here: it wraps each sub-operator in a plain ODEProblem, whose init() densified
+# our BlockDiagonal jac_prototype into a 45864x45864 dense matrix (O(N^3) LU, the
+# exact cost the split exists to avoid). The root cause was a single missing
+# `similar(::BlockDiagonal, ::Type)` method; tools/reactant_handoff/blockdiag_similar.jl
+# supplies it, so the block-diagonal chemistry Jacobian now survives inside the
+# solver. See SPLIT_SOLVER.md and op_split.jl for the full story.
+#
+# (Alternative considered: a single SplitODEProblem(f_chem[implicit,BlockDiagonal],
+# f_transport[explicit]) solved by an IMEX method (KenCarp47). It works and has no
+# splitting error, but is ~1.7x slower over a 3600 s window because one additive-RK
+# integrator's step is paced by the stiff chemistry. It is the accuracy-insurance
+# fallback, not the default. See SPLIT_SOLVER.md "Option B".)
 #
 # Env:
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
-#   RESEACT_SOLVE_SECS solve window, seconds   (default 60, one Lie-Trotter step)
+#   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
+#   RESEACT_MACRO_DT   Lie-Trotter interval, s (default 300, capped at the window)
 #   RESEACT_RUN_ENV    Julia env to activate   (default: <repo>/run-model-jl)
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/split_common.jl    build_split_run, reseact_forcing
 #   prototypes/reseact_3d_chem/blockdiag_local.jl  BlockDiagonal (from EarthSciMLBase)
 #   prototypes/reseact_3d_chem/block_jac.jl        cellmajor_perm/rhs, block_fd_jac
+#   tools/reactant_handoff/op_split.jl             lie_trotter_solve (+ BlockDiagonal fix)
 # ===========================================================================
 import Pkg
 const REPO = @__DIR__
@@ -64,14 +65,17 @@ import LinearSolve
 using LinearAlgebra, Printf
 
 const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
+const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
 include(joinpath(CHEMDIR, "split_common.jl"))                    # prepare_split_docs, reseact_forcing, build_split_run
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))                       # cellmajor_perm/rhs, block_fd_jac
+include(joinpath(RXDIR, "op_split.jl"))                          # lie_trotter_solve (+ BlockDiagonal similar fix)
 say(s) = (println(s); flush(stdout))
 
 const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const LABEL      = get(ENV, "RESEACT_LABEL", basename(MODEL))
 const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "60"))
+const MACRO_DT   = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
 const T0    = 64800.0
 const T_END = T0 + SOLVE_SECS
 const RTOL  = 1e-4
@@ -118,33 +122,37 @@ let dA = Float64.(ff.const_arrays["Transport3D.dA"]), dB = Float64.(ff.const_arr
 end
 
 # --------------------------------------------------------------------------- #
-# 3. Lie-Trotter step: transport (SSPRK43) then chemistry (Rosenbrock23/BlockDiag).
-#    PositiveDomain keeps concentrations >= 0; the shared refresh callback (run.cb)
-#    rewrites forcing buffers at each GEOS-FP cadence boundary.
-#
-#    The two sub-steps below TOGETHER realize f_full = f_transport + f_chemistry
-#    over the window: SSPRK43 advances transport, then Rosenbrock23 advances
-#    chemistry FROM that transported state. The chemistry sub-step is wrapped in a
-#    SplitODEProblem(fc, zerof!) NOT to add a second operator but as a plumbing
-#    trick: a jac_prototype (our BlockDiagonal) is honored only inside a
-#    SplitODEProblem -- a plain ODEProblem's init() densifies it. The `zerof!` is
-#    the empty second slot; transport is not dropped, it was already applied above.
+# 3. Lie-Trotter operator split via LieTrotterGodunov((SSPRK43, Rosenbrock23/BD)).
+#    `lie_trotter_solve` steps the split by MACRO_DT: SSPRK43 advances transport
+#    over the interval, then Rosenbrock23 advances chemistry FROM that state with
+#    the block-diagonal Jacobian (preserved by the blockdiag_similar fix). The
+#    driver clamps to >= 0 after each macro step (PositiveDomain substitute) and
+#    refreshes the shared GEOS-FP forcing buffers at each cadence boundary
+#    (run.tstops) -- the operator-splitting package applies neither callbacks nor
+#    inner tolerances itself, so both are driven from the macro loop.
 # --------------------------------------------------------------------------- #
-zerof!(du, u, p, t) = (fill!(du, 0); nothing)
-tgz(g, u, p, t)     = (fill!(g, 0); nothing)   # chem tgrad is zero (autonomous over a step)
-ts = time()
-u = copy(u0)
-pT = SciMLBase.ODEProblem(f_trans_cm!, u, (T0, T_END), run.p)
-sT = SciMLBase.solve(pT, OrdinaryDiffEqSSPRK.SSPRK43(); reltol = RTOL, abstol = ATOL_T,
-    callback = SciMLBase.CallbackSet(run.cb, DiffEqCallbacks.PositiveDomain(copy(u))),
-    tstops = run.tstops, save_everystep = false, maxiters = 500000)
-u = sT.u[end]
+tgz(g, u, p, t) = (fill!(g, 0); nothing)   # chem tgrad is zero (autonomous over a step)
 fc = SciMLBase.ODEFunction(f_chem_cm!; jac = jac_cm!, jac_prototype = mkjp(), tgrad = tgz)
-pC = SciMLBase.SplitODEProblem(fc, zerof!, u, (T0, T_END), run.p)   # SplitODEProblem so jac_prototype reaches jac!
-sC = SciMLBase.solve(pC, OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU);
-    reltol = RTOL, abstol = ATOL, callback = DiffEqCallbacks.PositiveDomain(copy(u)),
-    save_everystep = false, maxiters = 500000)
-u = sC.u[end]
+inner_algs = (OrdinaryDiffEqSSPRK.SSPRK43(),
+              OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU))
+
+# Forcing refresh at cadence boundaries: rewrite the live buffers in run.merged_param
+# from the discrete providers at time t, then rebuild the derived discrete caches --
+# the functional equivalent of run.cb's affect!, which the split solver cannot fire.
+disc = Dict(String(k) => prov for (k, prov) in ff.providers if !EA.provider_is_const(prov))
+refresh_forcing = t -> begin
+    for (k, prov) in disc
+        run.merged_param[k] .= EA._provider_const_field(EA.provider_sample(prov, t), k)
+    end
+    foreach(d -> d.materialize!(), run.dms)
+end
+
+ts = time()
+res = lie_trotter_solve(f_trans_cm!, fc, u0, (T0, T_END), run.p, inner_algs;
+    macro_dt = min(MACRO_DT, SOLVE_SECS),
+    reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL),   # transport / chemistry
+    refresh = refresh_forcing, forcing_tstops = run.tstops, clamp_nonneg = true)
+u = res.u
 solve_s = time() - ts
 
 # --------------------------------------------------------------------------- #
@@ -152,8 +160,8 @@ solve_s = time() - ts
 # --------------------------------------------------------------------------- #
 mf = u[mrng()]
 o3 = u[P.base_pos["SuperFast.O3"]:P.NS:P.N]
-ok = rc_ok(sT.retcode) && rc_ok(sC.retcode) && all(isfinite, u) && all(>(0), mf)
-say(@sprintf("RESULT label=%s cells=%d nstates=%d NS=%d solve_s=%.2f solve_secs=%.0f nT=%d nC=%d rcT=%s rcC=%s m=[%.3e,%.3e] O3=[%.4e,%.4e] ok=%s",
-    LABEL, P.NC, P.N, P.NS, solve_s, SOLVE_SECS, sT.stats.naccept, sC.stats.naccept,
-    sT.retcode, sC.retcode, minimum(mf), maximum(mf), minimum(o3), maximum(o3), ok))
+ok = rc_ok(res.retcode) && all(isfinite, u) && all(>(0), mf)
+say(@sprintf("RESULT label=%s cells=%d nstates=%d NS=%d solve_s=%.2f solve_secs=%.0f macro_dt=%.0f nmacro=%d nT=%d nC=%d rc=%s m=[%.3e,%.3e] O3=[%.4e,%.4e] ok=%s",
+    LABEL, P.NC, P.N, P.NS, solve_s, SOLVE_SECS, min(MACRO_DT, SOLVE_SECS), res.nmacro,
+    res.naT, res.naC, res.retcode, minimum(mf), maximum(mf), minimum(o3), maximum(o3), ok))
 say("DONE $LABEL")

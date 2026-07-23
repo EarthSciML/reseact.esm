@@ -14,21 +14,27 @@
 # native runner (8.1x), m/O3 identical to the native baseline. The @compile is a
 # one-time ~54 min and is grid-independent (identical trace at every grid).
 #
-# This runner reuses the native in-place path (run_reseact.jl's scheme) as a HOST
-# reference arm and reports the traced-vs-host difference rather than hiding it.
+# This runner reuses the split model as a HOST reference arm -- the REAL SciML
+# operator-splitting solver, LieTrotterGodunov((SSPRK43, Rosenbrock23/BlockDiag))
+# via tools/reactant_handoff/op_split.jl -- and reports the traced-vs-host
+# difference rather than hiding it. (The traced arm below is a purpose-built
+# integrator, NOT this solver: Reactant cannot trace through the SciML solver
+# stack, so the two are independent implementations of the same Lie-Trotter step.)
 #
 # Env:
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
-#   RESEACT_SOLVE_SECS solve window, seconds   (default 60, one Lie-Trotter step)
-#   RESEACT_DT0T       initial transport dt    (default 15.0)
-#   RESEACT_DT0C       initial chemistry dt    (default 0.5)
+#   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
+#   RESEACT_DT0T       initial transport dt    (default 15.0, traced arm)
+#   RESEACT_DT0C       initial chemistry dt    (default 0.5, traced arm)
 #   RESEACT_HOST_ARM   also run the host reference arm (default 1)
 #   RESEACT_RXENV      Julia env WITH Reactant (default: <repo>/run-model-jl)
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/{split_common,blockdiag_local,block_jac}.jl
 #       split build, forcing, cell-major layout, block-diagonal FD Jacobian (host arm)
+#   tools/reactant_handoff/op_split.jl
+#       lie_trotter_solve -- LieTrotterGodunov driver + the BlockDiagonal similar fix (host arm)
 #   tools/reactant_handoff/rx_native_patch.jl
 #       native stablehlo broadcast lowering + make_tracer opaque leaves (trace enablers)
 #   tools/reactant_handoff/rx_merge_lib.jl
@@ -58,6 +64,7 @@ const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
 include(joinpath(CHEMDIR, "split_common.jl"))
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))
+include(joinpath(RXDIR, "op_split.jl"))            # lie_trotter_solve (+ BlockDiagonal similar fix) -- host arm
 say(s) = (println(s); flush(stdout))
 
 const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
@@ -161,12 +168,15 @@ if !isempty(discrete_providers)
 end
 
 # --------------------------------------------------------------------------- #
-# 3. HOST reference arm: the native in-place Lie-Trotter step (as run_reseact.jl)
-#    on the merged interpreted RHS reading the live buffers.
+# 3. HOST reference arm: the SAME Lie-Trotter split as run_reseact.jl, driven by
+#    the REAL operator-splitting solver (LieTrotterGodunov via lie_trotter_solve)
+#    on the merged interpreted RHS reading the live buffers. Matched to the traced
+#    arm for a fair comparison: ONE Lie-Trotter step over the whole window
+#    (macro_dt = window, as the traced arm's adaptive_solve spans [t0, t1]), the
+#    same reltol/abstol, and STATIC forcing (no interior refresh).
 # --------------------------------------------------------------------------- #
 host_iip(g, bufs) = (du, u, p, t) -> (copyto!(du, g(u, p, t, bufs)); nothing)
 tgz(g, u, p, t)   = (fill!(g, 0); nothing)
-zerof!(du, u, p, t) = (fill!(du, 0); nothing)
 to_sm(ucm) = (usm = similar(ucm); for i in 1:N; usm[P.sm_of_cm[i]] = ucm[i]; end; usm)
 
 uH = nothing; hostT = (0, 0); hostC = (0, 0); host_s = NaN; host_ok = false
@@ -174,24 +184,22 @@ if HOST_ARM
     f_trans_cm! = cellmajor_rhs(host_iip(g4[1], host_bufs[1]), P.sm_of_cm)
     f_chem_cm!  = cellmajor_rhs(host_iip(g4[2], host_bufs[2]), P.sm_of_cm)
     jac_cm!, mkjp = block_fd_jac(f_chem_cm!, NS, NC)
+    fc = SciMLBase.ODEFunction(f_chem_cm!; jac = jac_cm!, jac_prototype = mkjp(), tgrad = tgz)
+    inner_algs = (OrdinaryDiffEqSSPRK.SSPRK43(),
+                  OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU))
     u0cm = u0[P.sm_of_cm]
     ts = time()
-    sT = SciMLBase.solve(SciMLBase.ODEProblem(f_trans_cm!, copy(u0cm), (T0, T_END), p),
-        OrdinaryDiffEqSSPRK.SSPRK43(); reltol = RTOL, abstol = ATOL_T, dt = DT0T,
-        callback = DiffEqCallbacks.PositiveDomain(copy(u0cm)), save_everystep = false, maxiters = 500000)
-    um = sT.u[end]
-    fc = SciMLBase.ODEFunction(f_chem_cm!; jac = jac_cm!, jac_prototype = mkjp(), tgrad = tgz)
-    sC = SciMLBase.solve(SciMLBase.SplitODEProblem(fc, zerof!, um, (T0, T_END), p),
-        OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU);
-        reltol = RTOL, abstol = ATOL_C, dt = DT0C,
-        callback = DiffEqCallbacks.PositiveDomain(copy(um)), save_everystep = false, maxiters = 500000)
+    res = lie_trotter_solve(f_trans_cm!, fc, u0cm, (T0, T_END), p, inner_algs;
+        macro_dt = SOLVE_SECS,                                # one split step, like the traced arm
+        reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL_C),   # match the traced arm
+        clamp_nonneg = true)                                  # static forcing (no refresh)
     global host_s = time() - ts
-    global uH = to_sm(sC.u[end])
-    global hostT = (Int(sT.stats.naccept), Int(sT.stats.nreject))
-    global hostC = (Int(sC.stats.naccept), Int(sC.stats.nreject))
-    global host_ok = rc_ok(sT.retcode) && rc_ok(sC.retcode)
-    say(@sprintf("HOST   window: %.2f s  transport nacc=%d nrej=%d  chem nacc=%d nrej=%d  ok=%s",
-        host_s, hostT[1], hostT[2], hostC[1], hostC[2], host_ok))
+    global uH = to_sm(res.u)
+    global hostT = (res.naT, res.nrT)
+    global hostC = (res.naC, res.nrC)
+    global host_ok = rc_ok(res.retcode)
+    say(@sprintf("HOST   window: %.2f s  transport nacc=%d nrej=%d  chem nacc=%d nrej=%d  macro=%d  ok=%s",
+        host_s, hostT[1], hostT[2], hostC[1], hostC[2], res.nmacro, host_ok))
 end
 
 # --------------------------------------------------------------------------- #
