@@ -194,7 +194,8 @@ adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
         uT, _, dtTend, naT, nrT = RxTracedIntegrator.adaptive_solve(
             fT, uR, t0R, t1R, dtTR, CTRL_T, (p=pR, bufs=bufsT); clamp_nonneg=true)
         fC = (u, t, dtc, aux) -> RxTracedIntegrator.ros23_step(
-            (uu, tt) -> gC(uu, aux.p, tt, aux.bufs), u, t, dtc, NS, NC, masks, ATOL_C, RTOL)
+            (uu, tt) -> gC(uu, aux.p, tt, aux.bufs), u, t, dtc, NS, NC, masks, ATOL_C, RTOL;
+            unrolled=true)   # traced-loop jac is a measured net loss on the small chem RHS
         uC, _, dtCend, naC, nrC = RxTracedIntegrator.adaptive_solve(
             fC, uT, t0R, t1R, dtCR, CTRL_C, (p=pR, bufs=bufsC); clamp_nonneg=true)
         return uC, naT, nrT, naC, nrC, dtTend, dtCend
@@ -209,7 +210,7 @@ end
 UR = RX.ConcreteRArray(u0); PRd = _dev(p)
 targs() = (UR, PRd, RX.ConcreteRNumber(T0), RX.ConcreteRNumber(T_END),
            RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C), dev_bufs[1], dev_bufs[2])
-say("  @compile of the full window starting (expect tens of minutes: 4x transport RHS + 16x chem RHS in the two while bodies)...")
+say("  @compile of the full window starting (2x transport RHS + 4x chem RHS traced call sites in the two while bodies; the stage/Jacobian loops are traced stablehlo.whiles)...")
 tc = time()
 xadv = RX.@compile sync=true adv(targs()...)
 comp_s = time() - tc

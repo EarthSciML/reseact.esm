@@ -22,6 +22,20 @@
 # statements guarantee each broadcast reaches rx_native_patch.jl's `elem_apply`
 # fast path (a native stablehlo op) instead of minting a per-site helper func.
 #
+# Trace-time rule: Julia trace time is LINEAR in the number of traced RHS call
+# sites per loop body, so repeated stages run as NESTED `Reactant.@trace for`
+# loops with `f` appearing once (ssprk43_step stages 1-3; fd_block_jac's
+# species loop): 2 transport + 4 chem RHS sites per window instead of 4 + 16.
+# Two rules for those nested loop bodies, both regression-covered by
+# rx_traced_smoke.jl:
+#   * `f = f` self-assignment: a closure that is only CALLED in the body is not
+#     syntactically collected by @trace, so its traced captures would surface
+#     as free region values; self-assigning forces collection (the nested-loop
+#     analogue of adaptive_solve's `aux = aux`).
+#   * track_numbers=false: the bodies reference host Ints (N, NS, NC) as
+#     static reshape dims; the default track_numbers=Number would promote them
+#     to traced scalars and break reshape.
+#
 # Layout contract: the state vector is SPECIES-MAJOR -- species (block) s of the
 # NS species occupies rows (s-1)*NC+1 : s*NC, with the SAME cell ordering inside
 # every block (the driver asserts this from var_map). Chemistry never couples
@@ -88,9 +102,62 @@ end
 # FD block Jacobian, batched over cells: perturbing species s in EVERY cell at
 # once fills column s of every cell's block in one RHS eval (NS extra evals per
 # Jacobian). Same h formula as prototypes/reseact_3d_chem/block_jac.jl.
-# `f` is u -> du at fixed (p, t); `f0b` the pre-sliced blocks of f(u);
-# `masks[s]` a HOST Float64 vector that is 1.0 on block s and 0.0 elsewhere.
-function fd_block_jac(f, u, f0b, NS::Int, NC::Int, masks)
+#
+# TRACED-LOOP version: the species loop is a `Reactant.@trace for`, so `f`
+# appears exactly ONCE in the emitted module (vs NS unrolled copies) -- Julia
+# trace time is linear in RHS call sites, so this is the main trace-time win.
+# `f` is u -> du at fixed (p, t); `f0` the full f(u) vector. The species masks
+# are rebuilt per-iteration from a traced block-id vector (blkid[i] = species
+# block of row i, derivable from the asserted species-major layout), because a
+# host masks[] vector cannot be indexed by a traced loop variable.
+# track_numbers=false: the body references host Ints (N, NS, NC) as reshape
+# dims, which must stay static -- the default track_numbers=Number would
+# promote them to traced and break reshape.
+function fd_block_jac(f, u, f0, NS::Int, NC::Int)
+    N = NS * NC
+    au = abs.(u)
+    au = max.(au, 1.0e-9)
+    hfull = sqrt(eps(Float64)) .* au
+    blkid = RX.Ops.constant(repeat(Float64.(1:NS); inner=NC))   # length N
+    cidrow = RX.Ops.constant(reshape(Float64.(1:NS), 1, NS))    # 1 x NS
+    J = RX.Ops.fill(0.0, (N, NS))                               # loop-carried
+    RX.@trace track_numbers=false for s in 1:NS
+        f = f          # closures are CALLED, not referenced, in the body; the
+        #                self-assignment forces @trace to collect `f` as a loop
+        #                variable so its traced captures become while operands
+        #                (same reason as the `aux = aux` in adaptive_solve).
+        sf = 1.0 * s
+        eqm = blkid .== sf
+        mask = eqm .* 1.0                # Float64 mask, native-multiply path
+        dus = mask .* hfull              # h for block s, 0 elsewhere
+        up = u .+ dus
+        dup = f(up)
+        num = dup .- f0
+        # per-cell h of species s: reshape (species-major => column s of the
+        # NC x NS matrix is block s), reduce the zero-padded columns away.
+        hmat = reshape(dus, NC, NS)
+        hs = sum(hmat; dims=2)           # NC x 1
+        numm = reshape(num, NC, NS)
+        colm = numm ./ hs                # every row-block divided by hs
+        col = reshape(colm, N)
+        # deposit as column s of J via a one-hot row (dynamic column index)
+        eqr = cidrow .== sf
+        srow = eqr .* 1.0                # 1 x NS one-hot
+        upd = col .* srow                # N x NS, only column s nonzero
+        J = J .+ upd
+    end
+    # static slicing back into the NS x NS blocks blocksolve consumes
+    Jb = Matrix{Any}(undef, NS, NS)
+    for si in 1:NS, r in 1:NS
+        Jb[r, si] = J[((r - 1) * NC + 1):(r * NC), si]
+    end
+    return Jb
+end
+
+# Reference implementation with the species loop unrolled on the host (NS
+# traced copies of `f`). Kept verbatim for A/B trace-time and bit-equality
+# diagnostics; select with `ros23_step(...; unrolled=true)`.
+function fd_block_jac_unrolled(f, u, f0b, NS::Int, NC::Int, masks)
     au = abs.(u)
     au = max.(au, 1.0e-9)
     hfull = sqrt(eps(Float64)) .* au
@@ -115,11 +182,17 @@ const ROS23_c32 = 6 + sqrt(2)
 # One ROS23 attempt from (u, t) with step dt. `f(u, t) -> du` (species-major).
 # Returns (unew, EEst). Mirrors the Rosenbrock23ConstantCache perform_step! with
 # mass_matrix = I and dT = 0; the three W solves are batched per-cell blocksolves.
-function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64)
+# `unrolled=true` selects the reference host-unrolled Jacobian (16 traced RHS
+# sites per step); the default traced-loop Jacobian has 4 (f0, jac loop, f1, f2).
+# `masks` is only consumed by the unrolled path; the traced path derives the
+# layout from (NS, NC) directly (species_masks has already asserted it).
+function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64;
+        unrolled::Bool=false)
     N = NS * NC
     f0 = f(u, t)
     f0b = [_blk(f0, r, NC) for r in 1:NS]
-    J = fd_block_jac(uu -> f(uu, t), u, f0b, NS, NC, masks)
+    J = unrolled ? fd_block_jac_unrolled(uu -> f(uu, t), u, f0b, NS, NC, masks) :
+        fd_block_jac(uu -> f(uu, t), u, f0, NS, NC)
     dtgamma = dt * ROS23_d
     W = Matrix{Any}(undef, NS, NS)
     for s in 1:NS, r in 1:NS
@@ -183,7 +256,57 @@ end
 # ---------------- SSPRK43 step (non-stiff transport) --------------------------
 # One SSPRK43 attempt; pure explicit stage algebra from the ConstantCache
 # perform_step! (b = (1/6,1/6,1/6,1/2), bhat via utilde as in the source).
-function ssprk43_step(f, u, t, dt, abstol::Float64, reltol::Float64)
+#
+# Stages 1-3 are the SAME affine update u <- u + (dt/2)*f(u, t + c_i*dt) with
+# c = (0, 1/2, 1), so they run as a `Reactant.@trace for` with ONE traced copy
+# of `f` in the body (c_i = (i-1)/2 computed from the traced loop index); the
+# distinct 4th stage is the second and last RHS site. 2 traced RHS sites per
+# step instead of 4. Bitwise-identical to the unrolled form: 0.0*dt == 0.0,
+# 0.5*dt == dt/2, 1.0*dt == dt exactly, and t + 0.0 == t for t >= 0.
+# `unrolled=true` selects the reference 4-site version for A/B diagnostics.
+function ssprk43_step(f, u, t, dt, abstol::Float64, reltol::Float64;
+        unrolled::Bool=false)
+    unrolled && return ssprk43_step_unrolled(f, u, t, dt, abstol, reltol)
+    N = length(u)
+    dt_2 = dt / 2
+    u3 = u .+ 0.0     # fresh tracer: loop-carried stage state must not alias u
+    RX.@trace track_numbers=false for i in 1:3
+        f = f         # force `f` (only CALLED below) to be loop-collected so
+        #               its traced captures ride as while operands -- see the
+        #               matching comment in fd_block_jac.
+        ci = 0.5 * (i - 1)
+        toff = ci * dt
+        ts = t + toff
+        k = f(u3, ts)
+        du = dt_2 .* k
+        u3 = u3 .+ du
+    end
+    a = (1.0 / 3.0) .* u
+    b = (2.0 / 3.0) .* u3
+    utilde = a .+ b
+    a = (2.0 / 3.0) .* u
+    b = (1.0 / 3.0) .* u3
+    u4 = a .+ b
+    k = f(u4, t + dt_2)
+    du = dt_2 .* k
+    unew = u4 .+ du
+    ud = utilde .- unew
+    utilde = 0.5 .* ud
+    a0 = abs.(u)
+    a1 = abs.(unew)
+    am = max.(a0, a1)
+    den = am .* reltol
+    den = den .+ abstol
+    at = utilde ./ den
+    at2 = at .* at
+    sse = sum(at2)
+    EEst = sqrt(sse / N)
+    return unew, EEst
+end
+
+# Reference implementation with all 4 stages unrolled (4 traced copies of `f`).
+# Kept verbatim for A/B trace-time and bit-equality diagnostics.
+function ssprk43_step_unrolled(f, u, t, dt, abstol::Float64, reltol::Float64)
     N = length(u)
     dt_2 = dt / 2
     k = f(u, t)
