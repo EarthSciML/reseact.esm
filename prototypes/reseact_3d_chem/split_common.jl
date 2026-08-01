@@ -17,16 +17,78 @@
 
 using EarthSciAST
 using EarthSciASTSplitter
-using EarthSciASTSplitter: split_system, stencil_vs_pointwise
+using EarthSciASTSplitter: split_system, stencil_vs_pointwise, spatially_coupled,
+                           contains_op, references
 using EarthSciIO, JSON3
 const EA = EarthSciAST
+
+# --------------------------------------------------------------------------- #
+# 0. The splitting rule: stencil_vs_pointwise, but following OBSERVEDS.
+#
+# `stencil_vs_pointwise` asks a purely SYNTACTIC question of each additive term:
+# does the term itself contain a materialized `makearray`? That is exactly right
+# for a term spelled `D(Mx, wrt: lon)`, which lowers to one in place. It is wrong
+# for a term spelled as a bare reference to an OBSERVED that is itself a stencil.
+# The term is then just a name, the rule sees no makearray, and the term lands in
+# the POINTWISE half.
+#
+# The air-mass equation is exactly that case. Written
+#     dm/dt = -(divh_fix + D(Mz, wrt: lev))
+# the splitter distributes over the `+` and sends `-D(Mz,lev)` to transport and
+# `-divh_fix` to CHEMISTRY -- so the horizontal mass divergence gets evaluated at
+# every Rosenbrock stage of the stiff solve (part 2's compile_calls went 1.7e3 ->
+# 9.7e4), and no single part's RHS is the air-mass tendency any more, which makes
+# the continuity diagnostic in tools/continuity_residual.jl silently measure half
+# an equation.
+#
+# It is not a CORRECTNESS bug -- Lie-Trotter integrates f1+f2 and the term is pure
+# forcing (Mx/My/Mz/dp all come from GEOS-FP, not from the state, so its Jacobian
+# contribution is exactly zero and the block-diagonal chemistry Jacobian stays
+# exact) -- but it is the wrong operator, and it costs.
+#
+# So: mark an observed as "stencil-valued" if its own definition contains a
+# makearray, transitively through the observeds it reads, and treat any term that
+# references one as transport. Aggregates list their array operands in `args`, so
+# the shipped `references` walk (args-only) sees the dependency edges. The result
+# reduces to `stencil_vs_pointwise` on a system whose observeds are all pointwise.
+function stencil_following_rule(flat)
+    obs = flat.observed_variables
+    # Names an expression reads, collected once per observed (the same args-only
+    # walk `references` does, inverted so the dependency scan is O(E) not O(E*V)).
+    function readnames!(acc::Set{String}, e)
+        e isa EA.VarExpr && (push!(acc, e.name); return acc)
+        e isa EA.OpExpr && for a in e.args; readnames!(acc, a); end
+        return acc
+    end
+    deps = Dict{String,Set{String}}()
+    direct = Dict{String,Bool}()
+    for (n, v) in obs
+        e = v.expression
+        direct[n] = e !== nothing && contains_op(e, "makearray")
+        deps[n] = e === nothing ? Set{String}() : readnames!(Set{String}(), e)
+    end
+    memo = Dict{String,Bool}()
+    function is_stencil(name::AbstractString)::Bool
+        haskey(memo, name) && return memo[name]
+        haskey(direct, name) || return false
+        memo[name] = false                                  # cycle guard
+        r = direct[name] || any(d -> d != name && is_stencil(d), deps[name])
+        memo[name] = r
+        return r
+    end
+    stencil_obs = Set{String}(n for n in keys(obs) if is_stencil(n))
+    return function (term, ctx)
+        (contains_op(term, "makearray") || spatially_coupled(term, ctx) ||
+         references(term, stencil_obs)) ? 1 : 2
+    end
+end
 
 # --------------------------------------------------------------------------- #
 # 1. Split the reseact document into [transport, chemistry] run docs.
 #    Replicates EarthSciAST._prepare_run_doc(preserve_refs=true) up to the
 #    transformed FlattenedSystem, then splits and re-emits each part.
 # --------------------------------------------------------------------------- #
-function prepare_split_docs(model_path; rule = stencil_vs_pointwise, nparts = 2,
+function prepare_split_docs(model_path; rule = nothing, nparts = 2,
                             preserve_refs::Bool = true,
                             metaparameters::AbstractDict = Dict{String,Int}())
     file = isempty(metaparameters) ? EA.load(model_path) :
@@ -36,7 +98,8 @@ function prepare_split_docs(model_path; rule = stencil_vs_pointwise, nparts = 2,
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)
     promoted = EA.promoted_array_names(pre, flat)         # scalar chains lifted to the grid
-    parts = split_system(flat, rule; nparts = nparts)     # [transport, chemistry]
+    r = rule === nothing ? stencil_following_rule(flat) : rule
+    parts = split_system(flat, r; nparts = nparts)        # [transport, chemistry]
     return [index_promoted_refs_by_loop!(EA.flattened_to_esm(p), promoted) for p in parts]
 end
 

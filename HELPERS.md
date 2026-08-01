@@ -104,6 +104,46 @@ long-lived process holds the old `reseact_forcing` in memory but re-reads the
 model from disk per grid, so a newly-required forcing key fails every subsequent
 build with `E_TREEWALK_UNBOUND_VARIABLE`.
 
+### Continuity / CWC gates (`tools/continuity_residual.jl`, `tools/cwc_gate.jl`)
+The two acceptance tests for the pressure fixer. Both are cheap to *read* and
+expensive to *run* (~4 min build, then a first-macro-step codegen compile), so
+they are drivers you launch and come back to, not inner-loop checks.
+
+* **`continuity_residual.jl`** evaluates the transport RHS **once** and compares
+  `dm/dt` against `dB[k]*dPSdt` cell by cell. No solver, no stepping, so whatever
+  it reports is pure discretisation. Its most useful output is not the magnitude
+  but the *shape*: the residual reported **relative to `dp`, per level**. A
+  k-independent relative residual (constant down each column to ~1e-11) means the
+  dp-weighted column correction is surviving uncancelled — a one-line bug in which
+  divergence the `m` equation reads. Anything with vertical structure, or an
+  interior/wall split, means the stencils. That discriminator is what turned a
+  vague "3e-6 1/s, worst cell around k≈50" into an exact diagnosis.
+* **`cwc_gate.jl`** synthesises a gate copy of the model — it appends the gate
+  states to `reseact.esm` and writes `_cwc_gate.esm` **as a sibling**, because the
+  relative `$ref`s only resolve from that directory — then deletes it on exit
+  (`RESEACT_KEEP_GATE=1` to keep). It runs four instruments, and the split between
+  them is the point:
+  - `qtest` — the mixing-ratio form the SuperFast species actually use. The gate
+    that matters operationally.
+  - `qg = mqg/mg` — the mass form, with the gate's own air/tracer mass pair
+    integrated from the RAW divergences, so it tests the discretisation rather
+    than the fixer.
+  - `dev_x`/`dev_y`/`dev_z` — the tracer-vs-continuity divergence difference **one
+    axis at a time**. These are what name the failing rule pair instead of just
+    reporting that something is off, and they are what the verdict gates on.
+  - `dev` — the same difference for all three axes summed. **Reported but not
+    gating.** If the per-axis states are all exactly zero then the two sums have
+    bitwise-identical addends, so any residue is the association order of the two
+    sums in the emitted code (IEEE `+` is commutative but not associative), not
+    the transport operator. It measured ~9e-15 Pa against `m ~ 1500 Pa` while
+    `mg === mqg` stayed bitwise equal throughout — a ~1 ulp RHS difference is
+    ~1e5x below `ulp(1500)`, which is exactly why a state starting at `0.0` can
+    see it and the air mass cannot.
+
+  `clamp_nonneg` is deliberately **off** here: it is a production safety net for
+  the stiff chemistry, but it is a nonlinear edit of the state vector and would
+  silently repair the identity under test.
+
 ### `EarthSciAST` — fold closed functions on literal arguments
 `datetime.year … datetime.day_of_year` are evaluated as **opaque host calls**
 (`Dates.unix2datetime`), so they cannot appear anywhere in a traced RHS. That is

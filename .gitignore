@@ -16,3 +16,9 @@ run-model-jl/*
 # EarthSciIO snapshot predating the Zarr writer surface; the env no longer
 # references it and it should not be resurrected.
 run-model-jl/deps/
+
+# tools/cwc_gate.jl synthesises its gate model as a SIBLING of reseact.esm (the
+# relative $refs into ../EarthSciModels and ../EarthSciDiscretizations only
+# resolve from that directory) and deletes it on exit. This entry keeps a
+# crashed or ^C'd run from leaving it staged.
+_cwc_gate.esm

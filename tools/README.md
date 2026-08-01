@@ -11,14 +11,31 @@ this one (same parent directory); the model refs them by relative path.
 
 ## Regenerate / re-grid the model
 
+> **The generators no longer reproduce the root `reseact.esm`. Do not overwrite it
+> with `OUT=$PWD/reseact.esm`.** They still reproduce
+> `prototypes/reseact_3d_chem/reseact_3d_chem.esm`, which is what the bit-for-bit
+> claim below refers to, but the root model has since grown a substantial amount of
+> hand-written science that lives nowhere else: Fast-JX photolysis and its solar
+> chain, Wesley dry deposition, EMEP wet deposition, the real 3-D water field, and
+> the column-local pressure fixer (`dPSdt` / `divh` / `divh_col` / `dp_col` /
+> `divh_fix`, and the diagnosed `Mz` built from them). `grep divh_fix` finds
+> nothing in the generators. Regenerating over the root model silently reverts all
+> of it — the result still loads, still runs, and still looks like ReSEACT, which
+> is exactly what makes it dangerous.
+>
+> To re-grid the root model, set the `NLON`/`NLAT`/`NLEV` **metaparameters** at load
+> instead (`prepare_split_docs(MODEL; metaparameters = ...)`, or `RESEACT_NLON` etc.
+> on the runners). The `.esm` is O(1) in cell count, so that is the supported path
+> and needs no regeneration at all.
+
 `build_full_model.py` chains the three committed generators
 (`prototypes/transport_3d/gen_t3d.py` → `reseact_3d/gen_r3d.py` →
 `reseact_3d_chem/gen_c1.py`), parameterized by horizontal grid. At 7×7×72 it reproduces
 the committed `reseact_3d_chem.esm` bit-for-bit (ref-normalized).
 
 ```bash
-# regenerate the root model (7×7×72)
-OUT=$PWD/reseact.esm NLON=7 NLAT=7 NLEV=72 python3 tools/build_full_model.py
+# regenerate the PROTOTYPE (not the root model -- see the warning above)
+OUT=/tmp/reseact_3d_chem_regen.esm NLON=7 NLAT=7 NLEV=72 python3 tools/build_full_model.py
 
 # a larger horizontal grid
 OUT=/tmp/reseact_28x14x72.esm NLON=28 NLAT=14 NLEV=72 python3 tools/build_full_model.py

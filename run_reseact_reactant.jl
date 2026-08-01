@@ -109,7 +109,12 @@ Logging.with_logger(Logging.NullLogger()) do
     # Same post-promotion gather-ification prepare_split_docs does -- see
     # index_promoted_refs_by_loop! in split_common.jl for why it is needed.
     promoted = EA.promoted_array_names(pre, flat)
-    parts = split_system(flat, stencil_vs_pointwise; nparts = 2)
+    # stencil_following_rule, NOT the shipped stencil_vs_pointwise: the air-mass
+    # equation reads `divh_fix`, an OBSERVED that is a stencil, and the syntactic
+    # rule sees only a name and would post that term to the chemistry half. See
+    # split_common.jl for the full argument -- this runner splits by hand rather
+    # than through prepare_split_docs, so it has to pass the rule itself.
+    parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
     ff = reseact_forcing(CHEMDIR)
     # NLEV<72 -> slice the 72-entry hybrid table to the truncated column.

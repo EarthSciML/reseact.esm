@@ -151,20 +151,29 @@ sink_put!(t, ucm) = sink === nothing ? nothing :
         [(to_sm(ucm), (1:P.N,))], Dict{String,Array}()))
 
 # --------------------------------------------------------------------------- #
-# CONTINUITY DIAGNOSTIC (why the long runs die).
+# CONTINUITY DIAGNOSTIC.
 #
-# The prognostic air mass m is integrated from the SAME face fluxes the tracers
-# use, so CWC holds exactly -- but those fluxes are built from GEOS-FP's
-# time-AVERAGED U/V/OMEGA while PS is INSTANTANEOUS, so the discrete identity
-#   d(dp)/dt + div(M) = 0
-# does not hold (caveat 4, Jockel et al. 2001). The accumulated violation is
-# therefore visible with NO model change at all: it is exactly the drift between
-# the integrated m and the hydrostatic thickness dp = dA[k] + dB[k]*PS(t) that m
-# is supposed to equal. Report the drift, and crucially WHERE the worst cell is:
-# an interior worst cell means a genuine continuity bias (needs a pressure
-# fixer), a worst cell on the open lateral wall means a boundary artifact
-# (needs a BC fix instead) -- and at 7x7 the domain is so small that almost every
-# cell IS a boundary cell, which is why this wants a wider domain to be readable.
+# The drift between the integrated air mass m and the hydrostatic thickness
+# dp = dA[k] + dB[k]*PS(t) that m is supposed to equal. This is the quantity the
+# pressure fixer exists to kill, and it is what long runs used to die of: the
+# face fluxes are built from GEOS-FP's time-AVERAGED A3 winds while PS is
+# INSTANTANEOUS I3, so the raw discrete identity d(dp)/dt + div(M) = 0 does not
+# hold (Jockel et al. 2001) and m wandered away from dp at ~3e-6 1/s.
+#
+# With the column-local fixer in place -- Mz diagnosed from the CORRECTED
+# horizontal divergence and the continuity equation reading the same divh_fix --
+# this should now sit at ROUNDOFF (measured 1.3e-17 1/s rms on the RHS itself;
+# see tools/continuity_residual.jl). So the numbers below are no longer a
+# characterisation of a known defect, they are a REGRESSION CHECK: anything that
+# climbs off 1e-16 means the fixer has been broken, most likely by the m equation
+# and Mz falling out of step about which divergence they use.
+#
+# Interior and wall are still reported separately. The split used to discriminate
+# a genuine continuity bias (interior, wants a pressure fixer) from a boundary
+# artifact (open lateral wall, wants a BC fix); now it mostly guards against a
+# regression that shows up only in the boundary REGIONS of the PPM stencils,
+# which the interior rms alone would hide. At 7x7 almost every cell IS a boundary
+# cell, so a wider domain makes this far more readable.
 const _PSk = "GEOSFP.GEOSFP_I3.PS"
 const _dA = Float64.(ff.const_arrays["Transport3D.dA"])
 const _dB = Float64.(ff.const_arrays["Transport3D.dB"])

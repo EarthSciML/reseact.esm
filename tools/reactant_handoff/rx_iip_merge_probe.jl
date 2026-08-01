@@ -41,7 +41,11 @@ withenv("ESS_CODEGEN_DISABLE" => "1") do
         global fiB, u0, p0
         file = EA.load(MODEL); flat = EA.flatten(file)
         flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(flat))
-        parts = split_system(flat, stencil_vs_pointwise; nparts = 2)
+        # stencil_following_rule (split_common.jl), not the shipped
+    # stencil_vs_pointwise: the air-mass equation reads `divh_fix`, an OBSERVED
+    # that is a stencil, and the syntactic rule would post that term to the
+    # chemistry half.
+    parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
         doc   = EA.flattened_to_esm(parts[1])                      # transport only
         ff = reseact_forcing(CHEMDIR)
         mc = Dict{String,Any}(String(k)=>v for (k,v) in ff.const_arrays)

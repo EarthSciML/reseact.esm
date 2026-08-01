@@ -67,7 +67,11 @@ Logging.with_logger(Logging.NullLogger()) do
     global fo, u0, p, var_map, merged_param, discrete_providers
     file = EA.load(MODEL); flat = EA.flatten(file)
     flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(flat))
-    parts = split_system(flat, stencil_vs_pointwise; nparts = 2)
+    # stencil_following_rule (split_common.jl), not the shipped
+    # stencil_vs_pointwise: the air-mass equation reads `divh_fix`, an OBSERVED
+    # that is a stencil, and the syntactic rule would post that term to the
+    # chemistry half.
+    parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [EA.flattened_to_esm(pt) for pt in parts]
     ff = reseact_forcing(CHEMDIR)
     merged_const = Dict{String,Any}(String(k)=>v for (k,v) in ff.const_arrays)
