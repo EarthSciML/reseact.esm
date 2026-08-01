@@ -22,3 +22,14 @@ run-model-jl/deps/
 # resolve from that directory) and deletes it on exit. This entry keeps a
 # crashed or ^C'd run from leaving it staged.
 _cwc_gate.esm
+
+# A frozen copy of reseact.esm, taken so a multi-hour scaling_study.jl run keeps
+# measuring ONE model while the working tree moves underneath it (the study
+# re-reads the model from disk per grid point). Same sibling-directory
+# requirement as above. Point RESEACT_MODEL at it.
+_scaling_snapshot.esm
+
+# tools/origin_identity.jl compares the working tree against an older revision of
+# the model; `git show <rev>:reseact.esm > _origin_before.esm` puts that revision
+# where its relative $refs still resolve.
+_origin_before.esm
