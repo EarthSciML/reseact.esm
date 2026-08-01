@@ -1,0 +1,220 @@
+#!/usr/bin/env julia
+# ===========================================================================
+# tools/diurnal_run.jl -- long ReSEACT run that RECORDS a time series.
+# ===========================================================================
+# `run_reseact.jl` reports the final state only, which is all a 60 s validation
+# window needs. Verifying a DIURNAL cycle needs the trajectory, so this driver
+# reuses exactly the same machinery (prepare_split_docs / build_split_run /
+# lie_trotter_solve) and samples the state after every Lie-Trotter macro step:
+# solar geometry, the domain O3 min/mean/max, and OH -- the radical that makes
+# the day/night contrast unambiguous.
+#
+# It is a DRIVER, not a second solver: the split, the forcing wiring, the
+# operator-split stepping and the block-diagonal chemistry Jacobian are the same
+# code paths run_reseact.jl uses. The only additions are the sampling loop and
+# the report.
+#
+# Full spatiotemporal output goes through EarthSciAST's STREAMING SINK surface
+# (streaming-output-sinks RFC §16) -- `build_zarr_sink` + sink_open!/write!/close!,
+# the same protocol `simulate` drives via its `sinks=` kwarg. The sink API is
+# explicitly specified to work without a solver embedded, which is what lets this
+# macro-step loop feed it directly. Axis names and CF dimension coordinates come
+# from `derive_output_meta` over the split run doc, so the store carries real
+# `lon`/`lat`/`lev` names rather than positional ones. The console table below is
+# a domain-reduced digest of the same records, for reading progress at a glance.
+#
+# NOTE the sink is state-only in its current wave (`sink_observed_names(::ZarrSink)`
+# returns nothing), so the store holds SuperFast species + Transport3D.m. The
+# j-rates are observeds and do not appear; cos_sza is recomputed here for labelling.
+#
+# Env (shared with run_reseact.jl unless noted):
+#   RESEACT_MODEL, RESEACT_LABEL, RESEACT_NLON/NLAT/NLEV, RESEACT_MACRO_DT
+#   RESEACT_T0         start time, s since 2013-01-01T00:00:00Z (default 0)
+#   RESEACT_SOLVE_SECS window length, s                        (default 75600 = 21 h)
+#   RESEACT_ZARR       gridded output store                    (default: none)
+#   RESEACT_OUT_EVERY  write one record every N macro steps    (default 1)
+#   RESEACT_CSV        also write the digest as CSV            (default: none)
+# ===========================================================================
+import Pkg
+const REPO = dirname(@__DIR__)
+Pkg.activate(get(ENV, "RESEACT_RUN_ENV", joinpath(REPO, "run-model-jl")); io = devnull)
+haskey(ENV, "ESS_KERNEL_CLASS_MERGE_DISABLE") || (ENV["ESS_KERNEL_CLASS_MERGE_DISABLE"] = "1")
+using SciMLBase, DiffEqCallbacks
+import OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
+import LinearSolve
+using LinearAlgebra, Printf, Statistics
+# EarthSciIO keeps its compressors as WEAKDEPS so a base install stays light; the
+# Zarr sink's default :diagnostic profile is Blosc-zstd, and loading Blosc is what
+# activates EarthSciIOBloscExt to supply the encode. Without it sink_flush! throws.
+using Blosc
+
+const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
+const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
+include(joinpath(CHEMDIR, "split_common.jl"))
+include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
+include(joinpath(CHEMDIR, "block_jac.jl"))
+include(joinpath(RXDIR, "op_split.jl"))
+include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize
+say(s) = (println(s); flush(stdout))
+
+const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
+const LABEL      = get(ENV, "RESEACT_LABEL", "diurnal")
+# Window defaults are the MAXIMUM the single-day GEOS-FP forcing supports, not a
+# round number. The providers' refresh anchors are I3 {0,3,..,21 h}, A3 {1.5,4.5,
+# ..,22.5 h}, A1 {0.5,1.5,..,23.5 h}, and each sample brackets TWO records inside
+# ONE file, so the usable span is [max(first anchor), min(last anchor)] =
+# [5400, 75600] = 19.5 h. Going past 75600 would need a sample whose two
+# bracketing records straddle the 20130101/20130102 file boundary, which the
+# per-sample single-file bracket cannot express.
+# At lon -95 (UTC-6.3 h) this covers local 19:10 -> 14:40 next day: evening,
+# a full night, sunrise, solar noon and afternoon -- a complete diurnal swing.
+const T0         = parse(Float64, get(ENV, "RESEACT_T0", "5400"))
+const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "70200"))
+const MACRO_DT   = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
+const CSV        = get(ENV, "RESEACT_CSV", "")
+const ZARR       = get(ENV, "RESEACT_ZARR", "")
+const OUT_EVERY  = parse(Int, get(ENV, "RESEACT_OUT_EVERY", "1"))
+const GRID_MP = Dict{String,Int}(k => parse(Int, ENV["RESEACT_$k"])
+                                 for k in ("NLON", "NLAT", "NLEV") if haskey(ENV, "RESEACT_$k"))
+const NLEV_EFF = get(GRID_MP, "NLEV", 72)
+const T_END = T0 + SOLVE_SECS
+const RTOL, ATOL, ATOL_T = 1e-4, 1e-9, 1e-6
+const LU = LinearSolve.LUFactorization()
+const PS_REF = 101325.0
+
+# The model's own solar chain, mirrored here ONLY to label the output rows with
+# the sun angle the run is actually seeing (Transport3D.cos_sza_c is an internal
+# observed, not a state, so it is not in `u`). Same constants, same formulas.
+const K_GAMMA, D2R = 0.01721420632103996, 0.017453292519943295
+function cos_sza(t, lat, lon)
+    g = K_GAMMA * (-12 / 24 + t / 86400)                       # doy0=1, hour0=0
+    dec = 0.006918 - 0.399912cos(g) + 0.070257sin(g) - 0.006758cos(2g) +
+          0.000907sin(2g) - 0.002697cos(3g) + 0.00148sin(3g)
+    eqt = 229.18 * (0.000075 + 0.001868cos(g) - 0.032077sin(g) -
+                    0.014615cos(2g) - 0.040849sin(2g))
+    w = D2R * ((t / 60 + eqt + 4lon) / 4 - 180)
+    return clamp(sin(D2R * lat) * sin(dec) + cos(D2R * lat) * cos(dec) * cos(w), -1, 1)
+end
+
+say("=== $LABEL : build ($(basename(MODEL))) grid=$(get(GRID_MP,"NLON",7))x$(get(GRID_MP,"NLAT",7))x$NLEV_EFF " *
+    "T0=$(round(Int,T0)) window=$(round(SOLVE_SECS/3600, digits=2)) h macro_dt=$(round(Int,MACRO_DT)) ===")
+docs = prepare_split_docs(MODEL; metaparameters = GRID_MP)
+ff = reseact_forcing(CHEMDIR)
+ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
+tb = time()
+run = build_split_run(docs, (T0, T_END);
+    providers = ff.providers, parameters = ff.parameters, const_arrays = ff.const_arrays)
+say(@sprintf("BUILD %.2f s  nstates=%d", time() - tb, length(run.u0)))
+
+P = cellmajor_perm(run.var_map)
+f_trans_cm! = cellmajor_rhs(run.funcs[1], P.sm_of_cm)
+f_chem_cm!  = cellmajor_rhs(run.funcs[2], P.sm_of_cm)
+jac_cm!, mkjp = block_fd_jac(f_chem_cm!, P.NS, P.NC)
+u = run.u0[P.sm_of_cm]
+foreach(d -> d.materialize!(), run.dms)
+let dA = Float64.(ff.const_arrays["Transport3D.dA"]), dB = Float64.(ff.const_arrays["Transport3D.dB"]),
+    mb = P.base_pos["Transport3D.m"]
+    for c in P.cells
+        u[(P.cell_pos[c] - 1) * P.NS + mb] = dA[c[3]] + dB[c[3]] * PS_REF
+    end
+end
+o3rng = P.base_pos["SuperFast.O3"]:P.NS:P.N
+ohrng = P.base_pos["SuperFast.OH"]:P.NS:P.N
+no2rng = P.base_pos["SuperFast.NO2"]:P.NS:P.N
+
+tgz(g, u, p, t) = (fill!(g, 0); nothing)
+fc = SciMLBase.ODEFunction(f_chem_cm!; jac = jac_cm!, jac_prototype = mkjp(), tgrad = tgz)
+inner_algs = (OrdinaryDiffEqSSPRK.SSPRK43(),
+              OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU))
+disc = Dict(String(k) => prov for (k, prov) in ff.providers if !EA.provider_is_const(prov))
+refresh_forcing = t -> begin
+    for (k, prov) in disc
+        run.merged_param[k] .= EA._provider_const_field(EA.provider_sample(prov, t), k)
+    end
+    foreach(d -> d.materialize!(), run.dms)
+end
+
+# --- gridded streaming output (EarthSciAST sink protocol; EarthSciIO Zarr v3) ---
+# The sink writes the flat state in var_map (species-major) order, but the solve
+# runs cell-major, so un-permute before every write.
+to_sm(ucm) = (usm = similar(ucm); @inbounds for i in 1:P.N; usm[P.sm_of_cm[i]] = ucm[i]; end; usm)
+sink = nothing
+if !isempty(ZARR)
+    out_times = collect(T0:(MACRO_DT * OUT_EVERY):T_END)
+    meta = EA.derive_output_meta(docs[1])
+    sink = EA.build_zarr_sink(run.var_map, ZARR; output_times = out_times, meta = meta)
+    EA.sink_open!(sink)
+    say("  gridded output -> $ZARR  ($(length(out_times)) records)")
+end
+sink_put!(t, ucm) = sink === nothing ? nothing :
+    EA.sink_write!(sink, EA.StateSnapshot(Float64(t),
+        [(to_sm(ucm), (1:P.N,))], Dict{String,Array}()))
+
+rows = NamedTuple[]
+push_row!(t, u, wall) = push!(rows, (t = t, hours = t / 3600,
+    cos_sza = cos_sza(t, 40.0, -95.0),
+    o3_min = minimum(u[o3rng]), o3_mean = mean(u[o3rng]), o3_max = maximum(u[o3rng]),
+    oh_max = maximum(u[ohrng]), no2_mean = mean(u[no2rng]),
+    m_min = minimum(u[P.base_pos["Transport3D.m"]:P.NS:P.N]), wall = wall))
+
+say("  t_hours  cos_sza     O3_min     O3_mean     O3_max      OH_max     NO2_mean   wall_s")
+push_row!(T0, u, 0.0); sink_put!(T0, u)
+r = rows[end]
+say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  %7.1f",
+    r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean, r.wall))
+
+ts = time(); nT = nC = 0; ok = true; nstep = 0
+t = T0
+while t < T_END - 1e-9
+    global nstep += 1
+    tnext = min(t + MACRO_DT, T_END)
+    res = lie_trotter_solve(f_trans_cm!, fc, u, (t, tnext), run.p, inner_algs;
+        macro_dt = tnext - t, reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL),
+        refresh = refresh_forcing, forcing_tstops = run.tstops, clamp_nonneg = true)
+    # A macro step that did not succeed must NOT be papered over by advancing t:
+    # the state comes back unchanged, so the run marches on producing a frozen
+    # trajectory that still LOOKS like a completed simulation. Report which
+    # species is responsible and stop.
+    if !(res.retcode == SciMLBase.ReturnCode.Success ||
+         res.retcode == SciMLBase.ReturnCode.Default)
+        global ok = false
+        say("  !! macro step [$t, $tnext] retcode=$(res.retcode) -- diagnosing state:")
+        for (nm, b) in sort(collect(P.base_pos), by = last)
+            v = res.u[b:P.NS:P.N]
+            say(@sprintf("     %-22s min=%- .6e max=%- .6e  nneg=%d nnan=%d",
+                nm, minimum(v), maximum(v), count(<(0), v), count(isnan, v)))
+        end
+        say("  !! stopping at t=$t (see above); partial series below")
+        break
+    end
+    global u = res.u; global nT += res.naT; global nC += res.naC
+    global t = tnext
+    push_row!(t, u, time() - ts)
+    nstep % OUT_EVERY == 0 && sink_put!(t, u)
+    r = rows[end]
+    say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  %7.1f",
+        r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean, r.wall))
+end
+solve_s = time() - ts
+if sink !== nothing
+    EA.sink_flush!(sink); EA.sink_close!(sink)
+    say("  gridded output committed: $ZARR")
+end
+
+o3m = [r.o3_mean for r in rows]
+say(@sprintf("RESULT label=%s cells=%d nstates=%d window_h=%.2f macro_dt=%.0f nmacro=%d nT=%d nC=%d solve_s=%.1f build_states=%d",
+    LABEL, P.NC, P.N, SOLVE_SECS / 3600, MACRO_DT, length(rows) - 1, nT, nC, solve_s, P.N))
+say(@sprintf("DIURNAL O3_mean: start=%.5f min=%.5f max=%.5f end=%.5f  peak-to-trough=%.5f ppb  ok=%s",
+    o3m[1], minimum(o3m), maximum(o3m), o3m[end], maximum(o3m) - minimum(o3m), ok && all(isfinite, u)))
+
+if !isempty(CSV)
+    open(CSV, "w") do io
+        println(io, "t,hours,cos_sza,o3_min,o3_mean,o3_max,oh_max,no2_mean,m_min,wall")
+        for r in rows
+            println(io, join((r.t, r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max,
+                              r.oh_max, r.no2_mean, r.m_min, r.wall), ","))
+        end
+    end
+    say("wrote $CSV")
+end
+say("DONE $LABEL")

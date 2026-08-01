@@ -36,8 +36,37 @@
 # similar-patch can attach.
 
 import OrdinaryDiffEqOperatorSplitting as OS
+import OrdinaryDiffEqCore
 
 include(joinpath(@__DIR__, "blockdiag_similar.jl"))   # the densification fix
+
+# --------------------------------------------------------------------------- #
+# UPSTREAM BUG SHIM: a REJECTED outer step crashes OrdinaryDiffEqOperatorSplitting.
+#
+# `step_footer!` (integrator.jl:635) takes the rejection branch and calls
+#   OrdinaryDiffEqCore.post_newton_controller!(integrator, integrator.alg)
+# whose 2-arg method (OrdinaryDiffEqCore controllers.jl:123) forwards through
+#   integrator.opts.controller
+# -- but this package's own `IntegratorOptions` has no `controller` field (only
+# adaptive / dtmin / dtmax / failfactor / verbose / isoutofdomain), so the call
+# dies with
+#   FieldError: type IntegratorOptions has no field `controller`
+#
+# The 3-arg method it is trying to reach IGNORES the controller entirely:
+#   post_newton_controller!(integrator, controller, alg) = (integrator.dt /= failfactor)
+# so the 2-arg indirection is pure overhead on this integrator, and skipping
+# straight to that body is exact, not an approximation.
+#
+# This is latent for a short run and fatal for a long one: nothing rejects during
+# a 60 s validation window, but a multi-hour run hits a rejected step eventually
+# and dies mid-solve (first seen at t = 3.6 h of a 19.5 h diurnal run). It is NOT
+# specific to the diurnal driver -- run_reseact.jl is exposed to the same crash.
+#
+# Type piracy, like blockdiag_similar.jl next door; durable home is upstream
+# OrdinaryDiffEqOperatorSplitting (either give IntegratorOptions a `controller`
+# field or define this method there).
+OrdinaryDiffEqCore.post_newton_controller!(integrator::OS.AnySplitIntegrator, alg) =
+    (integrator.dt = integrator.dt / integrator.opts.failfactor; nothing)
 
 module OpSplit
 import ..OS

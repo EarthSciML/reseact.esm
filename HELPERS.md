@@ -14,7 +14,7 @@ in an existing EarthSciML-org package or extension — so the drivers can shrink
 
 | Helper | Provides | Notes |
 |---|---|---|
-| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `build_split_run`, `reseact_forcing` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_vs_pointwise)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific. |
+| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `index_promoted_refs_by_loop!`, `build_split_run`, `reseact_forcing` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_vs_pointwise)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific; `index_promoted_refs_by_loop!` is the post-promotion fix-up described below. |
 | `prototypes/reseact_3d_chem/block_jac.jl` | `cellmajor_perm`, `cellmajor_rhs`, `block_fd_jac` | Species-major ↔ cell-major permutation (derived purely from state names) and the NS-color block-diagonal finite-difference Jacobian for the pointwise/chemistry part (NS+1 RHS evals per Jacobian instead of N). |
 | `prototypes/reseact_3d_chem/blockdiag_local.jl` | `BlockDiag` module → `BlockDiagonal`, `MapBroadcast` | `include`s EarthSciMLBase's `blockdiagonal.jl` + `map_algorithm.jl` **directly from a sibling checkout** to get `BlockDiagonal` without pulling the full EarthSciMLBase (ModelingToolkit/Catalyst) dependency tree. |
 | `tools/reactant_handoff/op_split.jl` | `lie_trotter_solve` — drives `OrdinaryDiffEqOperatorSplitting.LieTrotterGodunov((SSPRK43, Rosenbrock23/BD))` as a macro-step loop (positivity clamp + forcing refresh between steps). `include`s `blockdiag_similar.jl`. | The real SciML operator-splitting solver, usable only because of the fix below. |
@@ -77,6 +77,85 @@ reseact specifics. Best home is a small EarthSciML-org package, e.g.
 already produces: the ext gives you a traceable RHS, this gives you a traceable
 adaptive *solve* of it. Its block-diagonal FD Jacobian + cell layout overlap with
 `block_jac.jl` (below) — share one implementation.
+
+### Long-run drivers (`tools/diurnal_run.jl`, `tools/scaling_study.jl`)
+Two drivers added alongside the two root runners. Both reuse `prepare_split_docs`
+/ `build_split_run` / `lie_trotter_solve` — they are drivers, not second solvers.
+
+* **`diurnal_run.jl`** steps the Lie-Trotter split by macro dt and records a time
+  series. Full gridded output goes through EarthSciAST's streaming-sink protocol
+  (`derive_output_meta` → `build_zarr_sink` → `sink_open!/write!/flush!/close!`),
+  the same surface `simulate` drives via `sinks=`. Two traps: the solve is
+  CELL-major while the sink wants `var_map` (species-major) order, and EarthSciIO
+  keeps its compressors as **weakdeps** — the default `:diagnostic` profile is
+  Blosc-zstd, so `using Blosc` is required or `sink_flush!` throws. The sink is
+  state-only in its current wave, so j-rates/cos_sza cannot be written through it.
+* **`scaling_study.jl`** runs grid/window ladders, timing **build**, **first macro
+  step** and **subsequent steps** separately. That separation is the whole point:
+  the first step carries the one-time codegen compile and can be ~800x the cost of
+  the identical second step, so an undifferentiated "wall vs cells" curve measures
+  the Julia compiler rather than the model. Builds are cached by grid (a `warm`
+  column flags reuse). Minimum extent per axis is **6**, not 1 — the PPM rules
+  carve three boundary regions per end plus an interior `[4, N-3]`, so `NLEV=4`
+  fails to load with `makearray_region_inverted`.
+
+**Do not edit `reseact.esm` or `reseact_forcing` while either is running**: a
+long-lived process holds the old `reseact_forcing` in memory but re-reads the
+model from disk per grid, so a newly-required forcing key fails every subsequent
+build with `E_TREEWALK_UNBOUND_VARIABLE`.
+
+### `EarthSciAST` — fold closed functions on literal arguments
+`datetime.year … datetime.day_of_year` are evaluated as **opaque host calls**
+(`Dates.unix2datetime`), so they cannot appear anywhere in a traced RHS. That is
+not just a "don't make it depend on `t`" rule: the tree-walk evaluator lowers
+every leaf as `convert(T, node.literal)`, and under Reactant `T` is a
+`TracedRNumber`, so **even a constant timestamp fails to trace**
+(`MethodError: no method matching Float64(::Reactant.TracedRNumber{Float64})`).
+The oop lane arm says as much in a comment — *"a trace fails loudly inside the
+opaque callee"*.
+
+The fix is to fold a `fn` node whose arguments are all literals to a literal at
+build time. Closed functions are pure by spec, so this is unconditionally safe,
+and it also removes the per-cell opaque call from the native RHS. It has to fire
+before CSE assigns the argument an observed slot, so it likely wants to sit with
+a constant-scalar-observed inline pass rather than in `_compile_fn_node` alone.
+
+Until that exists, a photolysis component that decomposes a UTC timestamp
+internally (`components/gaschem/fastjx/fastjx.esm`) **cannot be mounted in a
+Reactant-traced model at all**. This repo sidesteps it by mounting the sibling
+`fastjx_interp_troposphere.esm`, which takes `cos_sza` as an input, and computing
+the solar geometry on the Transport3D side as pure arithmetic — which has the
+happy side effect that `cos_sza` can then depend on `t`, so the sun tracks the
+solve instead of being frozen. `interp.linear` / `interp.bilinear` are NOT
+affected: they already have branch-free `ifelse`-select lane forms written
+specifically to trace.
+
+### `EarthSciAST` — finish `promote_downstream_shapes` (the FastJX blocker)
+`promote_downstream_shapes` lifts a scalar 0-D physics chain fed by array sources
+into the grid shape — exactly what mounts the Fast-JX photolysis component on the
+slice (its `lat`/`lon`/`T`/`P` arrive `[lon,lat,lev]`, so every j-rate becomes
+`[lon,lat,lev]`). It rewrites each promoted variable's OWN equation into an
+`arrayop` with indexed leaves, but leaves its **consumers** alone; it only hands
+back the promoted-name set for the caller to finish with `index_promoted_refs!`.
+
+For reseact the consumers are the pointwise-lifted species ODEs, which were
+array-ified earlier inside `flatten`'s pointwise lift — before the promotion ran,
+so `FastJX.j_NO2` was still scalar there and survives as a **bare** name inside a
+per-cell `aggregate` body. The build then dies with
+`E_TREEWALK_UNBOUND_VARIABLE: FastJX.j_NO2`.
+
+`index_promoted_refs_by_loop!` (in `split_common.jl`) closes it, driving
+`index_promoted_refs!` per equation with that equation's own `output_idx` —
+necessary because the two consumer families use different loop names (the lift's
+`["i","j","k"]` vs a promoted definition's `["_p0","_p1","_p2"]`) and
+`index_promoted_refs!` takes only one `spatial_loops` list.
+
+**This belongs upstream**, in `promote_downstream_shapes` itself: it already knows
+the promoted set and can read each consumer's loop names off its own `output_idx`.
+Note `EarthSciAST.simulate` has the identical hole today (`simulate.jl` calls
+`promote_downstream_shapes` and never calls `index_promoted_refs!`), so **any**
+model that mounts a 0-D chain onto a pointwise-lifted mechanism hits this through
+the canonical runner too — this is not a split-specific quirk.
 
 ### `EarthSciASTSplitter.jl` — the split build + block-diagonal driver machinery
 The splitter already owns `split_system`; the glue that turns split parts into a

@@ -2,7 +2,7 @@
   "esm": "0.8.0",
   "metadata": {
     "name": "ReSEACT3DChem",
-    "description": "ReSEACT 3-D transport on a 7x7x7 NATIVE slice of the GEOS-FP 4x5 grid centred over the central US, driven by real GEOS-FP meteorology. NO REGRIDDING: the local grid IS the native grid (lon cells 15..21 -> centres -110..-80; lat points 30..36 -> 26..50; levels 1..7, k=1 = surface), so the whole conservative-overlap chain collapses to an index shift.\n\nTransport is the monotone flux-form PPM stack imported BY REFERENCE from EarthSciDiscretizations: regional open-wall inflow BCs on lon/lat, and the HYBRID sigma-pressure massform vertical (dp = dA[k] + dB[k]*PS(i,j,t)) on lev. The horizontal and vertical rule stack is byte-identical to the verified prototypes/transport_3d/transport_3d.esm; only the FORCING differs — the analytic test winds and constant PS are replaced by GEOS-FP U/V/OMEGA/PS, each supplied by an EarthSciIO discrete_provider returning the TWO records bracketing the solver time and blended continuously in time (records_per_sample=2 + w_time, the era5 pattern).\n\nGEOS-FP's collections are not co-phased, so three independent weights are used: w_I3 (PS, 3-hourly instantaneous at 00:00Z), w_A3 (U/V/OMEGA, 3-hourly means at 01:30Z) and w_A1 (PBLH, hourly means at 00:30Z).\n\nFace fluxes follow the metric the ESD divergence stencils imply on the unit sphere: Mx = dp_face*U_face/a and My = dp_face*V_face/a (Pa/s, matching m in Pa), with the A-grid GEOS-FP winds averaged to faces. Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD; Mz is +ve UPWARD at each cell's LOWER edge).\n\nCAVEATS. (1) PS is read in hPa and scaled by 100 — the loader declares Pa but EarthSciIO returns raw file values. (2) The lev no-flux BC is baked into the stencils (they never read Mz[1] or Mz[NLEV+1]), so the 7-level slab is CLOSED at its ~906 hPa top even though real air flows through it — a truncated-column artifact, negligible over the 1 s first-light window but not for long runs. (3) The two end lat rows are half-width (lat_edge clamps them) while native lat cells are a full 4 deg. (4) Using OMEGA directly means m drifts from dp: the mass fluxes are not the ones that reproduce the observed surface-pressure tendency (Jockel et al. 2001). CWC still holds EXACTLY — both continuity and tracer use the same fluxes — which is what the q == 1 gate tests.",
+    "description": "ReSEACT 3-D transport on a 7x7x7 NATIVE slice of the GEOS-FP 4x5 grid centred over the central US, driven by real GEOS-FP meteorology. NO REGRIDDING: the local grid IS the native grid (lon cells 15..21 -> centres -110..-80; lat points 30..36 -> 26..50; levels 1..7, k=1 = surface), so the whole conservative-overlap chain collapses to an index shift.\n\nTransport is the monotone flux-form PPM stack imported BY REFERENCE from EarthSciDiscretizations: regional open-wall inflow BCs on lon/lat, and the HYBRID sigma-pressure massform vertical (dp = dA[k] + dB[k]*PS(i,j,t)) on lev. The horizontal and vertical rule stack is byte-identical to the verified prototypes/transport_3d/transport_3d.esm; only the FORCING differs — the analytic test winds and constant PS are replaced by GEOS-FP U/V/OMEGA/PS, each supplied by an EarthSciIO discrete_provider returning the TWO records bracketing the solver time and blended continuously in time (records_per_sample=2 + w_time, the era5 pattern).\n\nGEOS-FP's collections are not co-phased, so three independent weights are used: w_I3 (PS, 3-hourly instantaneous at 00:00Z), w_A3 (U/V/OMEGA, 3-hourly means at 01:30Z) and w_A1 (PBLH, hourly means at 00:30Z).\n\nFace fluxes follow the metric the ESD divergence stencils imply on the unit sphere: Mx = dp_face*U_face/a and My = dp_face*V_face/a (Pa/s, matching m in Pa), with the A-grid GEOS-FP winds averaged to faces. Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD; Mz is +ve UPWARD at each cell's LOWER edge).\n\nCHEMISTRY + PHOTOLYSIS. The SuperFast gas-phase mechanism (EarthSciModels components/gaschem/superfast.esm) is lifted onto the slice by operator_compose with pointwise lifting, and its six photolysis rates come from the Fast-JX component (components/gaschem/fastjx/fastjx_interp_troposphere.esm) rather than being fixed numbers.\n\nWHICH Fast-JX, and why. The fastjx/ directory holds two variants. fastjx.esm computes the solar position itself from (lat, lon, t_utc) and then scales each of its 18 actinic-flux bands as max(0, cos_sza * const_i) — no pressure dependence at all. fastjx_interp_troposphere.esm instead takes cos_sza as an INPUT and interpolates the flux bilinearly on a real (cos_sza, P) table. The second is mounted here for two independent reasons. (a) Physics: the bilinear table gives the flux genuine vertical structure through P, which the linear-in-cos_sza form cannot. (b) Tractability: fastjx.esm's solar block runs datetime.day_of_year / datetime.hour / minute / second on its t_utc, and EarthSciAST evaluates the datetime.* family as OPAQUE host calls (Dates.unix2datetime). Those cannot take the solver time t, and under Reactant they cannot take even a literal — the tree-walk evaluator lowers every leaf as convert(T, ...), and T is a TracedRNumber, so the trace dies inside the callee. Taking cos_sza as an input moves the solar geometry to this side, where it is pure arithmetic.\n\nSo Transport3D grows a small solar chain: doy0 / hour0 / min0 / sec0 decompose the CALENDAR once at the model's t=0 epoch (2013-01-01T00:00:00Z) as plain literals, and gamma_s -> decl_s -> eqtime_s -> tstmin_s -> cos_sza_c advance it with the NOAA Spencer-Fourier formulas copied term for term from fastjx.esm, with the elapsed time entering as t/86400 (fractional year) and t/60 (true solar time). The sun therefore MOVES with the solve instead of being frozen at the window start, and the result agrees bit for bit with the upstream form at whole hours past the epoch (between them it is smoother — upstream truncates `hour` to an integer).\n\nFast-JX has no ODEs, so it is NOT operator_composed; it is lifted purely by SHAPE. Four param_to_var edges hand it grid-shaped inputs — cos_sza_c, Tc and Pc (the same GEOS-FP temperature and hybrid mid-layer pressure SuperFast reads), plus the scalar water H2Oc — and promote_downstream_shapes then carries [lon,lat,lev] through the whole flux -> cross-section -> j-rate chain. Six more edges map j_H2O2 / j_H2COa / j_H2COb / j_CH3OOH / j_NO2 / j_o32OH onto SuperFast's jH2O2 / jH2COa / jH2COb / jCH3OOH / jNO2 / jO32OH (the wiring of the EarthSciModels coupling library couplings/fastjx_superfast.esm, spelled out inline — see the first of those edges for why). The splitter's stencil_vs_pointwise rule puts the entire photolysis chain in the POINTWISE half, alongside the chemistry it drives.\n\nCAVEATS. (1) PS is read in hPa and scaled by 100 — the loader declares Pa but EarthSciIO returns raw file values. (2) The lev no-flux BC is baked into the stencils (they never read Mz[1] or Mz[NLEV+1]), so the 7-level slab is CLOSED at its ~906 hPa top even though real air flows through it — a truncated-column artifact, negligible over the 1 s first-light window but not for long runs. (3) The two end lat rows are half-width (lat_edge clamps them) while native lat cells are a full 4 deg. (4) Using OMEGA directly means m drifts from dp: the mass fluxes are not the ones that reproduce the observed surface-pressure tendency (Jockel et al. 2001). CWC still holds EXACTLY — both continuity and tracer use the same fluxes — which is what the q == 1 gate tests. (5) FastJX.H2O is the REAL 3-D field (Transport3D.Qc, from GEOS-FP I3 specific humidity QV). It started life as a single tropospheric scalar and that turned out to be fatal, not cosmetic: the O(1D)+H2O -> 2OH branching depends on the H2O MIXING RATIO alone, so a constant 1.84% overstates the OH yield ~3,320x above 12 km and drove a HOx runaway that killed the solver 20 simulated minutes into a dawn run at NLEV=72. NOTE the remaining inconsistency: SuperFast's own H2O is still a constant 1.839e7 ppb reservoir, so the mechanism and the photolysis now disagree about humidity aloft. Coupling Transport3D.Qc -> SuperFast.H2O would close that, but it changes the MECHANISM's water, not just a photolysis input. (6) Fast-JX here is the TROPOSPHERIC table. Its (cos_sza, P) flux lookup already has a CLIMATOLOGICAL clear-sky overhead-ozone column baked in — that is exactly what makes it usable at the surface, and why its j_O31D at overhead sun (3.4e-5 1/s, the textbook value) is ~206x smaller than the sibling fastjx.esm's unattenuated max(0, cos_sza*const_i) form (6.9e-3 1/s, a top-of-atmosphere number). What is NOT modelled is any VARIATION about that climatology: no prognostic O3 column, no cloud, no aerosol, no surface albedo. The P axis spans 1000..100000 Pa, so the surface layer at ~101325 Pa clamps to the last column (a 1.3% extrapolation declined); every level above is interpolated. (7) The upstream fastjx_interp_troposphere.esm carried a trivial `NO2` state with D(NO2) = -j_NO2*NO2 purely as an \"ODE skeleton\" for its example plots. That state is incompatible with mounting the component on a grid — once cos_sza/T/P arrive per cell every observed is promoted to [lon,lat,lev], leaving a SCALAR state with an array-valued RHS — so it was removed upstream, making the component stateless like its sibling fastjx.esm. Its three inline tests assert only J-rates and F_i at t=0 and are unaffected. (8) The tables' ABSOLUTE calibration is inherited, not audited here: at overhead sun they give j_NO2 = 2.1e-3 1/s, where the commonly cited clear-sky noon value is nearer 8e-3 1/s (the sibling fastjx.esm gives 3.9e-3). j_O31D, by contrast, lands on the textbook value. Both components come from the same GasChem.jl migration, so a low j_NO2 normalisation is an UPSTREAM question, not an artifact of this model's wiring — flagged because photolysis of NO2 sets the NOx-O3 photostationary state and therefore most of the O3 response seen here.",
     "license": "MIT",
     "tags": [
       "esd:problem",
@@ -15,58 +15,78 @@
       "bc:inflow"
     ]
   },
+  "metaparameters": {
+    "NLON": {
+      "type": "integer",
+      "default": 7,
+      "description": "Zonal cell count of the native GEOS-FP 4x5 slice (1..57: east halo native 14+NLON+1 <= 72). Bound at load; folds the transport template dims."
+    },
+    "NLAT": {
+      "type": "integer",
+      "default": 7,
+      "description": "Meridional cell count of the slice (1..17: top lat point native 29+NLAT <= 46). Drives the lat-edge clamp min(gje,NLAT)."
+    },
+    "NLEV": {
+      "type": "integer",
+      "default": 72,
+      "description": "Vertical level count (1..72: hybrid-coef table length). Drives the lev-edge clamp min(gke,NLEV); a value <72 is a truncated column (dA/dB sliced by the host)."
+    }
+  },
   "models": {
     "GEOSFP": {
       "ref": "../EarthSciModels/components/earthsci_data/geosfp.esm"
+    },
+    "FastJX": {
+      "ref": "../EarthSciModels/components/gaschem/fastjx/fastjx_interp_troposphere.esm"
     },
     "Transport3D": {
       "expression_template_imports": [
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lon_open_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         },
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lat_open_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         },
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lon_mono_inflow_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         },
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lat_mono_inflow_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         },
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/ppm_flux_D_lev_mono_hybrid_noflux_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         },
         {
           "ref": "../EarthSciDiscretizations/grids/latlon3d/rules/face_flux_divergence_lev_massform_noflux_bc.esm",
           "bindings": {
-            "NLON": 7,
-            "NLAT": 7,
-            "NLEV": 72
+            "NLON": "NLON",
+            "NLAT": "NLAT",
+            "NLEV": "NLEV"
           }
         }
       ],
@@ -762,7 +782,7 @@
                                                           "op": "min",
                                                           "args": [
                                                             "gje",
-                                                            7
+                                                            "NLAT"
                                                           ]
                                                         }
                                                       ]
@@ -795,7 +815,7 @@
                                                           "op": "min",
                                                           "args": [
                                                             "gje",
-                                                            7
+                                                            "NLAT"
                                                           ]
                                                         }
                                                       ]
@@ -936,7 +956,7 @@
                                               "op": "min",
                                               "args": [
                                                 "gje",
-                                                7
+                                                "NLAT"
                                               ]
                                             }
                                           ]
@@ -970,7 +990,7 @@
                                               "op": "min",
                                               "args": [
                                                 "gje",
-                                                7
+                                                "NLAT"
                                               ]
                                             }
                                           ]
@@ -1334,7 +1354,7 @@
                                       "op": "min",
                                       "args": [
                                         "gke",
-                                        72
+                                        "NLEV"
                                       ]
                                     },
                                     {
@@ -1368,7 +1388,7 @@
                                       "op": "min",
                                       "args": [
                                         "gke",
-                                        72
+                                        "NLEV"
                                       ]
                                     },
                                     {
@@ -1809,6 +1829,1903 @@
                             }
                           ]
                         }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "latp": {
+          "type": "observed",
+          "units": "deg",
+          "shape": [
+            "lat"
+          ],
+          "description": "Latitude of each lat POINT, lat_j = lat0_deg + (j-1)*dlat_deg, from the latlon grid's own lat_coord template (the same producer lat_edge folds from). Pure geometry, no forcing. Feeds latc.",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lat_coord",
+            "bindings": {}
+          }
+        },
+        "lonp": {
+          "type": "observed",
+          "units": "deg",
+          "shape": [
+            "lon"
+          ],
+          "description": "Longitude of each lon cell CENTRE, lon_i = lon0_deg + (i-1/2)*dlon_deg, from the latlon grid's own lon_coord template (lon0_deg is the west EDGE, hence the half-cell shift). Feeds lonc.",
+          "expression": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lon_coord",
+            "bindings": {}
+          }
+        },
+        "doy0": {
+          "type": "observed",
+          "units": "1",
+          "description": "Day of year (1..366) of the model's t=0 epoch. The model's time base: solver time t is seconds since 2013-01-01T00:00:00Z (unix 1356998400), the GEOS-FP day the meteorology is read from — so the runners' T0 = 64800 is 18:00Z that day. Retarget the run to another date by editing doy0 / hour0 / min0 / sec0 together with the GEOS-FP URL in prototypes/reseact_3d_chem/split_common.jl `reseact_forcing`.",
+          "expression": 1.0
+        },
+        "hour0": {
+          "type": "observed",
+          "units": "1",
+          "description": "UTC hour of the model's t=0 epoch. See doy0.",
+          "expression": 0.0
+        },
+        "min0": {
+          "type": "observed",
+          "units": "1",
+          "description": "UTC minute of the model's t=0 epoch. See doy0.",
+          "expression": 0.0
+        },
+        "sec0": {
+          "type": "observed",
+          "units": "1",
+          "description": "UTC second of the model's t=0 epoch. See doy0.",
+          "expression": 0.0
+        },
+        "gamma_s": {
+          "type": "observed",
+          "units": "rad",
+          "description": "NOAA fractional-year angle gamma = 0.01721420632103996 * ((doy0-1) + (hour0-12)/24 + t/86400).\n\nThis is fastjx.esm's `gamma` with ONE change: the elapsed-time term t/86400 replaces the calendar decomposition of a UTC timestamp. That change is what lets the sun MOVE with the solve. The upstream form calls datetime.day_of_year / datetime.hour on t_utc, which EarthSciAST evaluates as opaque host calls (Dates.unix2datetime) — they cannot take the solver's t, and under Reactant they cannot even take a literal, because the tree-walk evaluator lowers every leaf as convert(T, ...) and T is a TracedRNumber. Decomposing the calendar ONCE at the epoch (doy0/hour0/min0/sec0 above, plain literals) and advancing it with arithmetic is exact, traceable, and continuous.\n\nAgrees with the upstream form to the last bit whenever t is a whole number of hours past the epoch; between hours it is strictly BETTER, because upstream's `hour` is an integer truncation that steps gamma once an hour (a ~7e-4 rad phase error) while this is smooth.",
+          "expression": {
+            "op": "*",
+            "args": [
+              0.01721420632103996,
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      "doy0",
+                      1.0
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "hour0",
+                          12.0
+                        ]
+                      },
+                      24.0
+                    ]
+                  },
+                  {
+                    "op": "/",
+                    "args": [
+                      "t",
+                      86400.0
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "decl_s": {
+          "type": "observed",
+          "units": "rad",
+          "description": "Solar declination (rad) — Spencer (1971) 6-term Fourier series in gamma_s. Term for term identical to fastjx.esm `solar_declination`.",
+          "expression": {
+            "op": "+",
+            "args": [
+              0.006918,
+              {
+                "op": "*",
+                "args": [
+                  -0.399912,
+                  {
+                    "op": "cos",
+                    "args": [
+                      "gamma_s"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  0.070257,
+                  {
+                    "op": "sin",
+                    "args": [
+                      "gamma_s"
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  -0.006758,
+                  {
+                    "op": "cos",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          2.0,
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  0.000907,
+                  {
+                    "op": "sin",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          2.0,
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  -0.002697,
+                  {
+                    "op": "cos",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          3.0,
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  0.00148,
+                  {
+                    "op": "sin",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          3.0,
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "eqtime_s": {
+          "type": "observed",
+          "units": "1",
+          "description": "Equation of time (minutes): 229.18*(0.000075 + 0.001868 cos g - 0.032077 sin g - 0.014615 cos 2g - 0.040849 sin 2g). Identical to fastjx.esm `equation_of_time`.",
+          "expression": {
+            "op": "*",
+            "args": [
+              229.18,
+              {
+                "op": "+",
+                "args": [
+                  7.5e-05,
+                  {
+                    "op": "*",
+                    "args": [
+                      0.001868,
+                      {
+                        "op": "cos",
+                        "args": [
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      -0.032077,
+                      {
+                        "op": "sin",
+                        "args": [
+                          "gamma_s"
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      -0.014615,
+                      {
+                        "op": "cos",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              2.0,
+                              "gamma_s"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "op": "*",
+                    "args": [
+                      -0.040849,
+                      {
+                        "op": "sin",
+                        "args": [
+                          {
+                            "op": "*",
+                            "args": [
+                              2.0,
+                              "gamma_s"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "tstmin_s": {
+          "type": "observed",
+          "units": "1",
+          "description": "True solar time at the PRIME MERIDIAN, in minutes since midnight: hour0*60 + min0 + sec0/60 + t/60 + eqtime_s. The per-cell 4*lon term (4 min per degree east) is added inside cos_sza_c, so this stays scalar and only the cheap longitude offset is done per cell.",
+          "expression": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "hour0",
+                  60.0
+                ]
+              },
+              "min0",
+              {
+                "op": "/",
+                "args": [
+                  "sec0",
+                  60.0
+                ]
+              },
+              {
+                "op": "/",
+                "args": [
+                  "t",
+                  60.0
+                ]
+              },
+              "eqtime_s"
+            ]
+          }
+        },
+        "cos_sza_c": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Cosine of the solar zenith angle per cell: clamp(sin(lat)sin(decl) + cos(lat)cos(decl)cos(w), -1, 1), with hour angle w = (pi/180)*((tstmin_s + 4*lon)/4 - 180). Coupled into FastJX.cos_sza — the single solar input of the interpolated Fast-JX component, which (unlike fastjx.esm) does NOT compute the solar position itself.\n\nShaped [lon,lat,lev] even though it is invariant in lev: every FastJX input (cos_sza, T, P) then carries the SAME axes, so the shape promotion that lifts the 0-D photolysis chain onto the grid never has to align differently-shaped operands by name. The duplicated column costs one extra observed and nothing at all in the j-rates, which are recomputed per cell regardless.\n\nDepends on t, so photolysis follows the sun ACROSS the solve rather than being frozen at the window start — and it is pure arithmetic (sin/cos/min/max), so it traces under Reactant.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "latp",
+              "lonp"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "min",
+              "args": [
+                1.0,
+                {
+                  "op": "max",
+                  "args": [
+                    -1.0,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "sin",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    0.017453292519943295,
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "latp",
+                                        "gj"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "sin",
+                              "args": [
+                                "decl_s"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "cos",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    0.017453292519943295,
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "latp",
+                                        "gj"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "cos",
+                              "args": [
+                                "decl_s"
+                              ]
+                            },
+                            {
+                              "op": "cos",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    0.017453292519943295,
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        {
+                                          "op": "/",
+                                          "args": [
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "tstmin_s",
+                                                {
+                                                  "op": "*",
+                                                  "args": [
+                                                    4.0,
+                                                    {
+                                                      "op": "index",
+                                                      "args": [
+                                                        "lonp",
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            4.0
+                                          ]
+                                        },
+                                        180.0
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "F_RH": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3dyn relative humidity w.r.t. liquid water (dimensionless 0-1), two bracketing records, NATIVE [time,lev,lat,lon]. Coupled from GEOSFP.GEOSFP_A3dyn.RH. A3dyn cadence, so it blends with w_A3 (the 3-hourly MEANS at 01:30Z), NOT w_I3."
+        },
+        "H2Oc": {
+          "type": "observed",
+          "units": "ppb",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Water vapour volume mixing ratio (ppb), computed EXACTLY as the reference implementation does. GasChem.jl's `couple2(SuperFastCoupler, GEOSFPCoupler)` and `couple2(FastJXCoupler, GEOSFPCoupler)` (ext/EarthSciDataExt.jl) both set H2O via\n    water_concentration_ppb(RH, p, T):\n      Tc   = T - 273.15\n      es   = 6.112 * exp(17.62*Tc/(Tc+243.12)) * 100   [hPa -> Pa]\n      e    = RH * es\n      ppb  = (e/p) * 1e9\nwith RH = GEOSFP A3dyn RH, p = GEOSFP P and T = GEOSFP I3 T -- here Pc and Tc respectively. 611.2 below is the 6.112 hPa coefficient already in Pa.\n\nDrives BOTH FastJX.H2O (the O(1D)+H2O branching behind j_o32OH) and SuperFast.H2O (the H2O+NO2 reaction and the HO2+HO2 water enhancement), exactly as the reference couples both. A constant tropospheric value here is not merely inaccurate, it is unstable: the O(1D)->2OH branching is a function of the H2O MIXING RATIO alone, so a fixed 1.84% overstates the OH yield ~3,300x above 12 km and drove a HOx runaway that killed the solver 20 simulated minutes into a dawn run at NLEV=72.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_RH",
+              "Tc",
+              "Pc"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                1000000000.0,
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    1.0,
+                                    "w_A3"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_RH",
+                                    1,
+                                    "gk",
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "w_A3",
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_RH",
+                                    2,
+                                    "gk",
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            611.2,
+                            {
+                              "op": "exp",
+                              "args": [
+                                {
+                                  "op": "/",
+                                  "args": [
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        17.62,
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "Tc",
+                                                "gi",
+                                                "gj",
+                                                "gk"
+                                              ]
+                                            },
+                                            273.15
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "Tc",
+                                                "gi",
+                                                "gj",
+                                                "gk"
+                                              ]
+                                            },
+                                            273.15
+                                          ]
+                                        },
+                                        243.12
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Pc",
+                        "gi",
+                        "gj",
+                        "gk"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "F_TS": {
+          "type": "parameter",
+          "units": "K",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 surface skin temperature TS, two bracketing records, NATIVE [time,lat,lon]. A1 cadence -> blends with w_A1."
+        },
+        "F_Z0M": {
+          "type": "parameter",
+          "units": "m",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 roughness length Z0M, two bracketing records, NATIVE [time,lat,lon]. A1 cadence -> blends with w_A1."
+        },
+        "F_USTAR": {
+          "type": "parameter",
+          "units": "m/s",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 friction velocity USTAR, two bracketing records, NATIVE [time,lat,lon]. A1 cadence -> blends with w_A1."
+        },
+        "F_SWGDN": {
+          "type": "parameter",
+          "units": "W/m^2",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 downward shortwave SWGDN, two bracketing records, NATIVE [time,lat,lon]. A1 cadence -> blends with w_A1."
+        },
+        "F_HFLUX": {
+          "type": "parameter",
+          "units": "W/m^2",
+          "shape": [
+            "gf_t",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A1 sensible heat flux HFLUX (+ve upward), two bracketing records, NATIVE [time,lat,lon]. A1 cadence -> blends with w_A1."
+        },
+        "F_CLOUD": {
+          "type": "parameter",
+          "units": "1",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3cld cloud fraction CLOUD, two bracketing records, NATIVE [time,lev,lat,lon]. 3-hourly mean cadence -> blends with w_A3."
+        },
+        "F_PFLCU": {
+          "type": "parameter",
+          "units": "kg/m^2/s",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3mstE convective rain flux PFLCU, two bracketing records, NATIVE [time,lev,lat,lon]. 3-hourly mean cadence -> blends with w_A3."
+        },
+        "F_PFLLSAN": {
+          "type": "parameter",
+          "units": "kg/m^2/s",
+          "shape": [
+            "gf_t",
+            "gf_lev",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3mstE large-scale+anvil rain flux PFLLSAN, two bracketing records, NATIVE [time,lev,lat,lon]. 3-hourly mean cadence -> blends with w_A3."
+        },
+        "TSc": {
+          "type": "observed",
+          "units": "K",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A1 surface skin temperature on the local grid, broadcast down the column (it is a SURFACE field; only lev=1 uses it, since Wesley gates every k_X on ifelse(lev==1,1,0)). Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_TS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_TS",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_TS",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Z0Mc": {
+          "type": "observed",
+          "units": "m",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A1 momentum roughness length on the local grid. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_Z0M"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_Z0M",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_Z0M",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "USTARc": {
+          "type": "observed",
+          "units": "m/s",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A1 friction velocity on the local grid. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_USTAR"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_USTAR",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_USTAR",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "SWGDNc": {
+          "type": "observed",
+          "units": "W/m^2",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A1 downward shortwave at the surface; Wesley's stomatal term G. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_SWGDN"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_SWGDN",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_SWGDN",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "HFLUXc": {
+          "type": "observed",
+          "units": "W/m^2",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A1 sensible heat flux. Feeds the Monin-Obukhov length. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_HFLUX"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_HFLUX",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_HFLUX",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "levc": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "The vertical index k of each cell, as a field. Both deposition components take `lev` and gate on it: Wesley multiplies every k_X by ifelse(lev==1,1,0) so dry deposition acts ONLY in the surface layer, and WetDeposition interpolates its layer thickness Dz on lev.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                1.0,
+                "gk"
+              ]
+            }
+          }
+        },
+        "rhoA": {
+          "type": "observed",
+          "units": "kg/m^3",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Air density rho = P/(R*T)*MW_air with MW_air=0.029 kg/mol, R=8.31446261815324 m^3*Pa/mol/K. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "Pc",
+              "Tc"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "Pc",
+                        "gi",
+                        "gj",
+                        "gk"
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "Tc",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        },
+                        8.31446261815324
+                      ]
+                    }
+                  ]
+                },
+                0.029
+              ]
+            }
+          }
+        },
+        "delP1": {
+          "type": "observed",
+          "units": "Pa",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "First-level pressure thickness, the reference's `first_level_pressure_thickness(PS) = -0.04804826*P_unit + PS*0.015048` (a 2-term fit in Ap/Bp). Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "PS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                -0.04804826,
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "PS",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    0.015048
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Zagl": {
+          "type": "observed",
+          "units": "m",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Height above ground level, Z_agl = (Rd*Tv/g)*ln(PS/Pmid) with Rd=287.0 J/kg/K, g=9.81, and Pmid the layer-MIDPOINT pressure. NOTE: the shared EarthSciData GEOS-FP loader deliberately OMITS Z_agl because it needs Ap/Bp evaluated at the fractional level lev+0.5, which the ESM expression language cannot express (documented gaps gt-p3ep / gt-6ohw). reseact can compute it anyway: Pc IS that half-level pressure, 0.5*(Ap[k]+Ap[k+1]) + 0.5*(Bp[k]+Bp[k+1])*PS. Virtual temperature uses Tv = T*(1 + 0.608*q) with q ~ 0.622*VMR, i.e. Tv = Tc*(1 + 3.78e-10*H2Oc[ppb]).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "Tc",
+              "PS",
+              "Pc",
+              "H2Oc"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        287.0,
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "Tc",
+                                "gi",
+                                "gj",
+                                "gk"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                1.0,
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    3.78e-10,
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "H2Oc",
+                                        "gi",
+                                        "gj",
+                                        "gk"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    9.81
+                  ]
+                },
+                {
+                  "op": "log",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "PS",
+                            "gi",
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "Pc",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "Lmo": {
+          "type": "observed",
+          "units": "m",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Monin-Obukhov length L = -rho_air*Cp*Ts*u_star^3/(vK*g*HFLUX) with Cp=1000 W*s/kg/K, vK=0.4, g=9.81. Wesley's stability input. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "rhoA",
+              "TSc",
+              "USTARc",
+              "HFLUXc"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "neg",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "rhoA",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        },
+                        1000.0,
+                        {
+                          "op": "index",
+                          "args": [
+                            "TSc",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        },
+                        {
+                          "op": "^",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "USTARc",
+                                "gi",
+                                "gj",
+                                "gk"
+                              ]
+                            },
+                            3.0
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.4,
+                        9.81,
+                        {
+                          "op": "index",
+                          "args": [
+                            "HFLUXc",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "cloudFracc": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "GEOS-FP A3cld 3-D cloud fraction on the local grid. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_CLOUD"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A3"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_CLOUD",
+                        1,
+                        "gk",
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A3",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_CLOUD",
+                        2,
+                        "gk",
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "qrainc": {
+          "type": "observed",
+          "units": "1",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Rain mass mixing ratio from the EMEP inversion the reference uses: qrain = (PFLCU + PFLLSAN)/Vdr/rho_air with droplet velocity Vdr = 5 m/s. Constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_PFLCU",
+              "F_PFLLSAN",
+              "rhoA"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                1.0,
+                                "w_A3"
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_PFLCU",
+                                1,
+                                "gk",
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    29,
+                                    "gj"
+                                  ]
+                                },
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    14,
+                                    "gi"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            "w_A3",
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_PFLCU",
+                                2,
+                                "gk",
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    29,
+                                    "gj"
+                                  ]
+                                },
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    14,
+                                    "gi"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                1.0,
+                                "w_A3"
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_PFLLSAN",
+                                1,
+                                "gk",
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    29,
+                                    "gj"
+                                  ]
+                                },
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    14,
+                                    "gi"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "*",
+                          "args": [
+                            "w_A3",
+                            {
+                              "op": "index",
+                              "args": [
+                                "F_PFLLSAN",
+                                2,
+                                "gk",
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    29,
+                                    "gj"
+                                  ]
+                                },
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    14,
+                                    "gi"
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    5.0,
+                    {
+                      "op": "index",
+                      "args": [
+                        "rhoA",
+                        "gi",
+                        "gj",
+                        "gk"
                       ]
                     }
                   ]
@@ -4480,6 +6397,15 @@
           }
         }
       ]
+    },
+    "DryDepositionGas": {
+      "ref": "../EarthSciModels/components/atmospheric_deposition/wesley_dry_gas.esm"
+    },
+    "WetDeposition": {
+      "ref": "../EarthSciModels/components/atmospheric_deposition/wet_deposition.esm"
+    },
+    "SuperFastDepositionSink": {
+      "ref": "../EarthSciModels/components/atmospheric_deposition/superfast_deposition_sink.esm"
     }
   },
   "index_sets": {
@@ -4566,6 +6492,69 @@
     },
     {
       "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3dyn.RH",
+      "to": "Transport3D.F_RH",
+      "transform": "param_to_var",
+      "description": "GEOS-FP A3dyn relative humidity -> the native-slice H2Oc. A3dyn cadence, so it reuses w_A3."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.TS",
+      "to": "Transport3D.F_TS",
+      "transform": "param_to_var",
+      "description": "GEOS-FP TS -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.Z0M",
+      "to": "Transport3D.F_Z0M",
+      "transform": "param_to_var",
+      "description": "GEOS-FP Z0M -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.USTAR",
+      "to": "Transport3D.F_USTAR",
+      "transform": "param_to_var",
+      "description": "GEOS-FP USTAR -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.SWGDN",
+      "to": "Transport3D.F_SWGDN",
+      "transform": "param_to_var",
+      "description": "GEOS-FP SWGDN -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A1.HFLUX",
+      "to": "Transport3D.F_HFLUX",
+      "transform": "param_to_var",
+      "description": "GEOS-FP HFLUX -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3cld.CLOUD",
+      "to": "Transport3D.F_CLOUD",
+      "transform": "param_to_var",
+      "description": "GEOS-FP CLOUD -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3mstE.PFLCU",
+      "to": "Transport3D.F_PFLCU",
+      "transform": "param_to_var",
+      "description": "GEOS-FP PFLCU -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.GEOSFP_A3mstE.PFLLSAN",
+      "to": "Transport3D.F_PFLLSAN",
+      "transform": "param_to_var",
+      "description": "GEOS-FP PFLLSAN -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
       "from": "Transport3D.Tc",
       "to": "SuperFast.T",
       "transform": "param_to_var",
@@ -4577,6 +6566,224 @@
       "to": "SuperFast.P",
       "transform": "param_to_var",
       "description": "Per-cell hybrid mid-layer pressure -> SuperFast's scalar P param."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.H2Oc",
+      "to": "SuperFast.H2O",
+      "transform": "param_to_var",
+      "description": "Per-cell water vapour -> SuperFast's H2O constant-species reservoir, matching GasChem.jl's couple2(SuperFastCoupler, GEOSFPCoupler), which param_to_var's :T, :P AND :H2O together. Without this the mechanism and the photolysis would disagree about humidity: H2O enters SuperFast through H2O + NO2 -> 0.5 HNO3 and through the water enhancement of HO2 + HO2 -> H2O2."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.cos_sza_c",
+      "to": "FastJX.cos_sza",
+      "transform": "param_to_var",
+      "description": "Per-cell cosine of the solar zenith angle -> FastJX's scalar cos_sza param. This is the ONE solar input of the interpolated Fast-JX component: it takes cos_sza directly and does not compute the solar position from lat/lon/t_utc the way the sibling fastjx.esm does. That is exactly why this variant is the one mounted here — computing cos_sza on this side (Transport3D.cos_sza_c) keeps the whole chain to pure arithmetic and out of datetime.*, so it can depend on the solver time t AND survive a Reactant trace. cos_sza then drives the 18-band bilinear actinic-flux lookup over (cos_sza, P)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Tc",
+      "to": "FastJX.T",
+      "transform": "param_to_var",
+      "description": "Per-cell GEOS-FP temperature -> FastJX's scalar T param. The SAME field SuperFast.T reads, so cross sections, quantum yields and rate constants all see one temperature. T enters every sigma_X / phi_O31D interp.linear and the O(1D) quenching rates."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Pc",
+      "to": "FastJX.P",
+      "transform": "param_to_var",
+      "description": "Per-cell hybrid mid-layer pressure -> FastJX's scalar P param. Sets the air number density used by the O(1D) quenching balance (and would be one axis of the actinic-flux lookup in the interpolated Fast-JX variant)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.H2Oc",
+      "to": "FastJX.H2O",
+      "transform": "param_to_var",
+      "description": "Per-cell water vapour -> FastJX's H2O param, matching GasChem.jl's couple2(FastJXCoupler, GEOSFPCoupler). Sets j_O31D_adj = RO1DplH2O/RO1D and hence the effective j_o32OH."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.TSc",
+      "to": "DryDepositionGas.Ts",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Zagl",
+      "to": "DryDepositionGas.z",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.delP1",
+      "to": "DryDepositionGas.del_P",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Z0Mc",
+      "to": "DryDepositionGas.z0",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.USTARc",
+      "to": "DryDepositionGas.u_star",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.SWGDNc",
+      "to": "DryDepositionGas.G",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.rhoA",
+      "to": "DryDepositionGas.rho_A",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.Lmo",
+      "to": "DryDepositionGas.L",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.levc",
+      "to": "DryDepositionGas.lev",
+      "transform": "param_to_var",
+      "description": "Wesley (1989) dry-deposition driver, matching AtmosphericDeposition.jl couple2(DryDepositionGasCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.cloudFracc",
+      "to": "WetDeposition.cloudFrac",
+      "transform": "param_to_var",
+      "description": "EMEP wet-deposition driver, matching AtmosphericDeposition.jl couple2(WetDepositionCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.rhoA",
+      "to": "WetDeposition.rho_air",
+      "transform": "param_to_var",
+      "description": "EMEP wet-deposition driver, matching AtmosphericDeposition.jl couple2(WetDepositionCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.qrainc",
+      "to": "WetDeposition.qrain",
+      "transform": "param_to_var",
+      "description": "EMEP wet-deposition driver, matching AtmosphericDeposition.jl couple2(WetDepositionCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.levc",
+      "to": "WetDeposition.lev",
+      "transform": "param_to_var",
+      "description": "EMEP wet-deposition driver, matching AtmosphericDeposition.jl couple2(WetDepositionCoupler, GEOSFPCoupler)."
+    },
+    {
+      "type": "variable_map",
+      "from": "DryDepositionGas.k_O3",
+      "to": "SuperFastDepositionSink.k_O3",
+      "transform": "param_to_var",
+      "description": "First-order dry-deposition loss coefficient -> the SuperFast sink applicator. Species mapping mirrors AtmosphericDeposition.jl ext/GasChemExt.jl couple2(SuperFastCoupler, DryDepositionGasCoupler): O3<-k_O3, NO2<-k_NO2, NO<-k_NO2 (NO reuses NO2's rate), HNO3<-k_HNO3, H2O2<-k_H2O2, CH2O<-k_HCHO."
+    },
+    {
+      "type": "variable_map",
+      "from": "DryDepositionGas.k_NO2",
+      "to": "SuperFastDepositionSink.k_NO2",
+      "transform": "param_to_var",
+      "description": "First-order dry-deposition loss coefficient -> the SuperFast sink applicator. Species mapping mirrors AtmosphericDeposition.jl ext/GasChemExt.jl couple2(SuperFastCoupler, DryDepositionGasCoupler): O3<-k_O3, NO2<-k_NO2, NO<-k_NO2 (NO reuses NO2's rate), HNO3<-k_HNO3, H2O2<-k_H2O2, CH2O<-k_HCHO."
+    },
+    {
+      "type": "variable_map",
+      "from": "DryDepositionGas.k_HNO3",
+      "to": "SuperFastDepositionSink.k_HNO3",
+      "transform": "param_to_var",
+      "description": "First-order dry-deposition loss coefficient -> the SuperFast sink applicator. Species mapping mirrors AtmosphericDeposition.jl ext/GasChemExt.jl couple2(SuperFastCoupler, DryDepositionGasCoupler): O3<-k_O3, NO2<-k_NO2, NO<-k_NO2 (NO reuses NO2's rate), HNO3<-k_HNO3, H2O2<-k_H2O2, CH2O<-k_HCHO."
+    },
+    {
+      "type": "variable_map",
+      "from": "DryDepositionGas.k_H2O2",
+      "to": "SuperFastDepositionSink.k_H2O2",
+      "transform": "param_to_var",
+      "description": "First-order dry-deposition loss coefficient -> the SuperFast sink applicator. Species mapping mirrors AtmosphericDeposition.jl ext/GasChemExt.jl couple2(SuperFastCoupler, DryDepositionGasCoupler): O3<-k_O3, NO2<-k_NO2, NO<-k_NO2 (NO reuses NO2's rate), HNO3<-k_HNO3, H2O2<-k_H2O2, CH2O<-k_HCHO."
+    },
+    {
+      "type": "variable_map",
+      "from": "DryDepositionGas.k_HCHO",
+      "to": "SuperFastDepositionSink.k_HCHO",
+      "transform": "param_to_var",
+      "description": "First-order dry-deposition loss coefficient -> the SuperFast sink applicator. Species mapping mirrors AtmosphericDeposition.jl ext/GasChemExt.jl couple2(SuperFastCoupler, DryDepositionGasCoupler): O3<-k_O3, NO2<-k_NO2, NO<-k_NO2 (NO reuses NO2's rate), HNO3<-k_HNO3, H2O2<-k_H2O2, CH2O<-k_HCHO."
+    },
+    {
+      "type": "variable_map",
+      "from": "WetDeposition.k_othergas",
+      "to": "SuperFastDepositionSink.k_wet",
+      "transform": "param_to_var",
+      "description": "Lumped soluble-gas wet-scavenging coefficient -> the sink applicator, applied to HNO3, H2O2, CH2O and CH3OOH exactly as couple2(SuperFastCoupler, WetDepositionCoupler) does."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_H2O2",
+      "to": "SuperFast.jH2O2",
+      "transform": "param_to_var",
+      "description": "H2O2 + hv -> 2 OH. One of the six edges of the EarthSciModels coupling library couplings/fastjx_superfast.esm (roles Photolysis=FastJX, Chem=SuperFast), SPELLED OUT here rather than pulled in with coupling_import: a coupling_import `ref` is resolved by flatten against its `base_path` kwarg, which defaults to the process working directory (unlike a `models`/`reaction_systems` `ref`, resolved at load against the FILE's directory), so an imported edge would silently depend on where julia was started. These six replace SuperFast's fixed j-parameter defaults with the time/place/temperature-dependent Fast-JX rates, so photolysis now varies across the slice instead of being one hard-coded noon value."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_H2COa",
+      "to": "SuperFast.jH2COa",
+      "transform": "param_to_var",
+      "description": "CH2O + hv -> CO + HO2 + H (radical channel)."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_H2COb",
+      "to": "SuperFast.jH2COb",
+      "transform": "param_to_var",
+      "description": "CH2O + hv -> CO + H2 (molecular channel)."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_CH3OOH",
+      "to": "SuperFast.jCH3OOH",
+      "transform": "param_to_var",
+      "description": "CH3OOH + hv -> CH3O + OH."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_NO2",
+      "to": "SuperFast.jNO2",
+      "transform": "param_to_var",
+      "description": "NO2 + hv -> NO + O; drives the NOx-O3 photostationary state, and so is the edge the O3 field is most sensitive to."
+    },
+    {
+      "type": "variable_map",
+      "from": "FastJX.j_o32OH",
+      "to": "SuperFast.jO32OH",
+      "transform": "param_to_var",
+      "description": "Effective O3 + hv -> 2 OH: j_O31D times the fraction of O(1D) that reacts with H2O rather than being quenched by N2/O2/H2 (FastJX.j_O31D_adj). This is why FastJX.H2O has to agree with SuperFast's H2O reservoir."
+    },
+    {
+      "type": "operator_compose",
+      "systems": [
+        "SuperFastDepositionSink",
+        "SuperFast"
+      ],
+      "description": "Add the deposition sink terms onto the SuperFast species ODEs. SuperFastDepositionSink carries D(SuperFast.X) ~ -(k_dry + k_wet)*SuperFast.X equations; operator_compose sums RHS contributions that share a dependent variable, so each species' chemistry tendency gains its loss term (dc/dt += -k*c). Placed BEFORE the SuperFast/Transport3D pointwise compose so the sink is already merged into D(SuperFast.X) when the lift array-ifies it. Per the component's own note this MUST be operator_compose, not a couple/additive connector -- the flatten pipeline silently discards the latter."
     },
     {
       "type": "operator_compose",

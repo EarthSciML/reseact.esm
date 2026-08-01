@@ -1,1 +1,18 @@
-run-model-jl/
+# The run environment's DEPENDENCY SPEC is tracked: Project.toml + Manifest.toml
+# pin the exact EarthSciAST / EarthSciIO / Reactant / solver stack the runners
+# were validated against, and losing them has already cost real debugging time --
+# the env silently pinned a STALE vendored EarthSciIO, so the gridded-output sink
+# failed with `EarthSciIO.OutputVar not defined` until it was repointed at the
+# sibling ../EarthSciIO checkout.
+#
+# NOTE the path-dep entries are ABSOLUTE and machine-specific; on another machine
+# re-run the `Pkg.develop(path=...)` calls for the sibling checkouts rather than
+# expecting the Manifest to resolve as-is.
+run-model-jl/*
+!run-model-jl/Project.toml
+!run-model-jl/Manifest.toml
+
+# Local build state. `deps/EarthSciIO-fixes` in particular is a stale vendored
+# EarthSciIO snapshot predating the Zarr writer surface; the env no longer
+# references it and it should not be resurrected.
+run-model-jl/deps/

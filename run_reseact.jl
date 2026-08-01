@@ -35,7 +35,12 @@
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
 #   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
+#   RESEACT_T0         start time, s since 2013-01-01T00:00:00Z (default 64800 =
+#                      18:00Z). Also the model's solar epoch, so t IS the UTC clock.
 #   RESEACT_MACRO_DT   Lie-Trotter interval, s (default 300, capped at the window)
+#   RESEACT_NLON/NLAT/NLEV  grid dims          (bound as .esm metaparameters;
+#                           defaults = the model's own: 7 / 7 / 72. Native GEOS-FP
+#                           4x5 slice bounds: NLON 1..57, NLAT 1..17, NLEV 1..72.)
 #   RESEACT_RUN_ENV    Julia env to activate   (default: <repo>/run-model-jl)
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
@@ -70,13 +75,23 @@ include(joinpath(CHEMDIR, "split_common.jl"))                    # prepare_split
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))                       # cellmajor_perm/rhs, block_fd_jac
 include(joinpath(RXDIR, "op_split.jl"))                          # lie_trotter_solve (+ BlockDiagonal similar fix)
+include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize   # slice_hybrid_coefs (NLEV<72)
 say(s) = (println(s); flush(stdout))
 
 const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const LABEL      = get(ENV, "RESEACT_LABEL", basename(MODEL))
 const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "60"))
 const MACRO_DT   = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
-const T0    = 64800.0
+# Grid dims as .esm metaparameters (empty dict -> the model's own defaults 7/7/72).
+const GRID_MP = Dict{String,Int}(k => parse(Int, ENV["RESEACT_$k"])
+                                 for k in ("NLON", "NLAT", "NLEV") if haskey(ENV, "RESEACT_$k"))
+const NLEV_EFF = get(GRID_MP, "NLEV", 72)
+# Solver time is seconds since 2013-01-01T00:00:00Z -- the GEOS-FP day the forcing
+# is read from AND the epoch the model's solar chain (Transport3D.doy0/hour0/...)
+# is anchored to, so t IS the UTC clock. Default 64800 = 18:00Z (near local solar
+# noon over the slice). A diurnal run wants T0=0; the forcing is only valid while
+# both bracketing records exist -- see reseact_forcing for the usable span.
+const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))
 const T_END = T0 + SOLVE_SECS
 const RTOL  = 1e-4
 const ATOL  = 1e-9          # chemistry abstol
@@ -88,14 +103,17 @@ rc_ok(rc) = (rc == SciMLBase.ReturnCode.Success || rc == SciMLBase.ReturnCode.De
 # --------------------------------------------------------------------------- #
 # 1. Split + build both in-place halves over shared live GEOS-FP forcing.
 # --------------------------------------------------------------------------- #
-say("=== $LABEL : validate + build split ($MODEL) ===")
-let r = EA.validate(MODEL)
+say("=== $LABEL : validate + build split ($MODEL) grid=$(get(GRID_MP,"NLON",7))x$(get(GRID_MP,"NLAT",7))x$(NLEV_EFF) ===")
+let r = isempty(GRID_MP) ? EA.validate(MODEL) : EA.validate(EA.load(MODEL; metaparameters = GRID_MP))
     r.is_valid || (for e in r.structural_errors[1:min(6, end)]
                        say("  $(e.error_type)@$(e.path): $(e.message)")
                    end; error("invalid model"))
 end
-docs = prepare_split_docs(MODEL)
+docs = prepare_split_docs(MODEL; metaparameters = GRID_MP)
 ff = reseact_forcing(CHEMDIR)               # 72-level hybrid coefs + native GEOS-FP providers
+# When NLEV<72 the `lev` axis is shorter than the 72-entry hybrid table; slice the
+# vertical coefs to match (a truncated column, k=1 = surface).
+ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
 tb = time()
 run = build_split_run(docs, (T0, T_END);
     providers = ff.providers, parameters = ff.parameters, const_arrays = ff.const_arrays)

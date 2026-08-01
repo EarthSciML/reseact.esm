@@ -27,13 +27,73 @@ const EA = EarthSciAST
 #    transformed FlattenedSystem, then splits and re-emits each part.
 # --------------------------------------------------------------------------- #
 function prepare_split_docs(model_path; rule = stencil_vs_pointwise, nparts = 2,
-                            preserve_refs::Bool = true)
-    file = EA.load(model_path)
+                            preserve_refs::Bool = true,
+                            metaparameters::AbstractDict = Dict{String,Int}())
+    file = isempty(metaparameters) ? EA.load(model_path) :
+           EA.load(model_path; metaparameters = metaparameters)
     flat = EA.flatten(file)                                # carries refs by default now (tier at build)
     preserve_refs || (flat = EA.expand_flattened_refs(flat))
-    flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(flat))
+    pre  = EA.algebraic_states_to_observeds(flat)
+    flat = EA.promote_downstream_shapes(pre)
+    promoted = EA.promoted_array_names(pre, flat)         # scalar chains lifted to the grid
     parts = split_system(flat, rule; nparts = nparts)     # [transport, chemistry]
-    return [EA.flattened_to_esm(p) for p in parts]
+    return [index_promoted_refs_by_loop!(EA.flattened_to_esm(p), promoted) for p in parts]
+end
+
+# --------------------------------------------------------------------------- #
+# 1b. Gather-ify bare references to shape-PROMOTED variables inside equations
+#     that were ALREADY array-shaped before the promotion.
+#
+# `promote_downstream_shapes` lifts a scalar 0-D physics chain fed by array
+# sources into the grid shape (FastJX: lat/lon/T/P come in as [lon,lat,lev], so
+# every j-rate becomes [lon,lat,lev]). It rewrites each promoted variable's OWN
+# defining equation into an `arrayop` with its leaves indexed — but it leaves its
+# CONSUMERS alone, and returns the promoted-name set for the caller to finish the
+# job (`promoted_array_names` -> `index_promoted_refs!`, its documented companion).
+#
+# For reseact the consumers that matter are the pointwise-lifted species ODEs.
+# Those were array-ified earlier, inside `flatten`'s pointwise lift, which indexes
+# only the operands that carried a shape AT THAT MOMENT — the promotion has not
+# run yet, so `FastJX.j_NO2` is still scalar there and survives as a bare name
+# inside a per-cell `aggregate` body. The evaluator then fails to bind it
+# (E_TREEWALK_UNBOUND_VARIABLE: FastJX.j_NO2) because an array has no scalar slot.
+#
+# `index_promoted_refs!` takes ONE `spatial_loops` list, but our equations do not
+# share one: the lifted species ODEs iterate the lift's `["i","j","k"]` while a
+# promoted definition's own `arrayop` iterates `["_p0","_p1","_p2"]`. So drive it
+# per equation with that equation's own `output_idx`, which is exactly the loop
+# context its body is evaluated in. Scalar equations (no `output_idx`) are skipped:
+# nothing there can legally reference an array bare.
+#
+# Belongs upstream — `promote_downstream_shapes` knows the promoted set and the
+# consumer equations' loop names, so it could close this itself (and `simulate`
+# would then get it for free; today it has the same hole).
+function index_promoted_refs_by_loop!(doc::AbstractDict, promoted)
+    isempty(promoted) && return doc
+    models = get(doc, "models", nothing)
+    models isa AbstractDict || return doc
+    for (_, m) in models
+        eqs = get(m, "equations", nothing)
+        eqs isa AbstractVector || continue
+        for eq in eqs
+            rhs = get(eq, "rhs", nothing)
+            rhs isa AbstractDict || continue
+            oi = get(rhs, "output_idx", nothing)
+            oi isa AbstractVector || continue
+            # All-symbolic output_idx only. A literal `1` entry (esm-spec §4.3.1
+            # singleton dim) has no loop name, so dropping it would emit a gather
+            # of the wrong rank -- skip the equation rather than mis-index it.
+            all(x -> x isa AbstractString, oi) || continue
+            loops = String[String(x) for x in oi]
+            isempty(loops) && continue
+            # One-equation view; `index_promoted_refs!` mutates eq["rhs"] in place.
+            EA.index_promoted_refs!(
+                Dict{String,Any}("models" => Dict{String,Any}(
+                    "_" => Dict{String,Any}("equations" => Any[eq]))),
+                promoted; spatial_loops = loops)
+        end
+    end
+    return doc
 end
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +111,27 @@ function reseact_forcing(dir)
         "GEOSFP.GEOSFP_A3dyn.V"     => mk("A3dyn", "V", 5400.0, 10800.0, 8),
         "GEOSFP.GEOSFP_A3dyn.OMEGA" => mk("A3dyn", "OMEGA", 5400.0, 10800.0, 8),
         "GEOSFP.GEOSFP_A1.PBLH"     => mk("A1", "PBLH", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_I3.T"        => mk("I3", "T", 0.0, 10800.0, 8))
+        "GEOSFP.GEOSFP_I3.T"        => mk("I3", "T", 0.0, 10800.0, 8),
+        # Relative humidity, A3dyn collection/cadence (NOT I3 -- so it blends with
+        # w_A3). Feeds Transport3D.H2Oc -> FastJX.H2O and SuperFast.H2O. RH is what
+        # the reference uses: GasChem.jl ext/EarthSciDataExt.jl derives H2O from
+        # `water_concentration_ppb(g.A3dyn_RH, g.P, g.I3_T)` for BOTH systems.
+        "GEOSFP.GEOSFP_A3dyn.RH"    => mk("A3dyn", "RH", 5400.0, 10800.0, 8),
+        # --- deposition drivers -------------------------------------------------
+        # Wesley (1989) dry deposition + EMEP wet deposition, wired as
+        # AtmosphericDeposition.jl ext/EarthSciDataExt.jl does:
+        #   dry: Ts<-A1.TS, z0<-A1.Z0M, u_star<-A1.USTAR, G<-A1.SWGDN,
+        #        L<-MoninObhukov(rho,TS,USTAR,A1.HFLUX), rho_A<-P/(R T) MW_air,
+        #        del_P<-first_level_pressure_thickness(PS), z<-Z_agl
+        #   wet: cloudFrac<-A3cld.CLOUD, qrain<-(A3mstE.PFLCU+PFLLSAN)/Vdr/rho_air
+        "GEOSFP.GEOSFP_A1.TS"       => mk("A1", "TS", 1800.0, 3600.0, 24),
+        "GEOSFP.GEOSFP_A1.Z0M"      => mk("A1", "Z0M", 1800.0, 3600.0, 24),
+        "GEOSFP.GEOSFP_A1.USTAR"    => mk("A1", "USTAR", 1800.0, 3600.0, 24),
+        "GEOSFP.GEOSFP_A1.SWGDN"    => mk("A1", "SWGDN", 1800.0, 3600.0, 24),
+        "GEOSFP.GEOSFP_A1.HFLUX"    => mk("A1", "HFLUX", 1800.0, 3600.0, 24),
+        "GEOSFP.GEOSFP_A3cld.CLOUD" => mk("A3cld", "CLOUD", 5400.0, 10800.0, 8),
+        "GEOSFP.GEOSFP_A3mstE.PFLCU"   => mk("A3mstE", "PFLCU", 5400.0, 10800.0, 8),
+        "GEOSFP.GEOSFP_A3mstE.PFLLSAN" => mk("A3mstE", "PFLLSAN", 5400.0, 10800.0, 8))
     params = Dict(
         "GEOSFP.t_interp_ref_I3" => 0.0, "GEOSFP.dt_interp_I3" => 10800.0,
         "GEOSFP.t_interp_ref_A3" => 5400.0, "GEOSFP.dt_interp_A3" => 10800.0,

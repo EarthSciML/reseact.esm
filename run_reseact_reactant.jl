@@ -25,6 +25,10 @@
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
 #   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
+#   RESEACT_NLON/NLAT/NLEV  grid dims          (bound as .esm metaparameters;
+#                           defaults = the model's own 7/7/72. Each distinct grid
+#                           is a distinct XLA program -> a fresh ~tens-of-minutes
+#                           @compile; the compile is NOT amortized across grids.)
 #   RESEACT_DT0T       initial transport dt    (default 15.0, traced arm)
 #   RESEACT_DT0C       initial chemistry dt    (default 0.5, traced arm)
 #   RESEACT_HOST_ARM   also run the host reference arm (default 1)
@@ -65,15 +69,20 @@ include(joinpath(CHEMDIR, "split_common.jl"))
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))
 include(joinpath(RXDIR, "op_split.jl"))            # lie_trotter_solve (+ BlockDiagonal similar fix) -- host arm
+include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize   # slice_hybrid_coefs (NLEV<72)
 say(s) = (println(s); flush(stdout))
 
 const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const LABEL      = get(ENV, "RESEACT_LABEL", basename(MODEL))
 const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "60"))
+# Grid dims as .esm metaparameters (empty -> the model's own defaults 7/7/72).
+const GRID_MP = Dict{String,Int}(k => parse(Int, ENV["RESEACT_$k"])
+                                 for k in ("NLON", "NLAT", "NLEV") if haskey(ENV, "RESEACT_$k"))
+const NLEV_EFF = get(GRID_MP, "NLEV", 72)
 const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
 const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
 const HOST_ARM   = get(ENV, "RESEACT_HOST_ARM", "1") == "1"
-const T0    = 64800.0
+const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))   # s since 2013-01-01T00:00Z
 const T_END = T0 + SOLVE_SECS
 const RTOL  = 1e-4
 const ATOL_T = 1e-6         # transport abstol
@@ -93,11 +102,18 @@ merged_param = Dict{String,Any}(); discrete_providers = Dict{String,Any}()
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
     global fo, u0, p, var_map, merged_param, discrete_providers
-    file = EA.load(MODEL); flat = EA.flatten(file)
-    flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(flat))
+    file = isempty(GRID_MP) ? EA.load(MODEL) : EA.load(MODEL; metaparameters = GRID_MP)
+    flat = EA.flatten(file)
+    pre  = EA.algebraic_states_to_observeds(flat)
+    flat = EA.promote_downstream_shapes(pre)
+    # Same post-promotion gather-ification prepare_split_docs does -- see
+    # index_promoted_refs_by_loop! in split_common.jl for why it is needed.
+    promoted = EA.promoted_array_names(pre, flat)
     parts = split_system(flat, stencil_vs_pointwise; nparts = 2)
-    docs  = [EA.flattened_to_esm(pt) for pt in parts]
+    docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
     ff = reseact_forcing(CHEMDIR)
+    # NLEV<72 -> slice the 72-entry hybrid table to the truncated column.
+    ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
     for (rawk, prov) in ff.providers
         k = String(rawk); fld = EA._provider_const_field(EA.provider_sample(prov, T0), k)
@@ -123,7 +139,8 @@ say(@sprintf("BUILD %s: %.2f s   nstates=%d", LABEL, time() - tb, length(u0)))
 
 # Seed air mass m(0) = dA + dB*ps_ref (species-major, via var_map names).
 let ff = reseact_forcing(CHEMDIR)
-    dA = Float64.(ff.const_arrays["Transport3D.dA"]); dB = Float64.(ff.const_arrays["Transport3D.dB"])
+    ca = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)
+    dA = Float64.(ca["Transport3D.dA"]); dB = Float64.(ca["Transport3D.dB"])
     for (nm, idx) in var_map
         mm = match(r"^Transport3D\.m\[(\d+),(\d+),(\d+)\]$", nm)
         mm === nothing && continue
