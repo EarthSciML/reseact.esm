@@ -14,12 +14,39 @@ in an existing EarthSciML-org package or extension — so the drivers can shrink
 
 | Helper | Provides | Notes |
 |---|---|---|
-| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `index_promoted_refs_by_loop!`, `build_split_run`, `reseact_forcing` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_vs_pointwise)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific; `index_promoted_refs_by_loop!` is the post-promotion fix-up described below. |
+| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `index_promoted_refs_by_loop!`, `build_split_run`, `reseact_forcing`, `native_slice`, `forcing_days_for` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_following_rule)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific; `index_promoted_refs_by_loop!` is the post-promotion fix-up described below; `native_slice` is the domain seam described below. |
 | `prototypes/reseact_3d_chem/block_jac.jl` | `cellmajor_perm`, `cellmajor_rhs`, `block_fd_jac` | Species-major ↔ cell-major permutation (derived purely from state names) and the NS-color block-diagonal finite-difference Jacobian for the pointwise/chemistry part (NS+1 RHS evals per Jacobian instead of N). |
 | `prototypes/reseact_3d_chem/blockdiag_local.jl` | `BlockDiag` module → `BlockDiagonal`, `MapBroadcast` | `include`s EarthSciMLBase's `blockdiagonal.jl` + `map_algorithm.jl` **directly from a sibling checkout** to get `BlockDiagonal` without pulling the full EarthSciMLBase (ModelingToolkit/Catalyst) dependency tree. |
 | `tools/reactant_handoff/op_split.jl` | `lie_trotter_solve` — drives `OrdinaryDiffEqOperatorSplitting.LieTrotterGodunov((SSPRK43, Rosenbrock23/BD))` as a macro-step loop (positivity clamp + forcing refresh between steps). `include`s `blockdiag_similar.jl`. | The real SciML operator-splitting solver, usable only because of the fix below. |
 | `tools/reactant_handoff/blockdiag_similar.jl` | `Base.similar(::BlockDiagonal, ::Type)` + `Base.zero(::BlockDiagonal)` | **The densification fix.** DiffEqBase's `promote_f` runs `similar(jac_prototype, uElType)` at every `init`; `BlockDiagonal` defined only the *nullary* `similar`, so the element-type form fell through to the dense `AbstractArray` fallback and a plain `ODEProblem` (as `LieTrotterGodunov` builds per operator) turned the 3528×(13×13) block Jacobian into a dense 45864² matrix. These two methods preserve the block structure. Type piracy; durable home is EarthSciMLBase's `blockdiagonal.jl`. |
 | `prototypes/reseact_3d_chem/hybrid_coefs.json` | 72-level hybrid-sigma vertical coordinate coefficients | Model data, not code. |
+
+**The slice origin has two currencies and nothing in the model ties them.**
+`LON0`/`LAT0` are **metaparameters** folded into the index expressions that read
+the GEOS-FP arrays (local cell `i` is native `LON0+i`); `Transport3D.lon0_deg` /
+`lat0_deg` are **parameters in degrees** that the model's solar chain uses to
+place the sun. An `.esm` parameter default cannot be an expression over a
+metaparameter, so the file cannot derive one from the other, and a run with the
+two disagreeing is *completely silent*: it produces a full, plausible trajectory
+with the meteorology of one place and the sunlight of another.
+
+`native_slice(; lon0, lat0, nlon, nlat, nlev)` is the single source of truth —
+it returns the metaparameters, the degree parameters, the raw index origin, and
+the domain extent, and bounds-checks the halos against the native 72×46 grid.
+`build_split_run` takes it as `slice=` and **applies the degree parameters
+itself** (they win over `parameters=`), then echoes it back as `run.slice` for
+`hydrostatic_dp(...; slice = run.slice)` and any diagnostic that reads the native
+arrays. Do not write `29 + j` / `14 + i` at a call site again.
+
+**Multi-day forcing.** `reseact_forcing(dir; ndays)` hands each provider a
+`t -> url` resolver over GEOS-FP's one-file-per-day layout instead of a fixed
+URL, so a run is no longer capped at the 19.5 h a single day of files could
+bracket. Size `ndays` with `forcing_days_for(t0, tf)`, which adds the extra day
+the final bracket's *successor* lands in — come up short and the bracket
+degenerates to `[last, last]` and the meteorology quietly freezes for the rest of
+the run. This needs the EarthSciIO fix that locates a record inside *its own*
+file (`_file_record`): the cadence tick is global, the file is local, and tick 9
+of a 3-hourly cadence used to ask an 8-record file for record 9.
 
 ### `run_reseact.jl` (native in-place) — the above **plus** `op_split.jl`.
 
