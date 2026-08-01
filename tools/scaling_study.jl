@@ -102,10 +102,9 @@ function run_point(nlon, nlat, nlev, window)
     jac!, mkjp = block_fd_jac(fchem!, P.NS, P.NC)
     u = run.u0[P.sm_of_cm]
     foreach(d -> d.materialize!(), run.dms)
-    let dA = Float64.(ff.const_arrays["Transport3D.dA"]),
-        dB = Float64.(ff.const_arrays["Transport3D.dB"]), mb = P.base_pos["Transport3D.m"]
+    let dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0), mb = P.base_pos["Transport3D.m"]
         for c in P.cells
-            u[(P.cell_pos[c] - 1) * P.NS + mb] = dA[c[3]] + dB[c[3]] * PS_REF
+            u[(P.cell_pos[c] - 1) * P.NS + mb] = dp0(c[1], c[2], c[3])
         end
     end
     tgz(g, u, p, t) = (fill!(g, 0); nothing)

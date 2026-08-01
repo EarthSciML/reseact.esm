@@ -138,13 +138,16 @@ end
 say(@sprintf("BUILD %s: %.2f s   nstates=%d", LABEL, time() - tb, length(u0)))
 
 # Seed air mass m(0) = dA + dB*ps_ref (species-major, via var_map names).
+# m(0) from the REAL GEOS-FP PS at T0, not a constant -- see hydrostatic_dp in
+# split_common.jl for why the old constant-PS_REF seed was wrong by the terrain.
 let ff = reseact_forcing(CHEMDIR)
     ca = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)
-    dA = Float64.(ca["Transport3D.dA"]); dB = Float64.(ca["Transport3D.dB"])
+    dp0 = hydrostatic_dp(merged_param, ca, T0)
     for (nm, idx) in var_map
         mm = match(r"^Transport3D\.m\[(\d+),(\d+),(\d+)\]$", nm)
         mm === nothing && continue
-        u0[idx] = dA[parse(Int, mm.captures[3])] + dB[parse(Int, mm.captures[3])] * PS_REF
+        u0[idx] = dp0(parse(Int, mm.captures[1]), parse(Int, mm.captures[2]),
+                      parse(Int, mm.captures[3]))
     end
 end
 

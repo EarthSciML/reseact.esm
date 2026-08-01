@@ -112,10 +112,10 @@ f_chem_cm!  = cellmajor_rhs(run.funcs[2], P.sm_of_cm)
 jac_cm!, mkjp = block_fd_jac(f_chem_cm!, P.NS, P.NC)
 u = run.u0[P.sm_of_cm]
 foreach(d -> d.materialize!(), run.dms)
-let dA = Float64.(ff.const_arrays["Transport3D.dA"]), dB = Float64.(ff.const_arrays["Transport3D.dB"]),
-    mb = P.base_pos["Transport3D.m"]
+# m(0) from the REAL GEOS-FP PS, not a constant -- see hydrostatic_dp.
+let dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0), mb = P.base_pos["Transport3D.m"]
     for c in P.cells
-        u[(P.cell_pos[c] - 1) * P.NS + mb] = dA[c[3]] + dB[c[3]] * PS_REF
+        u[(P.cell_pos[c] - 1) * P.NS + mb] = dp0(c[1], c[2], c[3])
     end
 end
 o3rng = P.base_pos["SuperFast.O3"]:P.NS:P.N
@@ -150,6 +150,59 @@ sink_put!(t, ucm) = sink === nothing ? nothing :
     EA.sink_write!(sink, EA.StateSnapshot(Float64(t),
         [(to_sm(ucm), (1:P.N,))], Dict{String,Array}()))
 
+# --------------------------------------------------------------------------- #
+# CONTINUITY DIAGNOSTIC (why the long runs die).
+#
+# The prognostic air mass m is integrated from the SAME face fluxes the tracers
+# use, so CWC holds exactly -- but those fluxes are built from GEOS-FP's
+# time-AVERAGED U/V/OMEGA while PS is INSTANTANEOUS, so the discrete identity
+#   d(dp)/dt + div(M) = 0
+# does not hold (caveat 4, Jockel et al. 2001). The accumulated violation is
+# therefore visible with NO model change at all: it is exactly the drift between
+# the integrated m and the hydrostatic thickness dp = dA[k] + dB[k]*PS(t) that m
+# is supposed to equal. Report the drift, and crucially WHERE the worst cell is:
+# an interior worst cell means a genuine continuity bias (needs a pressure
+# fixer), a worst cell on the open lateral wall means a boundary artifact
+# (needs a BC fix instead) -- and at 7x7 the domain is so small that almost every
+# cell IS a boundary cell, which is why this wants a wider domain to be readable.
+const _PSk = "GEOSFP.GEOSFP_I3.PS"
+const _dA = Float64.(ff.const_arrays["Transport3D.dA"])
+const _dB = Float64.(ff.const_arrays["Transport3D.dB"])
+const NLON_ = maximum(c[1] for c in P.cells); const NLAT_ = maximum(c[2] for c in P.cells)
+const NLEV_ = maximum(c[3] for c in P.cells)
+"w_I3 for the I3 cadence: 3-hourly instantaneous anchored at 00:00Z."
+w_I3(t) = (t - 10800.0 * floor(t / 10800.0)) / 10800.0
+function continuity_drift(u, t)
+    F = run.merged_param[_PSk]          # NATIVE [time, lat, lon], hPa
+    w = w_I3(t)
+    # Split INTERIOR from WALL. The open lateral walls prescribe inflow tracer
+    # mixing ratios (qbc_*) but take the AIR-MASS flux straight from the wind
+    # field, which is not constrained to close the interior column budget -- a
+    # different defect from an interior continuity bias, and one a pressure fixer
+    # would NOT correct. Reporting them separately is what decides which to fix.
+    worst = 0.0; wc = (0, 0, 0); s2i = 0.0; ni = 0; s2w = 0.0; nw = 0
+    worsti = 0.0; wci = (0, 0, 0)
+    isw(c) = c[1] == 1 || c[1] == NLON_ || c[2] == 1 || c[2] == NLAT_
+    for c in P.cells
+        i, j, k = c
+        ps = 100.0 * ((1 - w) * F[1, 29 + j, 14 + i] + w * F[2, 29 + j, 14 + i])
+        dp = _dA[k] + _dB[k] * ps
+        mv = u[(P.cell_pos[c] - 1) * P.NS + P.base_pos["Transport3D.m"]]
+        r = (mv - dp) / dp
+        if isw(c)
+            s2w += r * r; nw += 1
+        else
+            s2i += r * r; ni += 1
+            abs(r) > abs(worsti) && (worsti = r; wci = c)
+        end
+        abs(r) > abs(worst) && (worst = r; wc = c)
+    end
+    return (rms = sqrt((s2i + s2w) / max(ni + nw, 1)),
+            rms_int = sqrt(s2i / max(ni, 1)), rms_wall = sqrt(s2w / max(nw, 1)),
+            worst = worst, cell = wc, onwall = isw(wc),
+            worst_int = worsti, cell_int = wci, nint = ni, nwall = nw)
+end
+
 rows = NamedTuple[]
 push_row!(t, u, wall) = push!(rows, (t = t, hours = t / 3600,
     cos_sza = cos_sza(t, 40.0, -95.0),
@@ -157,11 +210,14 @@ push_row!(t, u, wall) = push!(rows, (t = t, hours = t / 3600,
     oh_max = maximum(u[ohrng]), no2_mean = mean(u[no2rng]),
     m_min = minimum(u[P.base_pos["Transport3D.m"]:P.NS:P.N]), wall = wall))
 
-say("  t_hours  cos_sza     O3_min     O3_mean     O3_max      OH_max     NO2_mean   wall_s")
+say("  t_hours  cos_sza     O3_min     O3_mean     O3_max      OH_max     NO2_mean  | rms_int  rms_wall  worst_int @cell_int    wall_s")
 push_row!(T0, u, 0.0); sink_put!(T0, u)
 r = rows[end]
-say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  %7.1f",
-    r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean, r.wall))
+let d = continuity_drift(u, T0)
+    say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  | %8.2e %9.2e %9.2e %-12s %6.1f",
+        r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean,
+        d.rms_int, d.rms_wall, d.worst_int, string(d.cell_int), r.wall))
+end
 
 ts = time(); nT = nC = 0; ok = true; nstep = 0
 t = T0
@@ -192,8 +248,10 @@ while t < T_END - 1e-9
     push_row!(t, u, time() - ts)
     nstep % OUT_EVERY == 0 && sink_put!(t, u)
     r = rows[end]
-    say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  %7.1f",
-        r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean, r.wall))
+    d = continuity_drift(u, t)
+    say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  | %8.2e %9.2e %9.2e %-12s %6.1f",
+        r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean,
+        d.rms_int, d.rms_wall, d.worst_int, string(d.cell_int), r.wall))
 end
 solve_s = time() - ts
 if sink !== nothing

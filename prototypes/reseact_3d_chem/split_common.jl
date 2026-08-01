@@ -149,6 +149,34 @@ end
 #    the solve. Returns funcs=(f_transport!, f_chem!, …), u0, p, var_map, and the
 #    single refresh callback (cb, tstops) that drives every part's forcing.
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 2b. Hydrostatic air mass at time t, on the local grid.
+#
+# The prognostic state `Transport3D.m` IS the pressure thickness of its cell:
+#   dp(i,j,k,t) = dA[k] + dB[k] * PS(i,j,t)
+# so m(0) MUST be seeded from the real GEOS-FP surface pressure. The runners used
+# to seed it from a CONSTANT `PS_REF = 101325 Pa` -- a leftover from the Stage-B
+# configuration where PS really was constant (see the `PS` variable's own
+# description, "Replaces the Stage-B constant 1013..."). With real GEOS-FP
+# meteorology that seed is wrong by the terrain: measured 16% RMS and 48% in the
+# worst column (lon -105, lat 38 -- the Colorado Rockies, PS ~ 80 kPa not 101.3),
+# BEFORE a single step is taken. The tracer/air-mass consistency the whole scheme
+# rests on starts violated, and any measurement of continuity DRIFT is swamped by
+# that constant offset.
+#
+# Mirrors Transport3D.PS exactly: the I3 field at NATIVE (lat = 29+j, lon = 14+i),
+# blended across its two bracketing records with w_I3, scaled hPa -> Pa.
+function hydrostatic_dp(merged_param::AbstractDict, const_arrays::AbstractDict, t::Real)
+    F  = merged_param["GEOSFP.GEOSFP_I3.PS"]
+    dA = Float64.(const_arrays["Transport3D.dA"])
+    dB = Float64.(const_arrays["Transport3D.dB"])
+    w  = (t - 10800.0 * floor(t / 10800.0)) / 10800.0     # I3: 3-hourly, anchored 00:00Z
+    return function (i::Integer, j::Integer, k::Integer)
+        ps = 100.0 * ((1 - w) * F[1, 29 + j, 14 + i] + w * F[2, 29 + j, 14 + i])
+        return dA[k] + dB[k] * ps
+    end
+end
+
 function build_split_run(docs, tspan; providers = nothing,
                          parameters::AbstractDict = Dict{String,Float64}(),
                          const_arrays::AbstractDict = Dict{String,Any}(),
