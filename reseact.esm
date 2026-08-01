@@ -1201,6 +1201,304 @@
             }
           }
         },
+        "dPSdt": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat"
+          ],
+          "description": "Surface-pressure tendency, (PS_2 - PS_1)/dt_I3, from the TWO bracketing I3 records already in the forcing buffer (records_per_sample=2) and scaled hPa->Pa like PS itself. This is the tendency the column-integrated mass divergence MUST reproduce; the whole pressure fixer exists because it does not.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "F_PS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    100.0,
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            2,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            1,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                10800.0
+              ]
+            }
+          }
+        },
+        "divh": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Horizontal air-mass flux divergence, D(Mx,lon) + D(My,lat) -- the same two unlowered rewrite targets the D(m) equation carries, so the imported ESD open-BC rules lower them identically here.",
+          "expression": {
+            "op": "+",
+            "args": [
+              {
+                "op": "D",
+                "args": [
+                  "Mx"
+                ],
+                "wrt": "lon"
+              },
+              {
+                "op": "D",
+                "args": [
+                  "My"
+                ],
+                "wrt": "lat"
+              }
+            ]
+          }
+        },
+        "divh_col": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat"
+          ],
+          "description": "Column-integrated horizontal divergence, sum_k divh(k). Contracting `gk` (present in expr, absent from output_idx) is the ordinary aggregate reduction.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "divh"
+            ],
+            "reduce": "+",
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "divh",
+                "gi",
+                "gj",
+                "gk"
+              ]
+            }
+          }
+        },
+        "dp_col": {
+          "type": "observed",
+          "units": "Pa",
+          "shape": [
+            "lon",
+            "lat"
+          ],
+          "description": "Column mass sum_k dp(k) = PS - P_top. The weight the pressure-fixer correction is distributed by, so the correction is MASS-weighted rather than uniform in k.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "dp"
+            ],
+            "reduce": "+",
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                "dp",
+                "gi",
+                "gj",
+                "gk"
+              ]
+            }
+          }
+        },
+        "divh_fix": {
+          "type": "observed",
+          "units": "Pa/s",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ],
+          "description": "Pressure-FIXED horizontal divergence:\n    divh_fix(k) = divh(k) + (-dPSdt - divh_col) * dp(k)/dp_col\nGEOS-FP archives U/V/OMEGA as 3-hourly MEANS but PS as an INSTANTANEOUS field, so the discrete identity d(dp)/dt + div(M) = 0 does not hold and the column budget misses by (dPSdt + divh_col). Measured on this model: the air mass drifts from its own hydrostatic thickness at a CONSTANT rate -- 4.6e-3 rms per 300 s step at 21x13x72, dead linear, worst cells at k=1 -- until a cell reaches zero and the solve dies (3.6-5.2 h).\n\nThe residual is spread over the column in proportion to dp, so the correction is mass-weighted and vanishes where there is no mass. This is the COLUMN-LOCAL fixer: it enforces sum_k divh_fix = -dPSdt exactly, per column, with no global coupling. The variational (Poisson) fixer of Jockel et al. (2001) would distribute the same total correction more smoothly in the horizontal, but it is a global elliptic solve -- neither pointwise nor a stencil, so the splitter could not separate it and a Reactant trace would have to carry an iterative solver. The column-local form removes the drain without any of that.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "divh",
+              "dPSdt",
+              "divh_col",
+              "dp",
+              "dp_col"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "divh",
+                    "gi",
+                    "gj",
+                    "gk"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "neg",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "dPSdt",
+                                "gi",
+                                "gj"
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "divh_col",
+                            "gi",
+                            "gj"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "dp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "dp_col",
+                            "gi",
+                            "gj"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
         "Mz": {
           "type": "observed",
           "units": "Pa/s",
@@ -1209,7 +1507,7 @@
             "lat",
             "lev_nodes"
           ],
-          "description": "Vertical face-normal AIR-MASS flux (Pa/s) at each cell's LOWER edge, +ve UPWARD: Mz = -OMEGA (GEOS-FP OMEGA is dP/dt, +ve DOWNWARD). OMEGA is CELL-CENTRED in the archived files, so the edge value averages the two flanking cells, clamped at the walls. The values at ke=1 and ke=NLEV+1 are NEVER READ: facediv_lev_mass_nf_k1/_kN hardcode the no-flux wall to 0, which is what makes the 7-level slab closed at its ~906 hPa top. Replaces the Stage-B analytic profile.",
+          "description": "Vertical face-normal AIR-MASS flux (Pa/s) at each cell's LOWER edge, +ve UPWARD, DIAGNOSED FROM CONTINUITY rather than read from GEOS-FP OMEGA:\n    Mz[ke] = - sum_{k < ke} ( dB[k]*dPSdt + divh_fix(k) )\nan exclusive forward scan over lev (esm-spec 4.3.1 cumulative reductions; filter j < i). Mz[1] = 0 falls out as the empty-set additive identity -- no flux through the ground -- and Mz[NLEV+1] = 0 falls out BECAUSE divh_fix makes the column budget close. So both no-flux walls the facediv_lev_mass_nf_k1/_kN stencils assume are now SATISFIED rather than merely asserted.\n\nThis replaces Mz = -OMEGA. Taking OMEGA directly is what made m drift from dp (Jockel et al. 2001): OMEGA is a 3-hourly MEAN while PS is INSTANTANEOUS, so the two never closed the same budget. Diagnosing Mz instead means the vertical flux CANNOT be inconsistent -- it is defined as whatever closes continuity. Note F_OM is consequently no longer read by the dynamics.",
           "expression": {
             "op": "aggregate",
             "output_idx": [
@@ -1218,8 +1516,11 @@
               "gke"
             ],
             "args": [
-              "F_OM"
+              "dB",
+              "dPSdt",
+              "divh_fix"
             ],
+            "reduce": "+",
             "ranges": {
               "gi": {
                 "from": "lon"
@@ -1229,188 +1530,51 @@
               },
               "gke": {
                 "from": "lev_nodes"
+              },
+              "gk": {
+                "from": "lev"
               }
             },
+            "filter": {
+              "op": "<",
+              "args": [
+                "gk",
+                "gke"
+              ]
+            },
             "expr": {
-              "op": "-",
+              "op": "neg",
               "args": [
                 {
-                  "op": "*",
+                  "op": "+",
                   "args": [
-                    0.5,
                     {
-                      "op": "+",
+                      "op": "*",
                       "args": [
                         {
-                          "op": "+",
+                          "op": "index",
                           "args": [
-                            {
-                              "op": "*",
-                              "args": [
-                                {
-                                  "op": "-",
-                                  "args": [
-                                    1.0,
-                                    "w_A3"
-                                  ]
-                                },
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    1,
-                                    {
-                                      "op": "max",
-                                      "args": [
-                                        {
-                                          "op": "-",
-                                          "args": [
-                                            "gke",
-                                            1
-                                          ]
-                                        },
-                                        1
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "*",
-                              "args": [
-                                "w_A3",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    2,
-                                    {
-                                      "op": "max",
-                                      "args": [
-                                        {
-                                          "op": "-",
-                                          "args": [
-                                            "gke",
-                                            1
-                                          ]
-                                        },
-                                        1
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
+                            "dB",
+                            "gk"
                           ]
                         },
                         {
-                          "op": "+",
+                          "op": "index",
                           "args": [
-                            {
-                              "op": "*",
-                              "args": [
-                                {
-                                  "op": "-",
-                                  "args": [
-                                    1.0,
-                                    "w_A3"
-                                  ]
-                                },
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    1,
-                                    {
-                                      "op": "min",
-                                      "args": [
-                                        "gke",
-                                        "NLEV"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "*",
-                              "args": [
-                                "w_A3",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    2,
-                                    {
-                                      "op": "min",
-                                      "args": [
-                                        "gke",
-                                        "NLEV"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
+                            "dPSdt",
+                            "gi",
+                            "gj"
                           ]
                         }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "divh_fix",
+                        "gi",
+                        "gj",
+                        "gk"
                       ]
                     }
                   ]
