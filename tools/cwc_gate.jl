@@ -220,7 +220,7 @@ try
 
     # Seed the three air masses from the SAME call, so mg and mqg start bitwise
     # equal -- the gate is meaningless if they differ in the last bit at t0.
-    dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0)
+    dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0; slice = run.slice)
     at(nm, c) = (P.cell_pos[c] - 1) * P.NS + P.base_pos[nm]
     for c in P.cells
         v = dp0(c[1], c[2], c[3])
@@ -259,7 +259,7 @@ try
         # reports the atmosphere's own surface-pressure tendency as model drift --
         # it shows up as a suspiciously exact straight line (dPSdt is constant
         # inside a 3 h I3 window), which is the tell.
-        dpt = hydrostatic_dp(run.merged_param, ff.const_arrays, tnow)
+        dpt = hydrostatic_dp(run.merged_param, ff.const_arrays, tnow; slice = run.slice)
         dpn = [dpt(c[1], c[2], c[3]) for c in P.cells]
         drift = maximum(abs.((mm .- dpn) ./ dpn))
         say(@sprintf("  %-9s |qtest-1|=%.3e  |qg-1|=%.3e  |dev|=%.3e  bitwise mg==mqg:%-5s  |m-dp|/dp=%.3e",

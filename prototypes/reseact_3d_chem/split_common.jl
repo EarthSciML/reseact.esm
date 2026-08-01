@@ -19,7 +19,7 @@ using EarthSciAST
 using EarthSciASTSplitter
 using EarthSciASTSplitter: split_system, stencil_vs_pointwise, spatially_coupled,
                            contains_op, references
-using EarthSciIO, JSON3
+using EarthSciIO, JSON3, Dates
 const EA = EarthSciAST
 
 # --------------------------------------------------------------------------- #
@@ -161,12 +161,40 @@ end
 
 # --------------------------------------------------------------------------- #
 # 2. The GEOS-FP forcing chain (identical to run_c1.jl / Stage A).
+#
+# `ndays` is how many DAILY GEOS-FP files the cadence spans. GEOS-FP publishes
+# one file per collection per day, so a run longer than a day needs more than
+# one, and the provider gets a `t -> url` resolver instead of a fixed string:
+# every tick names the day it falls in and EarthSciIO locates the record INSIDE
+# that day's file (`_file_record`; before that existed, tick 9 of a 3-hourly
+# cadence asked an 8-record file for record 9 and threw).
+#
+# Size the span from the RUN, not the window: the last tick's bracket wants a
+# SUCCESSOR, and if there is none the bracket degenerates to [last, last] and
+# the forcing silently freezes for the rest of the run. `ndays` must therefore
+# cover the run end plus one more tick -- `forcing_days_for` does that.
+#
+# Model time is seconds since 2013-01-01T00:00:00Z (the epoch the .esm's solar
+# chain also decomposes), so day d is EPOCH_DATE + d.
 # --------------------------------------------------------------------------- #
-function reseact_forcing(dir)
-    BASE = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/2013/01/GEOSFP.20130101"
+const EPOCH_DATE = Dates.Date(2013, 1, 1)
+
+"""Daily GEOS-FP files needed to cover `[t0, tf]` in model seconds, including
+the one extra day the last bracket's successor may land in."""
+forcing_days_for(t0, tf) = Int(floor(tf / 86400)) + 2
+
+function reseact_forcing(dir; ndays::Integer = 1)
+    ndays >= 1 || throw(ArgumentError("ndays must be >= 1, got $ndays"))
     cache = EarthSciIO.Cache()
+    function url(coll, t)
+        d = EPOCH_DATE + Dates.Day(floor(Int, t / 86400))
+        return string("https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+                      Dates.format(d, "yyyy/mm"), "/GEOSFP.", Dates.format(d, "yyyymmdd"),
+                      ".", coll, ".4x5.nc")
+    end
+    # `n` is the record count PER DAY; the cadence repeats it for each day.
     mk(coll, var, phase, dt, n) = EarthSciIO.discrete_provider(
-        cache, "$BASE.$coll.4x5.nc", [phase + dt * k for k in 0:(n-1)];
+        cache, t -> url(coll, t), [phase + dt * k for k in 0:(n * ndays - 1)];
         format = "netcdf", variables = [var], time_dim = "time", records_per_sample = 2)
     providers = Dict(
         "GEOSFP.GEOSFP_I3.PS"       => mk("I3", "PS", 0.0, 10800.0, 8),
@@ -207,6 +235,51 @@ function reseact_forcing(dir)
 end
 
 # --------------------------------------------------------------------------- #
+# 2a. The native slice: ONE origin, four places that have to agree.
+#
+# The slice is described twice over, in two different currencies, and neither
+# derives the other:
+#   * LON0 / LAT0    -- METAPARAMETERS, folded into the index expressions that
+#                       read the GEOS-FP arrays (local i -> native LON0+i).
+#   * lon0_deg /
+#     lat0_deg       -- PARAMETERS in degrees, which the model's own solar chain
+#                       uses to place the sun over each cell.
+# An .esm parameter default cannot be an expression over a metaparameter, so the
+# .esm cannot tie them together; a caller that sets only the metaparameters gets
+# meteorology from one place and SUNLIGHT from another, with nothing to complain.
+# `hydrostatic_dp` (below) is a third consumer of the same origin, and the .esm's
+# own bounds a fourth.
+#
+# So derive all of them here, from one (lon0, lat0), and never write the
+# literals at a call site again.
+#
+#   native_slice(lon0 = 11, nlon = 13)   -> lon -125..-65, the CONUS span
+#   native_slice()                       -> the 7x7x72 central-US default
+#
+# GEOS-FP 4x5 geometry: lon CENTRES are -180 + 5*(i-1) with cell edges 2.5 deg
+# either side; lat POINTS are -90 + 4*(j-1) (the two polar rows are half cells,
+# which is caveat (3) in the model description, not something this fixes).
+function native_slice(; lon0::Integer = 14, lat0::Integer = 29,
+                        nlon::Integer = 7, nlat::Integer = 7, nlev::Integer = 72)
+    lon0 >= 1 || throw(ArgumentError("lon0 >= 1: the west halo reads native cell lon0"))
+    lat0 >= 1 || throw(ArgumentError("lat0 >= 1: the south flank reads native point lat0"))
+    lon0 + nlon + 1 <= 72 || throw(ArgumentError(
+        "lon0+nlon+1 = $(lon0+nlon+1) > 72: the east halo runs off the native grid"))
+    lat0 + nlat <= 46 || throw(ArgumentError(
+        "lat0+nlat = $(lat0+nlat) > 46: the top lat point runs off the native grid"))
+    1 <= nlev <= 72 || throw(ArgumentError("nlev in 1..72 (hybrid-coef table length)"))
+    return (; lon0 = Int(lon0), lat0 = Int(lat0),
+            metaparameters = Dict("NLON" => Int(nlon), "NLAT" => Int(nlat),
+                                  "NLEV" => Int(nlev),
+                                  "LON0" => Int(lon0), "LAT0" => Int(lat0)),
+            parameters = Dict("Transport3D.lon0_deg" => -182.5 + 5.0 * lon0,
+                              "Transport3D.lat0_deg" => -90.0 + 4.0 * lat0),
+            # human-readable extent, for logging a run's actual footprint
+            lon_deg = (-180.0 + 5.0 * lon0, -180.0 + 5.0 * (lon0 + nlon - 1)),
+            lat_deg = (-90.0 + 4.0 * lat0, -90.0 + 4.0 * (lat0 + nlat - 1)))
+end
+
+# --------------------------------------------------------------------------- #
 # 3. Build one forcing-wired RHS closure PER part, sharing u0/p/var_map and the
 #    live forcing buffers. Mirrors EarthSciAST.simulate's provider wiring, minus
 #    the solve. Returns funcs=(f_transport!, f_chem!, …), u0, p, var_map, and the
@@ -227,15 +300,21 @@ end
 # rests on starts violated, and any measurement of continuity DRIFT is swamped by
 # that constant offset.
 #
-# Mirrors Transport3D.PS exactly: the I3 field at NATIVE (lat = 29+j, lon = 14+i),
-# blended across its two bracketing records with w_I3, scaled hPa -> Pa.
-function hydrostatic_dp(merged_param::AbstractDict, const_arrays::AbstractDict, t::Real)
+# Mirrors Transport3D.PS exactly: the I3 field at NATIVE (lat = lat0+j,
+# lon = lon0+i), blended across its two bracketing records with w_I3, scaled
+# hPa -> Pa. `slice` MUST be the one the model was built with -- pass
+# `run.slice`, which `build_split_run` echoes back for exactly this. A mismatch
+# does not throw: it seeds every column from the wrong terrain, which then reads
+# downstream as a continuity violation the model never committed.
+function hydrostatic_dp(merged_param::AbstractDict, const_arrays::AbstractDict, t::Real;
+                        slice = native_slice())
+    lon0, lat0 = slice.lon0, slice.lat0
     F  = merged_param["GEOSFP.GEOSFP_I3.PS"]
     dA = Float64.(const_arrays["Transport3D.dA"])
     dB = Float64.(const_arrays["Transport3D.dB"])
     w  = (t - 10800.0 * floor(t / 10800.0)) / 10800.0     # I3: 3-hourly, anchored 00:00Z
     return function (i::Integer, j::Integer, k::Integer)
-        ps = 100.0 * ((1 - w) * F[1, 29 + j, 14 + i] + w * F[2, 29 + j, 14 + i])
+        ps = 100.0 * ((1 - w) * F[1, lat0 + j, lon0 + i] + w * F[2, lat0 + j, lon0 + i])
         return dA[k] + dB[k] * ps
     end
 end
@@ -245,9 +324,16 @@ function build_split_run(docs, tspan; providers = nothing,
                          const_arrays::AbstractDict = Dict{String,Any}(),
                          param_arrays::AbstractDict = Dict{String,Any}(),
                          initial_conditions::AbstractDict = Dict{String,Float64}(),
+                         slice = native_slice(),
                          model_name = nothing, inspect = nothing)
     t0 = Float64(tspan[1])
     overrides = Dict{String,Float64}(String(k) => Float64(v) for (k, v) in parameters)
+    # The slice's degree-space parameters are applied HERE rather than left to
+    # the caller, because forgetting them is silent: LON0/LAT0 move where the
+    # meteorology is read from, lon0_deg/lat0_deg move where the SUN is, and a
+    # run with the two disagreeing produces a complete, plausible trajectory of
+    # the wrong place. They win over `parameters` for the same reason.
+    merge!(overrides, Dict{String,Float64}(k => Float64(v) for (k, v) in slice.parameters))
 
     # --- forcing wiring (once): const providers -> const_arrays; discrete -> live
     #     buffers in param_arrays that a single refresh callback rewrites in place.
@@ -307,5 +393,5 @@ function build_split_run(docs, tspan; providers = nothing,
     end
 
     return (; funcs = Tuple(funcs), u0, p, tspan = (t0, Float64(tspan[2])),
-            var_map, cb, tstops, merged_param, dms)
+            var_map, cb, tstops, merged_param, dms, slice)
 end

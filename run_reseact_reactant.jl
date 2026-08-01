@@ -25,6 +25,8 @@
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
 #   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
+#   RESEACT_LON0/LAT0  native GEOS-FP 4x5 slice origin (default 14/29 = central US;
+#                      11 with NLON=13 gives lon -125..-65, CONUS)
 #   RESEACT_NLON/NLAT/NLEV  grid dims          (bound as .esm metaparameters;
 #                           defaults = the model's own 7/7/72. Each distinct grid
 #                           is a distinct XLA program -> a fresh ~tens-of-minutes
@@ -76,9 +78,16 @@ const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const LABEL      = get(ENV, "RESEACT_LABEL", basename(MODEL))
 const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "60"))
 # Grid dims as .esm metaparameters (empty -> the model's own defaults 7/7/72).
-const GRID_MP = Dict{String,Int}(k => parse(Int, ENV["RESEACT_$k"])
-                                 for k in ("NLON", "NLAT", "NLEV") if haskey(ENV, "RESEACT_$k"))
-const NLEV_EFF = get(GRID_MP, "NLEV", 72)
+_env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
+# One origin -> metaparameters + the degree-space lon0_deg/lat0_deg parameters +
+# the native index base hydrostatic_dp reads. See `native_slice` in
+# split_common.jl: the .esm cannot derive one currency from the other, and a
+# mismatch silently runs the meteorology of one place under the sun of another.
+const SLICE = native_slice(lon0 = _env("LON0", 14), lat0 = _env("LAT0", 29),
+                           nlon = _env("NLON", 7), nlat = _env("NLAT", 7),
+                           nlev = _env("NLEV", 72))
+const GRID_MP  = SLICE.metaparameters
+const NLEV_EFF = GRID_MP["NLEV"]
 const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
 const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
 const HOST_ARM   = get(ENV, "RESEACT_HOST_ARM", "1") == "1"
@@ -97,12 +106,15 @@ rc_ok(rc) = (rc == SciMLBase.ReturnCode.Success || rc == SciMLBase.ReturnCode.De
 #    captures host scratch per node and cannot trace.
 # --------------------------------------------------------------------------- #
 say("=== $LABEL : split + build oop halves ($MODEL) ===")
+say(@sprintf("    slice: lon %.1f..%.1f, lat %.1f..%.1f (native origin %d,%d) grid=%dx%dx%d",
+    SLICE.lon_deg[1], SLICE.lon_deg[2], SLICE.lat_deg[1], SLICE.lat_deg[2],
+    SLICE.lon0, SLICE.lat0, GRID_MP["NLON"], GRID_MP["NLAT"], GRID_MP["NLEV"]))
 fo = Vector{Any}(undef, 2); u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete_providers = Dict{String,Any}()
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
     global fo, u0, p, var_map, merged_param, discrete_providers
-    file = isempty(GRID_MP) ? EA.load(MODEL) : EA.load(MODEL; metaparameters = GRID_MP)
+    file = EA.load(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)
@@ -116,7 +128,7 @@ Logging.with_logger(Logging.NullLogger()) do
     # than through prepare_split_docs, so it has to pass the rule itself.
     parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
-    ff = reseact_forcing(CHEMDIR)
+    ff = reseact_forcing(CHEMDIR; ndays = forcing_days_for(T0, T_END))
     # NLEV<72 -> slice the 72-entry hybrid table to the truncated column.
     ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
@@ -129,6 +141,9 @@ Logging.with_logger(Logging.NullLogger()) do
         end
     end
     ov = Dict{String,Float64}(String(k) => Float64(v) for (k, v) in ff.parameters)
+    # The slice's degree parameters must travel with its metaparameters; this
+    # runner splits by hand, so it applies what build_split_run would apply.
+    merge!(ov, Dict{String,Float64}(k => Float64(v) for (k, v) in SLICE.parameters))
     for i in 1:2
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
             parameter_overrides = ov, const_arrays = merged_const, param_arrays = merged_param)
@@ -145,9 +160,9 @@ say(@sprintf("BUILD %s: %.2f s   nstates=%d", LABEL, time() - tb, length(u0)))
 # Seed air mass m(0) = dA + dB*ps_ref (species-major, via var_map names).
 # m(0) from the REAL GEOS-FP PS at T0, not a constant -- see hydrostatic_dp in
 # split_common.jl for why the old constant-PS_REF seed was wrong by the terrain.
-let ff = reseact_forcing(CHEMDIR)
+let ff = reseact_forcing(CHEMDIR; ndays = forcing_days_for(T0, T_END))
     ca = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)
-    dp0 = hydrostatic_dp(merged_param, ca, T0)
+    dp0 = hydrostatic_dp(merged_param, ca, T0; slice = SLICE)
     for (nm, idx) in var_map
         mm = match(r"^Transport3D\.m\[(\d+),(\d+),(\d+)\]$", nm)
         mm === nothing && continue

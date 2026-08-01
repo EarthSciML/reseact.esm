@@ -65,7 +65,7 @@ foreach(d -> d.materialize!(), run.dms)
 
 # Seed m from the real hydrostatic thickness so the state is EXACTLY consistent
 # at t0 -- the residual measured below is then the RHS defect alone.
-dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0)
+dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0; slice = run.slice)
 mb  = P.base_pos["Transport3D.m"]
 for c in P.cells
     u[(P.cell_pos[c] - 1) * P.NS + mb] = dp0(c[1], c[2], c[3])
@@ -78,7 +78,11 @@ du = similar(u); ft!(du, u, run.p, T0)
 const dA = Float64.(ff.const_arrays["Transport3D.dA"])
 const dB = Float64.(ff.const_arrays["Transport3D.dB"])
 F = run.merged_param["GEOSFP.GEOSFP_I3.PS"]
-dPSdt(i, j) = 100.0 * (F[2, 29 + j, 14 + i] - F[1, 29 + j, 14 + i]) / 10800.0
+# Native index base from the RUN's own slice, not literals: the origin is a
+# metaparameter now, and a diagnostic that reads a different column than the
+# model did would report the terrain difference as a continuity residual.
+const LON0_, LAT0_ = run.slice.lon0, run.slice.lat0
+dPSdt(i, j) = 100.0 * (F[2, LAT0_ + j, LON0_ + i] - F[1, LAT0_ + j, LON0_ + i]) / 10800.0
 
 NL = maximum(c[1] for c in P.cells); NA = maximum(c[2] for c in P.cells)
 isw(c) = c[1] == 1 || c[1] == NL || c[2] == 1 || c[2] == NA

@@ -136,7 +136,7 @@ foreach(d -> d.materialize!(), run.dms)       # prime discrete (forcing-derived)
 # pressure, not a constant. Seeding from a constant PS_REF (as this did) starts m
 # 16% RMS / 48% worst-column away from the dp it is supposed to equal, purely
 # from terrain. See hydrostatic_dp in split_common.jl.
-let dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0)
+let dp0 = hydrostatic_dp(run.merged_param, ff.const_arrays, T0; slice = run.slice)
     for c in P.cells
         u0[(P.cell_pos[c] - 1) * P.NS + mb] = dp0(c[1], c[2], c[3])
     end

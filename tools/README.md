@@ -23,10 +23,15 @@ this one (same parent directory); the model refs them by relative path.
 > of it — the result still loads, still runs, and still looks like ReSEACT, which
 > is exactly what makes it dangerous.
 >
-> To re-grid the root model, set the `NLON`/`NLAT`/`NLEV` **metaparameters** at load
-> instead (`prepare_split_docs(MODEL; metaparameters = ...)`, or `RESEACT_NLON` etc.
-> on the runners). The `.esm` is O(1) in cell count, so that is the supported path
-> and needs no regeneration at all.
+> To re-grid or re-position the root model, set its **metaparameters** at load
+> instead — `NLON`/`NLAT`/`NLEV` for the extent and `LON0`/`LAT0` for where on the
+> native GEOS-FP 4x5 grid the slice sits (`prepare_split_docs(MODEL;
+> metaparameters = ...)`, or `RESEACT_NLON` / `RESEACT_LON0` etc. on
+> `tools/diurnal_run.jl`). The `.esm` is O(1) in cell count, so that is the
+> supported path and needs no regeneration at all. Build the metaparameter dict
+> with `native_slice` rather than by hand: it also produces the `lon0_deg` /
+> `lat0_deg` parameters that have to move with `LON0`/`LAT0` and that nothing in
+> the model derives (see HELPERS.md §1).
 
 `build_full_model.py` chains the three committed generators
 (`prototypes/transport_3d/gen_t3d.py` → `reseact_3d/gen_r3d.py` →
