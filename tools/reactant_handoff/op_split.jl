@@ -119,10 +119,28 @@ function lie_trotter_solve(f_trans!, fc, u0, tspan, p, inner_algs;
         abstols === nothing || (ch.opts.abstol = abstols[i])
     end
 
-    # Stop grid: macro-dt lattice ∪ forcing cadence boundaries (strictly interior),
-    # then the window end. Stopping AT each cadence boundary lets `refresh!` swap
-    # the forcing so it is never stale across a boundary within a macro step.
-    fstops = Set(round(t; digits = 6) for t in forcing_tstops if t0 + 1e-6 < t < tf - 1e-6)
+    # Stop grid: macro-dt lattice ∪ forcing cadence boundaries, then the window end.
+    # Stopping AT each cadence boundary lets `refresh` swap the forcing so it is
+    # never stale across a boundary.
+    #
+    # The interval is HALF-OPEN ON THE RIGHT — `t0 < x <= tf`, not `t0 < x < tf`.
+    # Strict interiority looks like the safe choice and is in fact a silent
+    # forcing-freeze: callers drive this ONE MACRO STEP AT A TIME, so a boundary
+    # that lands on a macro-step edge is excluded from the step that ENDS there
+    # (not < tf) and again from the step that STARTS there (not > t0), and is
+    # never refreshed at all. Every GEOS-FP tstop is a multiple of 1800 (I3 at
+    # 10800k, A3 at 5400+10800k, A1 at 1800+3600k), so with the usual macro_dt=300
+    # and a T0 on the cadence, EVERY boundary was skipped: measured 0 refreshes
+    # over a 9 h run, i.e. U/V/PS/T/PBLH frozen at t0 for the whole simulation.
+    # (macro_dt=250, which does not divide 1800, fired 9 times — which is what made
+    # it invisible in ad-hoc testing.)
+    #
+    # Refreshing AT tf is correct, not a fencepost fudge: at a boundary time both
+    # brackets are valid, since the old bracket's right record and the new
+    # bracket's left record are the same record. Swapping there hands the next
+    # macro step fresh forcing. It cannot double-fire — the next call has that
+    # instant as its t0, which the strict left bound excludes.
+    fstops = Set(round(t; digits = 6) for t in forcing_tstops if t0 + 1e-6 < t <= tf + 1e-6)
     grid   = collect((t0 + macro_dt):macro_dt:(tf - 1e-9))
     stops  = sort!(unique!(vcat(grid, collect(fstops), Float64[tf])))
 
@@ -134,7 +152,7 @@ function lie_trotter_solve(f_trans!, fc, u0, tspan, p, inner_algs;
         clamp_nonneg && (integ.u .= max.(integ.u, 0.0))
         tcur = integ.t
         nmacro += 1
-        (tcur < tf - 1e-6 && round(tcur; digits = 6) in fstops) && refresh(tcur)
+        round(tcur; digits = 6) in fstops && refresh(tcur)
     end
 
     subT, subC = integ.child_subintegrators

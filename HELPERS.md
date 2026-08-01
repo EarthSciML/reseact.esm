@@ -29,6 +29,34 @@ Rosenbrock23/BlockDiagonal chemistry))` via `lie_trotter_solve`. This is the
 reference the Reactant runner is validated against. (`RESEACT_MACRO_DT`, default
 300 s, sets the splitting interval.)
 
+**Forcing-refresh fencepost — read this before touching `lie_trotter_solve`'s stop
+grid.** Its `fstops` interval is deliberately **half-open on the right**
+(`t0 < x <= tf`). Strict interiority is the obvious-looking choice and is a silent
+forcing-freeze: every driver calls `lie_trotter_solve` **one macro step at a time**,
+so a cadence boundary landing on a macro-step edge is excluded from the step that
+*ends* there and again from the step that *starts* there, and never refreshes.
+Every GEOS-FP tstop is a multiple of 1800 (I3 `10800k`, A3 `5400+10800k`, A1
+`1800+3600k`), so at the default `macro_dt=300` with a `T0` on the cadence, **every**
+boundary was skipped — measured **0** refreshes over a 9 h run, i.e. U/V/PS/T/PBLH
+frozen at `T0` for the whole simulation. `macro_dt=250` (which does not divide 1800)
+fired normally, which is what kept it invisible.
+
+Refreshing *at* `tf` is correct rather than a fudge: at a boundary both brackets are
+valid, because the old bracket's right record and the new bracket's left record are
+the same record. It cannot double-fire, since the next call has that instant as its
+`t0` and the strict left bound excludes it. The invariant to test is that the firing
+set is **independent of `macro_dt`** — `{300, 250, 900, 10800}` must all give the
+same 12 times over a 9 h window.
+
+The symptom to recognise, because it does not look like stale forcing: the
+continuity drift `|m-dp|/dp` sits at roundoff *within* each 3 h window, then steps
+by a constant at exactly the I3 record boundaries and stays flat between them,
+perfectly linear in boundaries crossed. That is `m` integrating a constant `dPSdt`
+while the diagnostic's weight `w_I3(t) = (t mod 10800)/10800` sawtooths back to 0,
+so `dp` drops discontinuously by one window's PS change and `m` does not. **A drift
+that steps at forcing boundaries and is flat in between is stale forcing, not a
+discretisation error.**
+
 ### `run_reseact_reactant.jl` (Reactant/XLA) — the above **plus** three Reactant helpers
 
 | Helper | Provides | Status |
