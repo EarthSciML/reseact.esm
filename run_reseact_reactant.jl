@@ -91,7 +91,7 @@ const NLEV_EFF = GRID_MP["NLEV"]
 const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
 const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
 const HOST_ARM   = get(ENV, "RESEACT_HOST_ARM", "1") == "1"
-const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))   # s since 2013-01-01T00:00Z
+const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))   # s since 2016-01-01T00:00Z
 const T_END = T0 + SOLVE_SECS
 const RTOL  = 1e-4
 const ATOL_T = 1e-6         # transport abstol

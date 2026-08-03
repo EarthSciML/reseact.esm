@@ -35,7 +35,7 @@
 #   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
 #   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
 #   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
-#   RESEACT_T0         start time, s since 2013-01-01T00:00:00Z (default 64800 =
+#   RESEACT_T0         start time, s since 2016-01-01T00:00:00Z (default 64800 =
 #                      18:00Z). Also the model's solar epoch, so t IS the UTC clock.
 #   RESEACT_MACRO_DT   Lie-Trotter interval, s (default 300, capped at the window)
 #   RESEACT_NLON/NLAT/NLEV  grid dims          (bound as .esm metaparameters;
@@ -86,7 +86,7 @@ const MACRO_DT   = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
 const GRID_MP = Dict{String,Int}(k => parse(Int, ENV["RESEACT_$k"])
                                  for k in ("NLON", "NLAT", "NLEV") if haskey(ENV, "RESEACT_$k"))
 const NLEV_EFF = get(GRID_MP, "NLEV", 72)
-# Solver time is seconds since 2013-01-01T00:00:00Z -- the GEOS-FP day the forcing
+# Solver time is seconds since 2016-01-01T00:00:00Z -- the GEOS-FP day the forcing
 # is read from AND the epoch the model's solar chain (Transport3D.doy0/hour0/...)
 # is anchored to, so t IS the UTC clock. Default 64800 = 18:00Z (near local solar
 # noon over the slice). A diurnal run wants T0=0; the forcing is only valid while

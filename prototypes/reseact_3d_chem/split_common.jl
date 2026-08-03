@@ -174,10 +174,21 @@ end
 # the forcing silently freezes for the rest of the run. `ndays` must therefore
 # cover the run end plus one more tick -- `forcing_days_for` does that.
 #
-# Model time is seconds since 2013-01-01T00:00:00Z (the epoch the .esm's solar
+# Model time is seconds since 2016-01-01T00:00:00Z (the epoch the .esm's solar
 # chain also decomposes), so day d is EPOCH_DATE + d.
+#
+# 2016, not 2013, so the meteorology year matches the NEI2016 emissions
+# inventory -- there is only one year of NEI, and running 2016 emissions under
+# 2013 weather would be a silent inconsistency of exactly the kind the
+# LON0/LAT0-vs-lon0_deg seam was made to prevent. The .esm's solar chain needs
+# NO change for this: it encodes the epoch as the literals doy0=1, hour0=0 and
+# then integrates `gamma_s = k*((doy0-1) + (hour0-12)/24 + t/86400)`, i.e.
+# elapsed days from Jan 1, never re-consulting the calendar -- and 2016-01-01 is
+# a Jan 1 like any other. The leap day is likewise irrelevant to the sun; it
+# only shifts which GEOS-FP FILE a given day index names, which the URL builder
+# below derives from the real calendar date and therefore gets right.
 # --------------------------------------------------------------------------- #
-const EPOCH_DATE = Dates.Date(2013, 1, 1)
+const EPOCH_DATE = Dates.Date(2016, 1, 1)
 
 """Daily GEOS-FP files needed to cover `[t0, tf]` in model seconds, including
 the one extra day the last bracket's successor may land in."""

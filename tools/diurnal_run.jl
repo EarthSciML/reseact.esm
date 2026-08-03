@@ -31,7 +31,7 @@
 #   RESEACT_MODEL, RESEACT_LABEL, RESEACT_NLON/NLAT/NLEV, RESEACT_MACRO_DT
 #   RESEACT_LON0/LAT0  native GEOS-FP 4x5 slice origin (default 14/29 = the
 #                      central US; 11 with NLON=13 gives lon -125..-65, CONUS)
-#   RESEACT_T0         start time, s since 2013-01-01T00:00:00Z (default 0)
+#   RESEACT_T0         start time, s since 2016-01-01T00:00:00Z (default 0)
 #   RESEACT_SOLVE_SECS window length, s                        (default 75600 = 21 h)
 #   RESEACT_ZARR       gridded output store                    (default: none)
 #   RESEACT_OUT_EVERY  write one record every N macro steps    (default 1)
