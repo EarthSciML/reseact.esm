@@ -54,16 +54,18 @@ const REPO = @__DIR__
 Pkg.activate(get(ENV, "RESEACT_RUN_ENV", joinpath(REPO, "run-model-jl")); io = devnull)
 
 # The kernel-class merge is default-ON in EarthSciAST (since the IIP hoist,
-# EarthSciAST 2fb930d6). It exists to shrink the IR for Reactant TRACING; the
-# native CPU runner does not want it. With the merge on, the :inplace RHS goes
-# through the codegen tier, whose first-call compile of the (large, merged)
-# transport kernels is expensive. That compile is now MEMORY-bounded and the
-# codegen RHS is zero-alloc (EarthSciAST codegen function-barrier fix,
-# codegen_kernel.jl), so it is correct and no longer OOMs — but the first-call
-# compile still dominates a single short CPU solve (hundreds of seconds) versus
-# ~25 s for the unmerged INTERPRETED RHS. So disable the merge here unless the
-# user explicitly sets the flag (ESS_KERNEL_CLASS_MERGE_DISABLE=0 forces it on).
-haskey(ENV, "ESS_KERNEL_CLASS_MERGE_DISABLE") || (ENV["ESS_KERNEL_CLASS_MERGE_DISABLE"] = "1")
+# EarthSciAST 2fb930d6): it collapses per-cell-fragmented kernels into
+# lane-batched classes, which is what keeps the IR from growing with the grid.
+#
+# This runner USED to force it off. That was measured on a 7x7x7 box, where the
+# merged codegen tier's first-call compile (hundreds of seconds) swamped a ~25 s
+# interpreted solve — a real result, but for a grid small enough that the
+# unmerged IR was affordable in the first place. At CONUS 13x7x72 that trade
+# reverses: the unmerged per-cell IR is the thing that does not fit, and paying a
+# fixed compile to keep the kernel count grid-independent is the whole point of
+# the merge. Leave it ON and let the runner's own bench counters show the cost;
+# ESS_KERNEL_CLASS_MERGE_DISABLE=1 still forces the old behaviour for a
+# small-grid A/B.
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
 import LinearSolve
@@ -104,10 +106,31 @@ rc_ok(rc) = (rc == SciMLBase.ReturnCode.Success || rc == SciMLBase.ReturnCode.De
 # 1. Split + build both in-place halves over shared live GEOS-FP forcing.
 # --------------------------------------------------------------------------- #
 say("=== $LABEL : validate + build split ($MODEL) grid=$(get(GRID_MP,"NLON",7))x$(get(GRID_MP,"NLAT",7))x$(NLEV_EFF) ===")
+# ONE known-false diagnostic is exempted, by exact shape, and nothing else.
+#
+# `manifold` is a SCALAR-FIELD substitution site (esm-spec §9.6.1): a geometry
+# kernel's manifold is bound to the LITERAL "planar"/"spherical"/"geodesic", and
+# §9.6.9 discharges its admissibility on the EXPANDED form. But validate's
+# reference walk descends `apply_expression_template` bindings as expressions, so
+# it parses the literal as a bare variable and reports it undefined. This is not
+# reseact's: it reproduces on a four-variable fixture that contains one
+# conservative_overlap call and nothing else, and wildlandfire.esm's Era5Regrid
+# spells its manifold binding identically. The tree-walk BUILD is unaffected --
+# it expands the template and sees the scalar field, which is why NEIRegrid
+# builds and runs. Exempted narrowly (this error_type, this literal set) so a
+# genuinely undefined variable anywhere else still stops the run.
+const _MANIFOLDS = ("planar", "spherical", "geodesic")
+_is_manifold_false_positive(e) =
+    e.error_type == "undefined_variable" &&
+    any(m -> occursin("Variable '$m' referenced", e.message), _MANIFOLDS)
+
 let r = isempty(GRID_MP) ? EA.validate(MODEL) : EA.validate(EA.load(MODEL; metaparameters = GRID_MP))
-    r.is_valid || (for e in r.structural_errors[1:min(6, end)]
-                       say("  $(e.error_type)@$(e.path): $(e.message)")
-                   end; error("invalid model"))
+    real_errors = filter(!_is_manifold_false_positive, r.structural_errors)
+    exempted = length(r.structural_errors) - length(real_errors)
+    exempted == 0 || say("  ($exempted manifold scalar-field diagnostic(s) exempted; see note above)")
+    isempty(real_errors) || (for e in real_errors[1:min(6, end)]
+                                 say("  $(e.error_type)@$(e.path): $(e.message)")
+                             end; error("invalid model"))
 end
 docs = prepare_split_docs(MODEL; metaparameters = GRID_MP)
 ff = reseact_forcing(CHEMDIR)               # 72-level hybrid coefs + native GEOS-FP providers

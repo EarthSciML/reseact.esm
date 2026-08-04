@@ -40,6 +40,16 @@
       "type": "integer",
       "default": 29,
       "description": "Meridional origin of the slice: local lat point j is native point LAT0+j, so LAT0=29 puts j=1 at native 30 (26 degN). Bound at load. Must satisfy LAT0 >= 1 (the south flank reads native LAT0) and LAT0+NLAT <= 46. The `Transport3D.lat0_deg` PARAMETER carries the same origin in degrees and must be overridden to match: lat0_deg = -90 + 4*LAT0."
+    },
+    "NEI_NX": {
+      "type": "integer",
+      "default": 459,
+      "description": "Column count of the NEI2016 12US1 source grid (IOAPI NCOLS). Fixed by the data product, not by the run. Ties the source ring builder's GX, the NSRC index-set size, and the (row, col) flattening of the native array to one number."
+    },
+    "NEI_NY": {
+      "type": "integer",
+      "default": 299,
+      "description": "Row count of the NEI2016 12US1 source grid (IOAPI NROWS)."
     }
   },
   "models": {
@@ -6616,6 +6626,3002 @@
     },
     "SuperFastDepositionSink": {
       "ref": "../EarthSciModels/components/atmospheric_deposition/superfast_deposition_sink.esm"
+    },
+    "NEI2016Emis": {
+      "ref": "../EarthSciModels/components/earthsci_data/nei2016_monthly.esm"
+    },
+    "NEIRegrid": {
+      "expression_template_imports": [
+        {
+          "ref": "../EarthSciDiscretizations/regridding/conservative_overlap.esm",
+          "prefix": "ov",
+          "bindings": {
+            "NSRC": {
+              "op": "*",
+              "args": [
+                "NEI_NX",
+                "NEI_NY"
+              ]
+            },
+            "NTGT": {
+              "op": "*",
+              "args": [
+                "NLON",
+                "NLAT"
+              ]
+            },
+            "NVERT": 4
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/regridding/cartesian_cell_rings.esm",
+          "prefix": "src",
+          "bindings": {
+            "GX": "NEI_NX",
+            "GY": "NEI_NY"
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/regridding/cartesian_cell_rings.esm",
+          "prefix": "tgt",
+          "bindings": {
+            "GX": "NLON",
+            "GY": "NLAT"
+          }
+        },
+        {
+          "ref": "../EarthSciDiscretizations/reprojection/lambert_conformal.esm",
+          "prefix": "lcc"
+        }
+      ],
+      "variables": {
+        "src_x0": {
+          "type": "parameter",
+          "units": "m",
+          "default": -2556000.0,
+          "description": "12US1 XORIG: the WEST EDGE of source column 1 in Lambert metres. cartesian_cell_rings_poly takes x0/y0 as the SW cell EDGE, which is exactly what IOAPI's XORIG/YORIG are, so these transfer verbatim."
+        },
+        "src_y0": {
+          "type": "parameter",
+          "units": "m",
+          "default": -1728000.0,
+          "description": "12US1 YORIG: the SOUTH EDGE of source row 1 (Lambert metres)."
+        },
+        "src_dx": {
+          "type": "parameter",
+          "units": "m",
+          "default": 12000.0,
+          "description": "12US1 XCELL: source cell width (m)."
+        },
+        "src_dy": {
+          "type": "parameter",
+          "units": "m",
+          "default": 12000.0,
+          "description": "12US1 YCELL: source cell height (m)."
+        },
+        "lcc_lat_1": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 33.0,
+          "description": "12US1 P_ALP: first standard parallel."
+        },
+        "lcc_lat_2": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 45.0,
+          "description": "12US1 P_BET: second standard parallel."
+        },
+        "lcc_lat_0": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 40.0,
+          "description": "12US1 YCENT: origin latitude."
+        },
+        "lcc_lon_0": {
+          "type": "parameter",
+          "units": "deg",
+          "default": -97.0,
+          "description": "12US1 P_GAM/XCENT: central meridian."
+        },
+        "lcc_R": {
+          "type": "parameter",
+          "units": "m",
+          "default": 6370997.0,
+          "description": "12US1 sphere radius. The projection is spherical (+a=+b=6370997), so the spherical Snyder forms in the ESD library are EXACT here, not an approximation of an ellipsoidal grid."
+        },
+        "lon0_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": -112.5,
+          "description": "West EDGE of the target slice, in degrees. MUST equal Transport3D.lon0_deg (= -182.5 + 5*LON0); `native_slice` sets both from one origin. Disagreement puts the emissions on a different grid than the meteorology, silently."
+        },
+        "lat0_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 26.0,
+          "description": "Southern-most lat POINT of the target slice. MUST equal Transport3D.lat0_deg (= -90 + 4*LAT0). Note this is a cell CENTRE, so the ring builder below is handed lat0_deg - dlat_deg/2 as its south edge."
+        },
+        "dlon_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 5.0,
+          "description": "GEOS-FP 4x5 zonal cell width."
+        },
+        "dlat_deg": {
+          "type": "parameter",
+          "units": "deg",
+          "default": 4.0,
+          "description": "GEOS-FP 4x5 meridional cell width."
+        },
+        "atol": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1e-12,
+          "description": "Sliver floor for the gated overlap: candidate pairs whose clipped area is <= atol are dropped from both the weights and the apply."
+        },
+        "scale": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "Uniform emissions scaling knob (1 = inventory as published). Mirrors NEI2016MonthlyEmis.scale; NOT the days-in-month fix, which is applied below as physics."
+        },
+        "t_ref": {
+          "type": "parameter",
+          "units": "s",
+          "default": 1451606400.0,
+          "description": "Reference epoch (Unix s) that model time t is measured from: 2016-01-01T00:00:00Z, the EPOCH_DATE of split_common.jl. Sets which calendar month days_in_month normalises by and where local time falls."
+        },
+        "g0": {
+          "type": "parameter",
+          "units": "m/s^2",
+          "default": 9.80665,
+          "description": "Standard gravity, for the pressure-thickness -> column-mass conversion (delp/g0 is kg/m^2)."
+        },
+        "F_NO": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "NEI2016 NO on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "shape": [
+            "nei_t",
+            "nei_lay",
+            "nei_row",
+            "nei_col"
+          ]
+        },
+        "F_NO2": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "NEI2016 NO2 on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO2 below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "shape": [
+            "nei_t",
+            "nei_lay",
+            "nei_row",
+            "nei_col"
+          ]
+        },
+        "F_CO": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "NEI2016 CO on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_CO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "shape": [
+            "nei_t",
+            "nei_lay",
+            "nei_row",
+            "nei_col"
+          ]
+        },
+        "F_ISOP": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "NEI2016 ISOP on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_ISOP below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "shape": [
+            "nei_t",
+            "nei_lay",
+            "nei_row",
+            "nei_col"
+          ]
+        },
+        "F_FORM": {
+          "type": "parameter",
+          "units": "1",
+          "default": 0.0,
+          "description": "NEI2016 FORM on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_FORM below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "shape": [
+            "nei_t",
+            "nei_lay",
+            "nei_row",
+            "nei_col"
+          ]
+        },
+        "delp": {
+          "type": "parameter",
+          "units": "Pa",
+          "default": 0.0,
+          "description": "First-level pressure thickness (Pa), coupled from Transport3D.delP1. delp/g0 is the surface layer's column mass (kg/m^2), the divisor that turns an emission FLUX into a mixing-ratio rate. This is the live hydrostatic value; the upstream component instead interpolates a 94x49 CLIMATOLOGICAL delp_dry_surface table, which reseact does not need because it already carries the real surface pressure.",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "lev": {
+          "type": "parameter",
+          "units": "1",
+          "default": 1.0,
+          "description": "Vertical index k as a field, coupled from Transport3D.levc. Emissions are injected into the surface layer only (the lev < 2 gate), matching NEI2016MonthlyEmis.",
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "src_poly_xy": {
+          "type": "observed",
+          "units": "m",
+          "description": "Source cell corner rings on the 12US1 Lambert grid, in metres, row-major over (row, col) with col fastest -- the same flattening the IOAPI array has in memory, so source cell c and F_*[1, 1, row(c), col(c)] name the same cell.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "src.cartesian_cell_rings_poly",
+            "args": [],
+            "bindings": {
+              "x0": "src_x0",
+              "y0": "src_y0",
+              "dx": "src_dx",
+              "dy": "src_dy"
+            }
+          },
+          "shape": [
+            "ov.src_cells",
+            "ov.overlap_cell_verts",
+            "ov.overlap_coord"
+          ]
+        },
+        "src_poly": {
+          "type": "observed",
+          "units": "deg",
+          "description": "Source rings reprojected from Lambert metres to lon/lat, per vertex (Snyder eqs. 14-9/14-11 for lon, 15-5 for lat). Reprojecting the SOURCE rather than the target is 137,241x4 inverse projections against the target's 91x4 -- deliberately the expensive direction, because it is the one that stays correct when GEOS-FP is swapped for a higher-resolution product. Build-time only: measured at 244,837,944 node lowerings, 161 s, 1.36 GB peak, and the cascade tally comes back EMPTY -- none of this geometry reaches the per-step RHS.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c",
+              "v",
+              "k"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              },
+              "v": {
+                "from": "ov.overlap_cell_verts"
+              },
+              "k": {
+                "from": "ov.overlap_coord"
+              }
+            },
+            "args": [
+              "src_poly_xy"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "k",
+                    2
+                  ]
+                },
+                {
+                  "op": "apply_expression_template",
+                  "name": "lcc.lambert_conformal_inverse_lon",
+                  "args": [],
+                  "bindings": {
+                    "x": {
+                      "op": "index",
+                      "args": [
+                        "src_poly_xy",
+                        "c",
+                        "v",
+                        1
+                      ]
+                    },
+                    "y": {
+                      "op": "index",
+                      "args": [
+                        "src_poly_xy",
+                        "c",
+                        "v",
+                        2
+                      ]
+                    },
+                    "lat_1": "lcc_lat_1",
+                    "lat_2": "lcc_lat_2",
+                    "lat_0": "lcc_lat_0",
+                    "lon_0": "lcc_lon_0",
+                    "R": "lcc_R"
+                  }
+                },
+                {
+                  "op": "apply_expression_template",
+                  "name": "lcc.lambert_conformal_inverse_lat",
+                  "args": [],
+                  "bindings": {
+                    "x": {
+                      "op": "index",
+                      "args": [
+                        "src_poly_xy",
+                        "c",
+                        "v",
+                        1
+                      ]
+                    },
+                    "y": {
+                      "op": "index",
+                      "args": [
+                        "src_poly_xy",
+                        "c",
+                        "v",
+                        2
+                      ]
+                    },
+                    "lat_1": "lcc_lat_1",
+                    "lat_2": "lcc_lat_2",
+                    "lat_0": "lcc_lat_0",
+                    "lon_0": "lcc_lon_0",
+                    "R": "lcc_R"
+                  }
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells",
+            "ov.overlap_cell_verts",
+            "ov.overlap_coord"
+          ]
+        },
+        "src_coslat": {
+          "type": "observed",
+          "units": "1",
+          "description": "cos(latitude) at each source cell centre, taken as the mean of its four reprojected ring latitudes. THIS IS THE AREA CORRECTION that makes a PLANAR degree-space overlap mass-conserving: clipping in (lon, lat) weights by dlon*dlat, but true area is R^2*cos(phi)*dlon*dlat, so a flux density premultiplied by cos(phi) and normalised by the cos-weighted target area (A_full) reproduces the spherical answer to the small-cell approximation. Without it a 12 km cell at 49N would be over-weighted ~1.5x relative to one at 25N.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "src_poly"
+            ],
+            "expr": {
+              "op": "cos",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.017453292519943295,
+                    {
+                      "op": "*",
+                      "args": [
+                        0.25,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "src_poly",
+                                "c",
+                                1,
+                                2
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "src_poly",
+                                "c",
+                                2,
+                                2
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "src_poly",
+                                "c",
+                                3,
+                                2
+                              ]
+                            },
+                            {
+                              "op": "index",
+                              "args": [
+                                "src_poly",
+                                "c",
+                                4,
+                                2
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "tgt_poly": {
+          "type": "observed",
+          "units": "deg",
+          "description": "Target cell corner rings in lon/lat, row-major over (lat, lon) with lon fastest, so target cell j = (gj-1)*NLON + gi. x0 is lon0_deg (already a west EDGE) but y0 is lat0_deg - dlat_deg/2, because lat0_deg is the southern-most lat POINT.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "tgt.cartesian_cell_rings_poly",
+            "args": [],
+            "bindings": {
+              "x0": "lon0_deg",
+              "y0": {
+                "op": "-",
+                "args": [
+                  "lat0_deg",
+                  {
+                    "op": "/",
+                    "args": [
+                      "dlat_deg",
+                      2.0
+                    ]
+                  }
+                ]
+              },
+              "dx": "dlon_deg",
+              "dy": "dlat_deg"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells",
+            "ov.overlap_cell_verts",
+            "ov.overlap_coord"
+          ]
+        },
+        "A_full": {
+          "type": "observed",
+          "units": "deg^2",
+          "description": "cos-weighted FULL area of each target cell: dlon * (sin(phi_N) - sin(phi_S)) * 180/pi. This is the normaliser the emissions apply divides by -- deliberately NOT conservative_overlap_A_j_gated, which row-sums the COVERED area only. The NEI domain does not tile the CONUS slice (ocean, Canada, Mexico), and normalising by covered area would smear a coastal cell's few covered source cells across the whole cell and multiply its emissions by the inverse coverage fraction. Dividing by the full cell area instead leaves the uncovered fraction correctly emitting nothing.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "j"
+            ],
+            "ranges": {
+              "j": {
+                "from": "ov.tgt_cells"
+              }
+            },
+            "args": [
+              "tgt_poly"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                "dlon_deg",
+                57.29577951308232,
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "sin",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            0.017453292519943295,
+                            {
+                              "op": "index",
+                              "args": [
+                                "tgt_poly",
+                                "j",
+                                3,
+                                2
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "sin",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            0.017453292519943295,
+                            {
+                              "op": "index",
+                              "args": [
+                                "tgt_poly",
+                                "j",
+                                1,
+                                2
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "A_ij": {
+          "type": "observed",
+          "units": "deg^2",
+          "description": "Overlap area of every (source, target) pair that survives the join.overlap broad phase -- the 'overlap index' method: an STRtree over inflated ring bounding boxes admits a product term only for candidate pairs, so one polygon clip runs per candidate instead of per (i,j) of the 137,241 x 91 product. Planar manifold: the spherical clip needs the GeometryOps extension, and src_coslat/A_full already carry the area correction that matters at these latitudes.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_A_ij_gated",
+            "args": [],
+            "bindings": {
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "manifold": "planar"
+            }
+          },
+          "shape": [
+            "ov.src_cells",
+            "ov.tgt_cells"
+          ]
+        },
+        "PHI_NO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NEI2016 NO flattened onto the source-cell enumeration and converted to a flux density (kg/m^2/s, still carrying the month's total rather than a daily rate -- the /days_in_month is applied on the target grid): file value (short tons per cell for the month) x 907.185/86400 (EarthSciData to_unit's `tons/day` scale) / (dx*dy), then x cos(lat) for the planar-overlap area correction. The remaining /days_in_month is applied on the target grid, where it is one scalar rather than 137,241 of them.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "F_NO",
+              "src_coslat"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F_NO",
+                    1,
+                    1,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "c",
+                                    1
+                                  ]
+                                },
+                                "NEI_NX"
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                "c",
+                                1
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "NEI_NX",
+                                {
+                                  "op": "floor",
+                                  "args": [
+                                    {
+                                      "op": "/",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "c",
+                                            1
+                                          ]
+                                        },
+                                        "NEI_NX"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        907.185,
+                        86400.0
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "src_dx",
+                        "src_dy"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src_coslat",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "E_NO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NO flux density (month-total basis) conservatively regridded onto the target grid: sum_i A_ij * PHI_i / A_full_j over the gated candidate set.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_apply_gated",
+            "args": [],
+            "bindings": {
+              "A_ij": "A_ij",
+              "A_j": "A_full",
+              "F_src": "PHI_NO",
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "atol": "atol"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "PHI_NO2": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NEI2016 NO2 flattened onto the source-cell enumeration and converted to a flux density (kg/m^2/s, still carrying the month's total rather than a daily rate -- the /days_in_month is applied on the target grid): file value (short tons per cell for the month) x 907.185/86400 (EarthSciData to_unit's `tons/day` scale) / (dx*dy), then x cos(lat) for the planar-overlap area correction. The remaining /days_in_month is applied on the target grid, where it is one scalar rather than 137,241 of them.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "F_NO2",
+              "src_coslat"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F_NO2",
+                    1,
+                    1,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "c",
+                                    1
+                                  ]
+                                },
+                                "NEI_NX"
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                "c",
+                                1
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "NEI_NX",
+                                {
+                                  "op": "floor",
+                                  "args": [
+                                    {
+                                      "op": "/",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "c",
+                                            1
+                                          ]
+                                        },
+                                        "NEI_NX"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        907.185,
+                        86400.0
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "src_dx",
+                        "src_dy"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src_coslat",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "E_NO2": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NO2 flux density (month-total basis) conservatively regridded onto the target grid: sum_i A_ij * PHI_i / A_full_j over the gated candidate set.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_apply_gated",
+            "args": [],
+            "bindings": {
+              "A_ij": "A_ij",
+              "A_j": "A_full",
+              "F_src": "PHI_NO2",
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "atol": "atol"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "PHI_CO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NEI2016 CO flattened onto the source-cell enumeration and converted to a flux density (kg/m^2/s, still carrying the month's total rather than a daily rate -- the /days_in_month is applied on the target grid): file value (short tons per cell for the month) x 907.185/86400 (EarthSciData to_unit's `tons/day` scale) / (dx*dy), then x cos(lat) for the planar-overlap area correction. The remaining /days_in_month is applied on the target grid, where it is one scalar rather than 137,241 of them.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "F_CO",
+              "src_coslat"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F_CO",
+                    1,
+                    1,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "c",
+                                    1
+                                  ]
+                                },
+                                "NEI_NX"
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                "c",
+                                1
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "NEI_NX",
+                                {
+                                  "op": "floor",
+                                  "args": [
+                                    {
+                                      "op": "/",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "c",
+                                            1
+                                          ]
+                                        },
+                                        "NEI_NX"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        907.185,
+                        86400.0
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "src_dx",
+                        "src_dy"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src_coslat",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "E_CO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "CO flux density (month-total basis) conservatively regridded onto the target grid: sum_i A_ij * PHI_i / A_full_j over the gated candidate set.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_apply_gated",
+            "args": [],
+            "bindings": {
+              "A_ij": "A_ij",
+              "A_j": "A_full",
+              "F_src": "PHI_CO",
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "atol": "atol"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "PHI_ISOP": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NEI2016 ISOP flattened onto the source-cell enumeration and converted to a flux density (kg/m^2/s, still carrying the month's total rather than a daily rate -- the /days_in_month is applied on the target grid): file value (short tons per cell for the month) x 907.185/86400 (EarthSciData to_unit's `tons/day` scale) / (dx*dy), then x cos(lat) for the planar-overlap area correction. The remaining /days_in_month is applied on the target grid, where it is one scalar rather than 137,241 of them.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "F_ISOP",
+              "src_coslat"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F_ISOP",
+                    1,
+                    1,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "c",
+                                    1
+                                  ]
+                                },
+                                "NEI_NX"
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                "c",
+                                1
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "NEI_NX",
+                                {
+                                  "op": "floor",
+                                  "args": [
+                                    {
+                                      "op": "/",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "c",
+                                            1
+                                          ]
+                                        },
+                                        "NEI_NX"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        907.185,
+                        86400.0
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "src_dx",
+                        "src_dy"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src_coslat",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "E_ISOP": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "ISOP flux density (month-total basis) conservatively regridded onto the target grid: sum_i A_ij * PHI_i / A_full_j over the gated candidate set.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_apply_gated",
+            "args": [],
+            "bindings": {
+              "A_ij": "A_ij",
+              "A_j": "A_full",
+              "F_src": "PHI_ISOP",
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "atol": "atol"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "PHI_FORM": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "NEI2016 FORM flattened onto the source-cell enumeration and converted to a flux density (kg/m^2/s, still carrying the month's total rather than a daily rate -- the /days_in_month is applied on the target grid): file value (short tons per cell for the month) x 907.185/86400 (EarthSciData to_unit's `tons/day` scale) / (dx*dy), then x cos(lat) for the planar-overlap area correction. The remaining /days_in_month is applied on the target grid, where it is one scalar rather than 137,241 of them.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "ov.src_cells"
+              }
+            },
+            "args": [
+              "F_FORM",
+              "src_coslat"
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F_FORM",
+                    1,
+                    1,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    "c",
+                                    1
+                                  ]
+                                },
+                                "NEI_NX"
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    },
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            {
+                              "op": "-",
+                              "args": [
+                                "c",
+                                1
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "NEI_NX",
+                                {
+                                  "op": "floor",
+                                  "args": [
+                                    {
+                                      "op": "/",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "c",
+                                            1
+                                          ]
+                                        },
+                                        "NEI_NX"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        907.185,
+                        86400.0
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "src_dx",
+                        "src_dy"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src_coslat",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "ov.src_cells"
+          ]
+        },
+        "E_FORM": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "FORM flux density (month-total basis) conservatively regridded onto the target grid: sum_i A_ij * PHI_i / A_full_j over the gated candidate set.",
+          "expression": {
+            "op": "apply_expression_template",
+            "name": "ov.conservative_overlap_apply_gated",
+            "args": [],
+            "bindings": {
+              "A_ij": "A_ij",
+              "A_j": "A_full",
+              "F_src": "PHI_FORM",
+              "src_poly": "src_poly",
+              "tgt_poly": "tgt_poly",
+              "atol": "atol"
+            }
+          },
+          "shape": [
+            "ov.tgt_cells"
+          ]
+        },
+        "t_utc": {
+          "type": "observed",
+          "units": "s",
+          "description": "Absolute UTC time (Unix s) = t + t_ref. Selects the calendar month whose totals days_in_month normalises -- a property of the FILE, so it deliberately carries no timezone offset (unlike t_local_utc).",
+          "expression": {
+            "op": "+",
+            "args": [
+              "t",
+              "t_ref"
+            ]
+          }
+        },
+        "month_utc": {
+          "type": "observed",
+          "units": "1",
+          "description": "Calendar month 1..12 of the current UTC time.",
+          "expression": {
+            "op": "fn",
+            "name": "datetime.month",
+            "args": [
+              "t_utc"
+            ]
+          }
+        },
+        "is_leap_year_utc": {
+          "type": "observed",
+          "units": "1",
+          "description": "1 if the current UTC year is a leap year, else 0.",
+          "expression": {
+            "op": "fn",
+            "name": "datetime.is_leap_year",
+            "args": [
+              "t_utc"
+            ]
+          }
+        },
+        "days_in_month": {
+          "type": "observed",
+          "units": "1",
+          "description": "Days in the current calendar month, leap-aware. The EPA gridded-merge monthly files store a month's total on one 24-hour TSTEP, so without this every model day would emit a full month and the run would over-emit by ~30x (EarthSciData.jl issue #209 / PR #210). Table lookup because EarthSciAST has no datetime.daysinmonth.",
+          "expression": {
+            "op": "+",
+            "args": [
+              {
+                "op": "fn",
+                "name": "interp.linear",
+                "args": [
+                  {
+                    "op": "const",
+                    "args": [],
+                    "value": [
+                      31,
+                      28,
+                      31,
+                      30,
+                      31,
+                      30,
+                      31,
+                      31,
+                      30,
+                      31,
+                      30,
+                      31
+                    ]
+                  },
+                  {
+                    "op": "const",
+                    "args": [],
+                    "value": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5,
+                      6,
+                      7,
+                      8,
+                      9,
+                      10,
+                      11,
+                      12
+                    ]
+                  },
+                  "month_utc"
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "is_leap_year_utc",
+                  {
+                    "op": "fn",
+                    "name": "interp.linear",
+                    "args": [
+                      {
+                        "op": "const",
+                        "args": [],
+                        "value": [
+                          0,
+                          1,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0,
+                          0
+                        ]
+                      },
+                      {
+                        "op": "const",
+                        "args": [],
+                        "value": [
+                          1,
+                          2,
+                          3,
+                          4,
+                          5,
+                          6,
+                          7,
+                          8,
+                          9,
+                          10,
+                          11,
+                          12
+                        ]
+                      },
+                      "month_utc"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "lonc": {
+          "type": "observed",
+          "units": "deg",
+          "description": "Longitude of each target cell CENTRE, lon_i = lon0_deg + (i-1/2)*dlon_deg (lon0_deg is the west edge, hence the half-cell shift). The same formula Transport3D.lonp uses; both read lon0_deg, so they cannot drift apart. Only the diurnal/day-of-week lookups need it.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [],
+            "expr": {
+              "op": "+",
+              "args": [
+                "lon0_deg",
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        "gi",
+                        0.5
+                      ]
+                    },
+                    "dlon_deg"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "tz_offset_h": {
+          "type": "observed",
+          "units": "1",
+          "description": "Timezone offset in hours, floor(lon_deg/15) -- one hour per 15 deg of longitude, as NEI2016MonthlyEmis does.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "lonc"
+            ],
+            "expr": {
+              "op": "floor",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "lonc",
+                        "gi"
+                      ]
+                    },
+                    15.0
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "t_local_utc": {
+          "type": "observed",
+          "units": "s",
+          "description": "Local solar time (Unix s) at each column: t + t_ref + tz_offset_h*3600.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "tz_offset_h"
+            ],
+            "expr": {
+              "op": "+",
+              "args": [
+                "t",
+                "t_ref",
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "tz_offset_h",
+                        "gi"
+                      ]
+                    },
+                    3600.0
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "local_hour": {
+          "type": "observed",
+          "units": "1",
+          "description": "Local hour of day, 1..24 (1-based to index the diurnal tables).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "t_local_utc"
+            ],
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "fn",
+                  "name": "datetime.hour",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "t_local_utc",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                1.0
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "day_of_week": {
+          "type": "observed",
+          "units": "1",
+          "description": "Local ISO weekday 1..7 (Mon..Sun), from t_local_utc. The +3 offset is because Unix day 0 (1970-01-01) is a Thursday, ISO 4.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "t_local_utc"
+            ],
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "floor",
+                      "args": [
+                        {
+                          "op": "/",
+                          "args": [
+                            {
+                              "op": "index",
+                              "args": [
+                                "t_local_utc",
+                                "gi"
+                              ]
+                            },
+                            86400.0
+                          ]
+                        }
+                      ]
+                    },
+                    3.0,
+                    {
+                      "op": "*",
+                      "args": [
+                        -7.0,
+                        {
+                          "op": "floor",
+                          "args": [
+                            {
+                              "op": "/",
+                              "args": [
+                                {
+                                  "op": "+",
+                                  "args": [
+                                    {
+                                      "op": "floor",
+                                      "args": [
+                                        {
+                                          "op": "/",
+                                          "args": [
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "t_local_utc",
+                                                "gi"
+                                              ]
+                                            },
+                                            86400.0
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    3.0
+                                  ]
+                                },
+                                7.0
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                1.0
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "diurnal_factor": {
+          "type": "observed",
+          "units": "1",
+          "description": "General diurnal profile (applied to CO and FORM). Table and lookup are NEI2016MonthlyEmis's verbatim, which are GasChem.jl's in turn.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "local_hour"
+            ],
+            "expr": {
+              "op": "fn",
+              "name": "interp.linear",
+              "args": [
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    0.45,
+                    0.45,
+                    0.6,
+                    0.6,
+                    0.6,
+                    0.6,
+                    1.45,
+                    1.45,
+                    1.45,
+                    1.45,
+                    1.4,
+                    1.4,
+                    1.4,
+                    1.4,
+                    1.45,
+                    1.45,
+                    1.45,
+                    1.45,
+                    0.65,
+                    0.65,
+                    0.65,
+                    0.65,
+                    0.45,
+                    0.45
+                  ]
+                },
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    21,
+                    22,
+                    23,
+                    24
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "local_hour",
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "diurnal_factor_nox": {
+          "type": "observed",
+          "units": "1",
+          "description": "NOx diurnal profile (applied to NO and NO2). Table and lookup are NEI2016MonthlyEmis's verbatim, which are GasChem.jl's in turn.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "local_hour"
+            ],
+            "expr": {
+              "op": "fn",
+              "name": "interp.linear",
+              "args": [
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    0.39598674,
+                    0.31852847,
+                    0.30128068,
+                    0.29590213,
+                    0.33177775,
+                    0.43871498,
+                    0.9094625,
+                    1.5850095,
+                    1.6223788,
+                    1.3429453,
+                    1.2265036,
+                    1.1937649,
+                    1.254314,
+                    1.3282939,
+                    1.331211,
+                    1.4135737,
+                    1.6848333,
+                    1.710925,
+                    1.3491899,
+                    1.0586671,
+                    0.84439224,
+                    0.761263,
+                    0.72693235,
+                    0.5741503
+                  ]
+                },
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    21,
+                    22,
+                    23,
+                    24
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "local_hour",
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "diurnal_factor_isop": {
+          "type": "observed",
+          "units": "1",
+          "description": "Isoprene diurnal profile: zero at night, peaking ~2.66 at midday. Table and lookup are NEI2016MonthlyEmis's verbatim, which are GasChem.jl's in turn.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "local_hour"
+            ],
+            "expr": {
+              "op": "fn",
+              "name": "interp.linear",
+              "args": [
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.2376,
+                    0.7224,
+                    1.2048,
+                    1.656,
+                    2.0496,
+                    2.3616,
+                    2.5728,
+                    2.6616,
+                    2.6184,
+                    2.4408,
+                    2.1288,
+                    1.6896,
+                    1.1448,
+                    0.5136,
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15,
+                    16,
+                    17,
+                    18,
+                    19,
+                    20,
+                    21,
+                    22,
+                    23,
+                    24
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "local_hour",
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "dayofweek_nox": {
+          "type": "observed",
+          "units": "1",
+          "description": "NOx day-of-week profile (reduced weekends). Table and lookup are NEI2016MonthlyEmis's verbatim, which are GasChem.jl's in turn.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "day_of_week"
+            ],
+            "expr": {
+              "op": "fn",
+              "name": "interp.linear",
+              "args": [
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1.0706,
+                    1.0706,
+                    1.0706,
+                    1.0706,
+                    1.0706,
+                    0.863,
+                    0.784
+                  ]
+                },
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "day_of_week",
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "dayofweek_co": {
+          "type": "observed",
+          "units": "1",
+          "description": "CO day-of-week profile (weekday > weekend). Table and lookup are NEI2016MonthlyEmis's verbatim, which are GasChem.jl's in turn.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              }
+            },
+            "args": [
+              "day_of_week"
+            ],
+            "expr": {
+              "op": "fn",
+              "name": "interp.linear",
+              "args": [
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1.076,
+                    1.1076,
+                    1.0706,
+                    1.0706,
+                    1.0706,
+                    0.779,
+                    0.683
+                  ]
+                },
+                {
+                  "op": "const",
+                  "args": [],
+                  "value": [
+                    1,
+                    2,
+                    3,
+                    4,
+                    5,
+                    6,
+                    7
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "day_of_week",
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon"
+          ]
+        },
+        "Exy_NO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "E_NO gathered onto the host grid's [lon, lat] shape. Target cell j = (gj-1)*NLON + gi, the row-major (lat, lon) enumeration cartesian_cell_rings gave tgt_poly.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "args": [
+              "E_NO"
+            ],
+            "expr": {
+              "op": "index",
+              "args": [
+                "E_NO",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            "gj",
+                            1
+                          ]
+                        },
+                        "NLON"
+                      ]
+                    },
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat"
+          ]
+        },
+        "Exy_NO2": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "E_NO2 gathered onto the host grid's [lon, lat] shape. Target cell j = (gj-1)*NLON + gi, the row-major (lat, lon) enumeration cartesian_cell_rings gave tgt_poly.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "args": [
+              "E_NO2"
+            ],
+            "expr": {
+              "op": "index",
+              "args": [
+                "E_NO2",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            "gj",
+                            1
+                          ]
+                        },
+                        "NLON"
+                      ]
+                    },
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat"
+          ]
+        },
+        "Exy_CO": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "E_CO gathered onto the host grid's [lon, lat] shape. Target cell j = (gj-1)*NLON + gi, the row-major (lat, lon) enumeration cartesian_cell_rings gave tgt_poly.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "args": [
+              "E_CO"
+            ],
+            "expr": {
+              "op": "index",
+              "args": [
+                "E_CO",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            "gj",
+                            1
+                          ]
+                        },
+                        "NLON"
+                      ]
+                    },
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat"
+          ]
+        },
+        "Exy_ISOP": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "E_ISOP gathered onto the host grid's [lon, lat] shape. Target cell j = (gj-1)*NLON + gi, the row-major (lat, lon) enumeration cartesian_cell_rings gave tgt_poly.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "args": [
+              "E_ISOP"
+            ],
+            "expr": {
+              "op": "index",
+              "args": [
+                "E_ISOP",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            "gj",
+                            1
+                          ]
+                        },
+                        "NLON"
+                      ]
+                    },
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat"
+          ]
+        },
+        "Exy_FORM": {
+          "type": "observed",
+          "units": "kg/m^2/s",
+          "description": "E_FORM gathered onto the host grid's [lon, lat] shape. Target cell j = (gj-1)*NLON + gi, the row-major (lat, lon) enumeration cartesian_cell_rings gave tgt_poly.",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "args": [
+              "E_FORM"
+            ],
+            "expr": {
+              "op": "index",
+              "args": [
+                "E_FORM",
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            "gj",
+                            1
+                          ]
+                        },
+                        "NLON"
+                      ]
+                    },
+                    "gi"
+                  ]
+                }
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat"
+          ]
+        },
+        "NO_emis": {
+          "type": "observed",
+          "units": "ppb/s",
+          "description": "NEI2016 NO emission rate for SuperFast.NO, ppb/s, in the surface layer only. Chain: the regridded month-integrated flux density E_NO / days_in_month -> a true per-second flux; / (delp/g0) [kg/m^2] -> kg/kg/s; x 1e9*MW_air/MW_species -> ppb/s. The unit factor is spelled 1e9*0.02897/0.03001 so its provenance stays legible: it is uconv/MW_X from GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler), the same constant EarthSciModels/couplings/nei2016_superfast.esm carries. The upstream component's dimensionless Dz placeholder is dropped (it is 1.0 there, and a no-op).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "Exy_NO",
+              "delp",
+              "diurnal_factor_nox",
+              "dayofweek_nox"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "gk",
+                    2.0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            1000000000.0,
+                            0.02897
+                          ]
+                        },
+                        0.03001
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Exy_NO",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        1.0,
+                        "days_in_month"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        "g0",
+                        {
+                          "op": "index",
+                          "args": [
+                            "delp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    },
+                    "scale",
+                    {
+                      "op": "index",
+                      "args": [
+                        "diurnal_factor_nox",
+                        "gi"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "dayofweek_nox",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "NO2_emis": {
+          "type": "observed",
+          "units": "ppb/s",
+          "description": "NEI2016 NO2 emission rate for SuperFast.NO2, ppb/s, in the surface layer only. Chain: the regridded month-integrated flux density E_NO2 / days_in_month -> a true per-second flux; / (delp/g0) [kg/m^2] -> kg/kg/s; x 1e9*MW_air/MW_species -> ppb/s. The unit factor is spelled 1e9*0.02897/0.0460055 so its provenance stays legible: it is uconv/MW_X from GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler), the same constant EarthSciModels/couplings/nei2016_superfast.esm carries. The upstream component's dimensionless Dz placeholder is dropped (it is 1.0 there, and a no-op).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "Exy_NO2",
+              "delp",
+              "diurnal_factor_nox",
+              "dayofweek_nox"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "gk",
+                    2.0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            1000000000.0,
+                            0.02897
+                          ]
+                        },
+                        0.0460055
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Exy_NO2",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        1.0,
+                        "days_in_month"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        "g0",
+                        {
+                          "op": "index",
+                          "args": [
+                            "delp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    },
+                    "scale",
+                    {
+                      "op": "index",
+                      "args": [
+                        "diurnal_factor_nox",
+                        "gi"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "dayofweek_nox",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "CO_emis": {
+          "type": "observed",
+          "units": "ppb/s",
+          "description": "NEI2016 CO emission rate for SuperFast.CO, ppb/s, in the surface layer only. Chain: the regridded month-integrated flux density E_CO / days_in_month -> a true per-second flux; / (delp/g0) [kg/m^2] -> kg/kg/s; x 1e9*MW_air/MW_species -> ppb/s. The unit factor is spelled 1e9*0.02897/0.0280101 so its provenance stays legible: it is uconv/MW_X from GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler), the same constant EarthSciModels/couplings/nei2016_superfast.esm carries. The upstream component's dimensionless Dz placeholder is dropped (it is 1.0 there, and a no-op).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "Exy_CO",
+              "delp",
+              "diurnal_factor",
+              "dayofweek_co"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "gk",
+                    2.0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            1000000000.0,
+                            0.02897
+                          ]
+                        },
+                        0.0280101
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Exy_CO",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        1.0,
+                        "days_in_month"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        "g0",
+                        {
+                          "op": "index",
+                          "args": [
+                            "delp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    },
+                    "scale",
+                    {
+                      "op": "index",
+                      "args": [
+                        "diurnal_factor",
+                        "gi"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "dayofweek_co",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "ISOP_emis": {
+          "type": "observed",
+          "units": "ppb/s",
+          "description": "NEI2016 ISOP emission rate for SuperFast.ISOP, ppb/s, in the surface layer only. Chain: the regridded month-integrated flux density E_ISOP / days_in_month -> a true per-second flux; / (delp/g0) [kg/m^2] -> kg/kg/s; x 1e9*MW_air/MW_species -> ppb/s. The unit factor is spelled 1e9*0.02897/0.06812 so its provenance stays legible: it is uconv/MW_X from GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler), the same constant EarthSciModels/couplings/nei2016_superfast.esm carries. The upstream component's dimensionless Dz placeholder is dropped (it is 1.0 there, and a no-op).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "Exy_ISOP",
+              "delp",
+              "diurnal_factor_isop"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "gk",
+                    2.0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            1000000000.0,
+                            0.02897
+                          ]
+                        },
+                        0.06812
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Exy_ISOP",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        1.0,
+                        "days_in_month"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        "g0",
+                        {
+                          "op": "index",
+                          "args": [
+                            "delp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    },
+                    "scale",
+                    {
+                      "op": "index",
+                      "args": [
+                        "diurnal_factor_isop",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        },
+        "CH2O_emis": {
+          "type": "observed",
+          "units": "ppb/s",
+          "description": "NEI2016 FORM emission rate for SuperFast.CH2O, ppb/s, in the surface layer only. Chain: the regridded month-integrated flux density E_FORM / days_in_month -> a true per-second flux; / (delp/g0) [kg/m^2] -> kg/kg/s; x 1e9*MW_air/MW_species -> ppb/s. The unit factor is spelled 1e9*0.02897/0.030026 so its provenance stays legible: it is uconv/MW_X from GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler), the same constant EarthSciModels/couplings/nei2016_superfast.esm carries. The upstream component's dimensionless Dz placeholder is dropped (it is 1.0 there, and a no-op).",
+          "expression": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "Exy_FORM",
+              "delp",
+              "diurnal_factor"
+            ],
+            "expr": {
+              "op": "ifelse",
+              "args": [
+                {
+                  "op": "<",
+                  "args": [
+                    "gk",
+                    2.0
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "*",
+                          "args": [
+                            1000000000.0,
+                            0.02897
+                          ]
+                        },
+                        0.030026
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Exy_FORM",
+                        "gi",
+                        "gj"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        1.0,
+                        "days_in_month"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        "g0",
+                        {
+                          "op": "index",
+                          "args": [
+                            "delp",
+                            "gi",
+                            "gj",
+                            "gk"
+                          ]
+                        }
+                      ]
+                    },
+                    "scale",
+                    {
+                      "op": "index",
+                      "args": [
+                        "diurnal_factor",
+                        "gi"
+                      ]
+                    }
+                  ]
+                },
+                0.0
+              ]
+            }
+          },
+          "shape": [
+            "lon",
+            "lat",
+            "lev"
+          ]
+        }
+      },
+      "equations": []
+    },
+    "SuperFastEmissionSource": {
+      "variables": {
+        "e_NO": {
+          "type": "parameter",
+          "units": "ppb/s",
+          "default": 0.0,
+          "description": "NO emission rate (from NEIRegrid.NO_emis)."
+        },
+        "e_NO2": {
+          "type": "parameter",
+          "units": "ppb/s",
+          "default": 0.0,
+          "description": "NO2 emission rate (from NEIRegrid.NO2_emis)."
+        },
+        "e_CO": {
+          "type": "parameter",
+          "units": "ppb/s",
+          "default": 0.0,
+          "description": "CO emission rate (from NEIRegrid.CO_emis)."
+        },
+        "e_ISOP": {
+          "type": "parameter",
+          "units": "ppb/s",
+          "default": 0.0,
+          "description": "ISOP emission rate (from NEIRegrid.ISOP_emis)."
+        },
+        "e_CH2O": {
+          "type": "parameter",
+          "units": "ppb/s",
+          "default": 0.0,
+          "description": "CH2O emission rate (from NEIRegrid.CH2O_emis)."
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.NO"
+            ],
+            "wrt": "t"
+          },
+          "rhs": "e_NO"
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.NO2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": "e_NO2"
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CO"
+            ],
+            "wrt": "t"
+          },
+          "rhs": "e_CO"
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.ISOP"
+            ],
+            "wrt": "t"
+          },
+          "rhs": "e_ISOP"
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "SuperFast.CH2O"
+            ],
+            "wrt": "t"
+          },
+          "rhs": "e_CH2O"
+        }
+      ]
     }
   },
   "index_sets": {
@@ -6634,6 +9640,22 @@
     "gf_lon": {
       "kind": "interval",
       "size": 72
+    },
+    "nei_t": {
+      "kind": "interval",
+      "size": 1
+    },
+    "nei_lay": {
+      "kind": "interval",
+      "size": 1
+    },
+    "nei_row": {
+      "kind": "interval",
+      "size": "NEI_NY"
+    },
+    "nei_col": {
+      "kind": "interval",
+      "size": "NEI_NX"
     }
   },
   "coupling": [
@@ -6994,6 +10016,98 @@
         "SuperFast"
       ],
       "description": "Add the deposition sink terms onto the SuperFast species ODEs. SuperFastDepositionSink carries D(SuperFast.X) ~ -(k_dry + k_wet)*SuperFast.X equations; operator_compose sums RHS contributions that share a dependent variable, so each species' chemistry tendency gains its loss term (dc/dt += -k*c). Placed BEFORE the SuperFast/Transport3D pointwise compose so the sink is already merged into D(SuperFast.X) when the lift array-ifies it. Per the component's own note this MUST be operator_compose, not a couple/additive connector -- the flatten pipeline silently discards the latter."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEI2016Emis.NEI2016.NO",
+      "to": "NEIRegrid.F_NO",
+      "transform": "param_to_var",
+      "description": "NEI2016 NO LOADER field -> the native 12US1 array the regrid reads. Coupled from the loader field rather than the component's pointwise NO observed on purpose: reseact wants the whole source grid to regrid conservatively, not one bilinear sample at each 4x5 cell centre, which would draw a ~400 km cell's emissions from a single 12 km cell. Same shape of decision as GEOSFP.GEOSFP_I3.PS -> Transport3D.F_PS."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEI2016Emis.NEI2016.NO2",
+      "to": "NEIRegrid.F_NO2",
+      "transform": "param_to_var",
+      "description": "NEI2016 NO2 LOADER field -> the native 12US1 array the regrid reads. Coupled from the loader field rather than the component's pointwise NO2 observed on purpose: reseact wants the whole source grid to regrid conservatively, not one bilinear sample at each 4x5 cell centre, which would draw a ~400 km cell's emissions from a single 12 km cell. Same shape of decision as GEOSFP.GEOSFP_I3.PS -> Transport3D.F_PS."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEI2016Emis.NEI2016.CO",
+      "to": "NEIRegrid.F_CO",
+      "transform": "param_to_var",
+      "description": "NEI2016 CO LOADER field -> the native 12US1 array the regrid reads. Coupled from the loader field rather than the component's pointwise CO observed on purpose: reseact wants the whole source grid to regrid conservatively, not one bilinear sample at each 4x5 cell centre, which would draw a ~400 km cell's emissions from a single 12 km cell. Same shape of decision as GEOSFP.GEOSFP_I3.PS -> Transport3D.F_PS."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEI2016Emis.NEI2016.ISOP",
+      "to": "NEIRegrid.F_ISOP",
+      "transform": "param_to_var",
+      "description": "NEI2016 ISOP LOADER field -> the native 12US1 array the regrid reads. Coupled from the loader field rather than the component's pointwise ISOP observed on purpose: reseact wants the whole source grid to regrid conservatively, not one bilinear sample at each 4x5 cell centre, which would draw a ~400 km cell's emissions from a single 12 km cell. Same shape of decision as GEOSFP.GEOSFP_I3.PS -> Transport3D.F_PS."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEI2016Emis.NEI2016.FORM",
+      "to": "NEIRegrid.F_FORM",
+      "transform": "param_to_var",
+      "description": "NEI2016 FORM LOADER field -> the native 12US1 array the regrid reads. Coupled from the loader field rather than the component's pointwise FORM observed on purpose: reseact wants the whole source grid to regrid conservatively, not one bilinear sample at each 4x5 cell centre, which would draw a ~400 km cell's emissions from a single 12 km cell. Same shape of decision as GEOSFP.GEOSFP_I3.PS -> Transport3D.F_PS."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.delP1",
+      "to": "NEIRegrid.delp",
+      "transform": "param_to_var",
+      "description": "Live first-level pressure thickness -> the emissions' flux-to-mixing-ratio divisor. The same field DryDepositionGas.del_P reads."
+    },
+    {
+      "type": "variable_map",
+      "from": "Transport3D.levc",
+      "to": "NEIRegrid.lev",
+      "transform": "param_to_var",
+      "description": "Vertical index as a field -> the surface-only emission gate, exactly as DryDepositionGas.lev gates deposition."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEIRegrid.NO_emis",
+      "to": "SuperFastEmissionSource.e_NO",
+      "transform": "param_to_var",
+      "description": "Per-cell NO emission rate (ppb/s) -> the SuperFast source applicator."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEIRegrid.NO2_emis",
+      "to": "SuperFastEmissionSource.e_NO2",
+      "transform": "param_to_var",
+      "description": "Per-cell NO2 emission rate (ppb/s) -> the SuperFast source applicator."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEIRegrid.CO_emis",
+      "to": "SuperFastEmissionSource.e_CO",
+      "transform": "param_to_var",
+      "description": "Per-cell CO emission rate (ppb/s) -> the SuperFast source applicator."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEIRegrid.ISOP_emis",
+      "to": "SuperFastEmissionSource.e_ISOP",
+      "transform": "param_to_var",
+      "description": "Per-cell ISOP emission rate (ppb/s) -> the SuperFast source applicator."
+    },
+    {
+      "type": "variable_map",
+      "from": "NEIRegrid.CH2O_emis",
+      "to": "SuperFastEmissionSource.e_CH2O",
+      "transform": "param_to_var",
+      "description": "Per-cell CH2O emission rate (ppb/s) -> the SuperFast source applicator."
+    },
+    {
+      "type": "operator_compose",
+      "systems": [
+        "SuperFastEmissionSource",
+        "SuperFast"
+      ],
+      "description": "Add the NEI2016 emission source terms onto the SuperFast species ODEs. SuperFastEmissionSource carries D(SuperFast.X) ~ +e_X equations; operator_compose sums them into the mechanism's own tendencies, mirroring SuperFastDepositionSink one entry above. Species mapping (NO, NO2, CO, ISOP, FORM->CH2O) and the 1e9*MW_air/MW_X unit factors are GasChem.jl couple2(SuperFastCoupler, NEI2016MonthlyEmisCoupler) verbatim; CH4 is omitted because it is a fixed species in SuperFast, and NEI's SO2/SULF have no SuperFast counterpart."
     },
     {
       "type": "operator_compose",

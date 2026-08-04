@@ -194,7 +194,8 @@ const EPOCH_DATE = Dates.Date(2016, 1, 1)
 the one extra day the last bracket's successor may land in."""
 forcing_days_for(t0, tf) = Int(floor(tf / 86400)) + 2
 
-function reseact_forcing(dir; ndays::Integer = 1)
+function reseact_forcing(dir; ndays::Integer = 1,
+                         nei_sector::AbstractString = "mrggrid_withbeis_withrwc")
     ndays >= 1 || throw(ArgumentError("ndays must be >= 1, got $ndays"))
     cache = EarthSciIO.Cache()
     function url(coll, t)
@@ -238,6 +239,39 @@ function reseact_forcing(dir; ndays::Integer = 1)
         "GEOSFP.t_interp_ref_I3" => 0.0, "GEOSFP.dt_interp_I3" => 10800.0,
         "GEOSFP.t_interp_ref_A3" => 5400.0, "GEOSFP.dt_interp_A3" => 10800.0,
         "GEOSFP.t_interp_ref_A1" => 1800.0, "GEOSFP.dt_interp_A1" => 3600.0)
+    # --- NEI2016 emissions ---------------------------------------------------
+    # CONST, not discrete, and that is a design decision worth stating.
+    #
+    # The inventory changes once a MONTH, but the regrid that carries it onto the
+    # model grid is a sum over ~137k source cells per target cell. As a live
+    # (discrete) parameter that sum would be per-step RHS IR -- the Mz situation
+    # again, ~1M nodes of it. As CONST data the whole chain (reproject, clip,
+    # weight, apply) collapses at build time into a 91-element array and the RHS
+    # never sees the source grid at all. Nothing physical is lost: every
+    # sub-monthly signal -- diurnal, day-of-week, days-in-month -- stays live on
+    # the target grid in NEIRegrid, where it is 91 evaluations, not 137,241.
+    #
+    # The price is that ONE month's map is frozen for the whole run, so a run
+    # that crosses a month boundary would silently use the wrong month for its
+    # tail. Refuse that rather than allow it.
+    t_end = EPOCH_DATE + Dates.Day(ndays)
+    Dates.month(t_end) == Dates.month(EPOCH_DATE) &&
+        Dates.year(t_end) == Dates.year(EPOCH_DATE) || throw(ArgumentError(
+            "ndays=$ndays runs from $EPOCH_DATE to $t_end, crossing a month " *
+            "boundary; the NEI2016 emissions map is regridded ONCE at build " *
+            "time from a single monthly file and would be stale after the " *
+            "boundary. Shorten the run, or make the F_* providers discrete " *
+            "with monthly ticks and re-measure the RHS IR cost first."))
+    nei_url = string("https://gaftp.epa.gov/Air/emismod/2016/v1/gridded/",
+                     "monthly_netCDF/2016fh_16j_", nei_sector, "_12US1_month_",
+                     Dates.format(EPOCH_DATE, "mm"), ".ncf")
+    # NEI species -> the SuperFast counterpart is resolved in the .esm; here we
+    # only name the five the coupling needs. FORM feeds SuperFast.CH2O.
+    for sp in ("NO", "NO2", "CO", "ISOP", "FORM")
+        providers["NEI2016Emis.NEI2016.$sp"] = EarthSciIO.const_provider(
+            cache, nei_url; format = "netcdf", variables = [sp])
+    end
+
     co = JSON3.read(read(joinpath(dir, "hybrid_coefs.json"), String))
     const_arrays = Dict{String,Any}(
         "Transport3D.dA" => Float64.(co.dA), "Transport3D.dB" => Float64.(co.dB),
@@ -283,8 +317,14 @@ function native_slice(; lon0::Integer = 14, lat0::Integer = 29,
             metaparameters = Dict("NLON" => Int(nlon), "NLAT" => Int(nlat),
                                   "NLEV" => Int(nlev),
                                   "LON0" => Int(lon0), "LAT0" => Int(lat0)),
+            # NEIRegrid is the FIFTH consumer of this origin (see the note above):
+            # it builds the target polygon rings the emissions are clipped onto,
+            # and if its copy disagreed the inventory would land on a grid offset
+            # from the meteorology -- again with nothing to complain.
             parameters = Dict("Transport3D.lon0_deg" => -182.5 + 5.0 * lon0,
-                              "Transport3D.lat0_deg" => -90.0 + 4.0 * lat0),
+                              "Transport3D.lat0_deg" => -90.0 + 4.0 * lat0,
+                              "NEIRegrid.lon0_deg" => -182.5 + 5.0 * lon0,
+                              "NEIRegrid.lat0_deg" => -90.0 + 4.0 * lat0),
             # human-readable extent, for logging a run's actual footprint
             lon_deg = (-180.0 + 5.0 * lon0, -180.0 + 5.0 * (lon0 + nlon - 1)),
             lat_deg = (-90.0 + 4.0 * lat0, -90.0 + 4.0 * (lat0 + nlat - 1)))
