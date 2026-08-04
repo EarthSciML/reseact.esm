@@ -41,7 +41,15 @@
 import Pkg
 const REPO = dirname(@__DIR__)
 Pkg.activate(get(ENV, "RESEACT_RUN_ENV", joinpath(REPO, "run-model-jl")); io = devnull)
-haskey(ENV, "ESS_KERNEL_CLASS_MERGE_DISABLE") || (ENV["ESS_KERNEL_CLASS_MERGE_DISABLE"] = "1")
+# The kernel-class merge stays ON, matching run_reseact.jl. This driver used to
+# force it off, inheriting a default that was measured on a 7x7x7 box where the
+# merged codegen tier's first-call compile swamped a ~25 s interpreted solve.
+# This driver is the one that runs CONUS 13x7x72 for days, where that trade is
+# backwards: the unmerged per-cell IR is what does not fit, and a fixed compile
+# that keeps the kernel count grid-independent is the whole point. Forcing it off
+# HERE while run_reseact.jl leaves it on also meant the long runs were the only
+# ones not using the configuration chosen for them.
+# ESS_KERNEL_CLASS_MERGE_DISABLE=1 still forces the old behaviour for an A/B.
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
 import LinearSolve
