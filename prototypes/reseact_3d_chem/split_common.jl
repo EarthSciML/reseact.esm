@@ -62,9 +62,36 @@ function stencil_following_rule(flat)
     end
     deps = Dict{String,Set{String}}()
     direct = Dict{String,Bool}()
+    # An aggregate that CONTRACTS a spatial axis -- an index that appears in
+    # `ranges` but not in `output_idx`, drawn from lon/lat/lev -- couples cells
+    # just as surely as a stencil does, and carries no `makearray` to advertise
+    # it. A column integral is the case in hand: the GEOS-Chem PBL mean
+    # sum_k dp_k f_k q_k / sum_k dp_k f_k reduces [lon,lat,lev] to [lon,lat] out
+    # of purely pointwise operands. Left unmarked it goes to the CHEMISTRY half,
+    # whose whole premise is that each cell's block is independent -- so a term
+    # reaching down the column would silently violate the block-diagonal Jacobian
+    # rather than fail loudly.
+    function contracts_space(e)::Bool
+        e isa EA.OpExpr || return false
+        if e.op == "aggregate" && e.ranges !== nothing
+            outs = Set{String}(string(x) for x in something(e.output_idx, Any[]))
+            for (nm, spec) in e.ranges
+                nm in outs && continue
+                # After `EA.load` a range spec is an `IndexSetRef` STRUCT, not the
+                # `{"from": ...}` dict of the JSON source. Reading it as a dict
+                # silently yields `nothing`, so the test never fires and the term
+                # is misrouted with no error -- which is exactly what happened.
+                src = spec isa EA.IndexSetRef ? spec.from :
+                      spec isa AbstractDict ? get(spec, "from", nothing) : nothing
+                src in ("lon", "lat", "lev") && return true
+            end
+        end
+        return any(contracts_space, e.args) ||
+               (e.expr_body !== nothing && contracts_space(e.expr_body))
+    end
     for (n, v) in obs
         e = v.expression
-        direct[n] = e !== nothing && contains_op(e, "makearray")
+        direct[n] = e !== nothing && (contains_op(e, "makearray") || contracts_space(e))
         deps[n] = e === nothing ? Set{String}() : readnames!(Set{String}(), e)
     end
     memo = Dict{String,Bool}()
@@ -77,9 +104,25 @@ function stencil_following_rule(flat)
         return r
     end
     stencil_obs = Set{String}(n for n in keys(obs) if is_stencil(n))
+    # An UNLOWERED SPATIAL DERIVATIVE is a stencil by definition, and at split
+    # time it is still spelled `D(..., wrt = lon|lat|lev)` -- the rewrite rules
+    # have not run yet, so it carries no `makearray` and reads no stencil-valued
+    # observed. The three advection terms only reach transport because they
+    # happen to reference Mx/My/Mz, which ARE stencil-valued; a term whose
+    # operands are all pointwise slips through.
+    #
+    # That is exactly what vertical mixing looks like: D(Kz_rho*D(q,lev),lev)
+    # reads only Kz_rho and rho_c, both plain pointwise aggregates. It was posted
+    # to the CHEMISTRY half, which carries no lev stencil rules, so the `D` never
+    # lowered and the build died with `unlowered_operator` -- in part 2, which is
+    # the tell. Checking for the operator itself is both more direct and more
+    # general than following operand provenance.
+    has_spatial_D(e) = e isa EA.OpExpr &&
+        ((e.op == "D" && e.wrt !== nothing && e.wrt in ("lon", "lat", "lev")) ||
+         any(has_spatial_D, e.args))
     return function (term, ctx)
         (contains_op(term, "makearray") || spatially_coupled(term, ctx) ||
-         references(term, stencil_obs)) ? 1 : 2
+         has_spatial_D(term) || references(term, stencil_obs)) ? 1 : 2
     end
 end
 
