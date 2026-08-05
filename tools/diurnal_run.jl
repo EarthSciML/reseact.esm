@@ -86,6 +86,10 @@ const CSV        = get(ENV, "RESEACT_CSV", "")
 const ZARR       = get(ENV, "RESEACT_ZARR", "")
 const OUT_EVERY  = parse(Int, get(ENV, "RESEACT_OUT_EVERY", "1"))
 const FLUSH_EVERY = parse(Int, get(ENV, "RESEACT_FLUSH_EVERY", "12"))  # sink writes per flush
+const STATEDUMP  = get(ENV, "RESEACT_STATEDUMP", "")   # raw state written iff the solve fails
+# Floor on the bisection retry: five halvings from 300 s. A run needing chemistry
+# steps shorter than this has a different problem, and should fail loudly.
+const MIN_MACRO_DT = parse(Float64, get(ENV, "RESEACT_MIN_MACRO_DT", "9.0"))
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 # One origin -> metaparameters + the degree-space parameters + the index base
 # hydrostatic_dp and continuity_drift read. See `native_slice`: the .esm cannot
@@ -142,7 +146,14 @@ say(@sprintf("BUILD %.2f s  nstates=%d", time() - tb, length(run.u0)))
 P = cellmajor_perm(run.var_map)
 f_trans_cm! = cellmajor_rhs(run.funcs[1], P.sm_of_cm)
 f_chem_cm!  = cellmajor_rhs(run.funcs[2], P.sm_of_cm)
-jac_cm!, mkjp = block_fd_jac(f_chem_cm!, P.NS, P.NC)
+# Chemistry Jacobian. AD is the default: the species here span thirty orders
+# (NO titrates to ~1e-26 through the night, OH lives at 1e-13) and no finite
+# difference step is defensible across that range -- see block_jac.jl. Set
+# RESEACT_JAC=fd to force the old finite-difference block Jacobian for an A/B.
+const JACMODE = get(ENV, "RESEACT_JAC", "ad")
+jac_cm!, mkjp = JACMODE == "fd" ? block_fd_jac(f_chem_cm!, P.NS, P.NC) :
+                                  block_ad_jac(run.funcs[2], P.sm_of_cm, P.NS, P.NC)
+say("    chem Jacobian: $(JACMODE == "fd" ? "finite difference" : "ForwardDiff (exact)")")
 u = run.u0[P.sm_of_cm]
 foreach(d -> d.materialize!(), run.dms)
 # m(0) from the REAL GEOS-FP PS, not a constant -- see hydrostatic_dp.
@@ -263,14 +274,22 @@ let d = continuity_drift(u, T0)
         d.rms_int, d.rms_wall, d.worst_int, string(d.cell_int), r.wall))
 end
 
-ts = time(); nT = nC = 0; ok = true; nstep = 0
+ts = time(); nT = nC = 0; ok = true; nstep = 0; nbisect = 0
 t = T0
 while t < T_END - 1e-9
     global nstep += 1
     tnext = min(t + MACRO_DT, T_END)
-    res = lie_trotter_solve(f_trans_cm!, fc, u, (t, tnext), run.p, inner_algs;
-        macro_dt = tnext - t, reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL),
-        refresh = refresh_forcing, forcing_tstops = run.tstops, clamp_nonneg = true)
+    # Bisect a failed macro step rather than abort. The pre-dawn NO minimum needs
+    # a shorter step (measured: the 11.33 h failure clears after 2 bisections,
+    # 300 -> 75 s, and costs LESS chemistry work than the failed 300 s attempt --
+    # naC 70 vs 87). `clamp_nonneg` is inert against this failure; see
+    # lie_trotter_solve_bisect and HELPERS.md §3.
+    res = lie_trotter_solve_bisect(f_trans_cm!, fc, u, (t, tnext), run.p, inner_algs;
+        macro_dt = tnext - t, min_macro_dt = MIN_MACRO_DT,
+        reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL),
+        refresh = refresh_forcing, forcing_tstops = run.tstops, clamp_nonneg = true,
+        on_bisect = (a, b) -> (global nbisect += 1;
+                               say(@sprintf("    bisecting [%.0f, %.0f]", a, b))))
     # A macro step that did not succeed must NOT be papered over by advancing t:
     # the state comes back unchanged, so the run marches on producing a frozen
     # trajectory that still LOOKS like a completed simulation. Report which
@@ -283,6 +302,35 @@ while t < T_END - 1e-9
             v = res.u[b:P.NS:P.N]
             say(@sprintf("     %-22s min=%- .6e max=%- .6e  nneg=%d nnan=%d",
                 nm, minimum(v), maximum(v), count(<(0), v), count(isnan, v)))
+        end
+        # Dump the raw CELL-MAJOR state that failed. A failure reached after
+        # hours of simulation is otherwise reproducible only by re-simulating to
+        # it -- and when /scratch was purged, the one saved pre-failure state
+        # went with it and a ~4 min A/B became an 11 h re-run. This is the whole
+        # state vector, not a digest, so a solver/Jacobian experiment can restore
+        # it directly. `bases` is written alongside so the layout is readable
+        # without rebuilding the model.
+        # Dump the PRE-STEP state `u`, not `res.u`. `lie_trotter_solve` returns
+        # `copy(integ.u)` taken AFTER the failed `step!` and the clamp
+        # (op_split.jl), so `res.u` is the state the integrator was left in when
+        # it gave up -- past the transition, and restarting from it does NOT
+        # reproduce the failure (measured: every variant succeeds from it). The
+        # driver's `u` is the last state a macro step accepted, so restarting
+        # there re-runs exactly the step that failed. Both are written: `u` to
+        # restart from, `res.u` because it is what the diagnostic above prints.
+        if !isempty(STATEDUMP)
+            open(STATEDUMP, "w") do io
+                write(io, Int64(P.NS), Int64(P.NC), Float64(t))
+                write(io, u)          # pre-step, RESTARTABLE
+                write(io, res.u)      # post-failure, matches the printout above
+            end
+            open(STATEDUMP * ".names", "w") do io
+                println(io, "# NS=$(P.NS) NC=$(P.NC) t=$t  layout: cell-major, u[(c-1)*NS+s]")
+                for (nm, b) in sort(collect(P.base_pos), by = last)
+                    println(io, b, "\t", nm)
+                end
+            end
+            say("  !! failing state dumped -> $STATEDUMP")
         end
         say("  !! stopping at t=$t (see above); partial series below")
         break
@@ -311,8 +359,8 @@ if sink !== nothing
 end
 
 o3m = [r.o3_mean for r in rows]
-say(@sprintf("RESULT label=%s cells=%d nstates=%d window_h=%.2f macro_dt=%.0f nmacro=%d nT=%d nC=%d solve_s=%.1f build_states=%d",
-    LABEL, P.NC, P.N, SOLVE_SECS / 3600, MACRO_DT, length(rows) - 1, nT, nC, solve_s, P.N))
+say(@sprintf("RESULT label=%s cells=%d nstates=%d window_h=%.2f macro_dt=%.0f nmacro=%d nT=%d nC=%d nbisect=%d solve_s=%.1f build_states=%d",
+    LABEL, P.NC, P.N, SOLVE_SECS / 3600, MACRO_DT, length(rows) - 1, nT, nC, nbisect, solve_s, P.N))
 say(@sprintf("DIURNAL O3_mean: start=%.5f min=%.5f max=%.5f end=%.5f  peak-to-trough=%.5f ppb  ok=%s",
     o3m[1], minimum(o3m), maximum(o3m), o3m[end], maximum(o3m) - minimum(o3m), ok && all(isfinite, u)))
 

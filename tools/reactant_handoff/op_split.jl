@@ -163,5 +163,83 @@ function lie_trotter_solve(f_trans!, fc, u0, tspan, p, inner_algs;
             nmacro = nmacro)
 end
 
+_ltg_ok(r) = r.retcode == SciMLBase.ReturnCode.Success ||
+             r.retcode == SciMLBase.ReturnCode.Default
+
+"""
+    lie_trotter_solve_bisect(f_trans!, fc, u0, tspan, p, inner_algs;
+                             macro_dt, min_macro_dt = 9.0, kwargs...)
+
+`lie_trotter_solve`, but a FAILED macro step is retried over two half-intervals
+instead of aborting the run. Recurses until the sub-interval would fall below
+`min_macro_dt`, then propagates the failure.
+
+WHY THIS EXISTS, and why it is not a clamp. The chemistry dies at the pre-dawn
+NO minimum: the inner Rosenbrock23 proposes TRIAL sub-steps that take species
+negative, the RHS is evaluated there (rate = k * [negative]) and convergence
+collapses. MEASURED on the reproduced 11.33 h failure -- `clamp_nonneg` is INERT
+against this (turning it off is bit-identical, and both arms end `nneg=0`),
+because a macro-boundary clamp only ever inspects ACCEPTED states and what goes
+negative is a trial state inside the step. Only shortening the step can prevent
+it, which is what `PositiveDomain`/`isoutofdomain` do -- they reject the step and
+retry smaller, they do NOT modify values. Measured: the failing step succeeds at
+macro_dt 60 and at 30.
+
+Doing it HERE rather than with the real callback is forced. OrdinaryDiffEq-
+OperatorSplitting v0.3.2 accepts a `callback` at both levels and applies it at
+NEITHER: the outer integrator stores, initializes and finalizes a CallbackSet but
+never applies it in its step loop (no `apply_discrete_callback!` anywhere in the
+package), and the leaf builder takes `callback` as a parameter and then omits it
+from its `SciMLBase.__init` call. So `callback = PositiveDomain(...)` is silently
+IGNORED today -- worse than an error, since it looks like it worked. See
+HELPERS.md for the one-line upstream fix and how to validate it.
+
+Bisecting only pays on the steps that actually need it, unlike lowering
+`macro_dt` globally (which would cost 5-10x more macro steps across the whole run
+to rescue a handful of pre-dawn ones). A retry is not free -- the failed attempt
+is wasted work -- but it is bounded by `min_macro_dt`.
+
+Each retry calls `lie_trotter_solve`, which builds a FRESH integrator, so no
+failed-integrator state has to be reset. Note the splitting error grows ~linearly
+with the interval, so sub-stepping is also the more accurate arm.
+
+LIMITATION -- CALL THIS ONE MACRO STEP AT A TIME. Bisection halves the whole
+`tspan`, not the individual macro step that failed, because a failed integrator
+cannot be resumed mid-window. `tools/diurnal_run.jl` drives it correctly: it
+calls once per macro step with `tspan = (t, tnext)` and `macro_dt = tnext - t`,
+so the halved interval IS the failed step. Handed a MULTI-STEP window it is still
+correct but wasteful -- it discards every macro step already completed in that
+window and redoes them at half `macro_dt`. `run_reseact.jl` passes a whole
+`(T0, T_END)` window and is deliberately NOT switched over: its windows are short
+(a validation run), and for a long one this would be the wrong shape. Making it
+resumable needs the per-step retry to live inside the macro loop, which in turn
+needs `reinit!` of a failed split integrator -- or, better, the upstream callback
+fix that makes all of this unnecessary (HELPERS.md §3).
+"""
+function lie_trotter_solve_bisect(f_trans!, fc, u0, tspan, p, inner_algs;
+                                  macro_dt, min_macro_dt::Real = 9.0,
+                                  on_bisect = (_t0, _tf) -> nothing, kwargs...)
+    t0 = Float64(tspan[1]); tf = Float64(tspan[2])
+    r = lie_trotter_solve(f_trans!, fc, u0, (t0, tf), p, inner_algs;
+                          macro_dt = macro_dt, kwargs...)
+    (_ltg_ok(r) || (tf - t0) <= min_macro_dt + 1e-9) && return r
+    tm = 0.5 * (t0 + tf)
+    on_bisect(t0, tf)
+    half = min(Float64(macro_dt), tm - t0)
+    r1 = lie_trotter_solve_bisect(f_trans!, fc, u0, (t0, tm), p, inner_algs;
+                                  macro_dt = half, min_macro_dt, on_bisect, kwargs...)
+    _ltg_ok(r1) || return r1
+    r2 = lie_trotter_solve_bisect(f_trans!, fc, r1.u, (tm, tf), p, inner_algs;
+                                  macro_dt = min(Float64(macro_dt), tf - tm),
+                                  min_macro_dt, on_bisect, kwargs...)
+    _ltg_ok(r2) || return r2
+    # Counts are summed across the halves; the wasted failed attempt is NOT
+    # subtracted, so naC reflects the true work done.
+    return (; u = r2.u, retcode = r2.retcode,
+            naT = r1.naT + r2.naT, nrT = r1.nrT + r2.nrT,
+            naC = r1.naC + r2.naC, nrC = r1.nrC + r2.nrC,
+            nmacro = r1.nmacro + r2.nmacro)
+end
+
 end # module OpSplit
-using .OpSplit: lie_trotter_solve
+using .OpSplit: lie_trotter_solve, lie_trotter_solve_bisect

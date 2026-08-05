@@ -11,6 +11,7 @@
 # single RHS eval — NS colors => NS+1 chem RHS evals per Jacobian, not N.
 using .BlockDiag
 using LinearAlgebra
+using ForwardDiff
 
 # Build the species-major <-> cell-major permutation purely from the state names.
 # Returns sm_of_cm[cm] = species-major index at cell-major position cm (and inverse).
@@ -72,6 +73,59 @@ function block_fd_jac(f_cm!, NS, NC)
                 base = (c-1)*NS; h = hbuf[c]
                 for r in 1:NS
                     data[r, s, c] = (dup[base+r] - du0[base+r]) / h
+                end
+            end
+        end
+        return nothing
+    end
+    mkjp() = BlockDiagonal(zeros(NS, NS, NC), MapBroadcast())
+    return jac_cm!, mkjp
+end
+
+# EXACT block-diagonal Jacobian by forward-mode AD. Same signature as
+# `block_fd_jac`, so it is a drop-in replacement.
+#
+# WHY THIS EXISTS. The FD version above has no defensible step size for this
+# model. `h = sqrt(eps)*max(|u|, 1e-9)` carries an ABSOLUTE floor equal to the
+# solver's ATOL, and species here span thirty orders: NO legitimately sits at
+# 1e-26 at night (titrated by NO + O3 -> NO2 with no photolysis to return it),
+# OH lives at 1e-13. At NO = 1e-26 that floor makes h ~ 1e-17, a perturbation
+# 1e9 times the value itself -- a secant across nine decades, not a tangent.
+# Shrinking it does not help either: a purely relative step makes dup - du0
+# underflow to exactly zero against an RHS of O(1), which is how the earlier
+# A/B measured the FD Jacobian SILENTLY LOSING 22% of its nonzeros. There is no
+# good h, which is the argument for not needing one.
+#
+# WHY IT IS CHEAP. Chemistry couples species only WITHIN a cell, so seeding each
+# cell's NS species with the NS unit partials makes every cell's block appear in
+# ONE evaluation: NS partials per Dual, 1 RHS eval, versus NS+1 for the coloring
+# above. The block structure is what makes AD affordable -- a dense AD Jacobian
+# of the whole state would need N partials, not NS.
+#
+# The permutation is redone here over Dual buffers rather than reusing
+# `cellmajor_rhs`, whose scratch is concretely Vector{Float64}; keeping that path
+# monomorphic leaves the hot Float64 RHS untouched.
+function block_ad_jac(f_sm!, sm_of_cm, NS, NC)
+    N = NS * NC
+    N == length(sm_of_cm) || error("block_ad_jac: NS*NC=$N != length(sm_of_cm)=$(length(sm_of_cm))")
+    D = ForwardDiff.Dual{typeof(f_sm!),Float64,NS}
+    seeds = ntuple(s -> ForwardDiff.Partials(ntuple(k -> k == s ? 1.0 : 0.0, NS)), NS)
+    usm = Vector{D}(undef, N); dusm = Vector{D}(undef, N)
+    function jac_cm!(J, u_cm, p, t)
+        data = J.data
+        @inbounds for c in 1:NC
+            base = (c - 1) * NS
+            for s in 1:NS
+                usm[sm_of_cm[base+s]] = D(u_cm[base+s], seeds[s])
+            end
+        end
+        f_sm!(dusm, usm, p, t)
+        @inbounds for c in 1:NC
+            base = (c - 1) * NS
+            for r in 1:NS
+                pr = ForwardDiff.partials(dusm[sm_of_cm[base+r]])
+                for s in 1:NS
+                    data[r, s, c] = pr[s]
                 end
             end
         end

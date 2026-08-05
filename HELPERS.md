@@ -286,3 +286,59 @@ Once upstream, delete `blockdiag_similar.jl` and the `include` of it in `op_spli
 Both root scripts collapse to `using EarthSciASTSplitter, EarthSciMLBase[Core],
 EarthSciMLTracedIntegrators` + the ~10-line `reseact_forcing`, with **no** `include`
 of prototype files and **no** runtime monkey-patch.
+
+---
+
+## 3. Upstream: OrdinaryDiffEqOperatorSplitting drops every callback
+
+**Status: NOT DONE. Two defects, both in v0.3.2, both one-liners at the call site.**
+Until they land, positivity is enforced by `lie_trotter_solve_bisect` (op_split.jl),
+which retries a failed macro step over two halves. That is the right MECHANISM
+(shorten the step; do not touch values) at the wrong GRANULARITY (macro, not
+sub-step), and it exists only because the callback route is unavailable.
+
+### The defects
+
+1. **The leaf child never receives the callback.** `src/integrator.jl` builds each
+   inner integrator with `callback` already bound in its parameter list, then calls
+   `SciMLBase.__init(prob2, alg; dt, tstops, saveat = (), d_discontinuities,
+   save_everystep = false, advance_to_tstop = false, adaptive, controller, verbose)`
+   — no `callback`. The argument is accepted and dropped. Fix: add `callback,` to
+   that kwarg list.
+2. **The outer integrator never APPLIES its callback.** It stores a `CallbackSet`,
+   `DiffEqBase.initialize!`s it and `finalize!`s it, but `apply_discrete_callback!` /
+   `handle_callbacks!` appear NOWHERE in the package, so nothing fires during the
+   step loop. Fix is larger: apply callbacks in the outer loop.
+
+Consequence today: `callback = DiffEqCallbacks.PositiveDomain(copy(u))` is **silently
+ignored** at both levels. Worse than an error — it looks like it worked. This is why
+`op_split.jl` says the package "does NOT apply discrete callbacks", and why the split
+drivers degraded to `clamp_nonneg`. Note `tools/run_scale.jl` and `tools/run_sweep.jl`,
+which do NOT use the splitter, still pass the real `PositiveDomain` and are unaffected.
+
+### Why it matters here (measured, not assumed)
+
+The CONUS week run dies at the pre-dawn NO minimum (11.33 h). `clamp_nonneg` is
+**inert** against it: disabling it is bit-identical, and both arms end `nneg=0`. The
+ACCEPTED states never go negative — the inner Rosenbrock23's TRIAL sub-steps do, the
+RHS is evaluated at negative concentrations, and convergence collapses. A
+macro-boundary clamp inspects only accepted states, so it cannot see this by
+construction. `PositiveDomain` can, because it rejects the step and retries smaller.
+
+### How to validate the fix before proposing it
+
+Do NOT edit `~/.julia/packages/.../src/integrator.jl` in place — it is shared depot
+state, invisible to git, and clobbered by the next `Pkg` operation. Instead copy the
+package out, `Pkg.develop` the copy into `run-model-jl`, add `callback,` to the leaf
+`__init`, and run the 11.33 h reproduction (see
+[[week-run-failure-11h-jacobian-refuted]] in session memory, or the recipe below).
+`run-model-jl/Manifest.toml` is tracked, so `git checkout` reverts the environment.
+
+Reproduction, ~12 min instead of the 11 h the failure takes to reach live: restore a
+state from a run's zarr with a **FRESH cache** (the default cache serves stale blobs
+for a store rewritten in place), map `(i,j,k,rec)` to cell-major `u[(c-1)*NS+s]` via
+`cellmajor_perm`, refresh forcing at the last cadence boundary `<= t` (NOT at `t`),
+use `reltols=(1e-4,1e-4)`, `abstols=(1e-6,1e-9)`, and replay macro steps.
+
+If inner `PositiveDomain` proves materially better than macro-level bisection, drop
+`lie_trotter_solve_bisect` and pass the callback instead.

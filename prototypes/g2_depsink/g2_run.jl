@@ -14,7 +14,8 @@ using EarthSciAST
 const EA = EarthSciAST
 
 HERE = @__DIR__
-# tree-walk RHS is not ForwardDiff-compatible -> use a finite-difference Jacobian.
+# NOTE (2026-08-04): the tree-walk RHS IS ForwardDiff-compatible; see block_jac.jl
+# `block_ad_jac`. FD is kept here only as a historical A/B.
 alg = OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false)
 
 function run(path; params=Dict{String,Float64}())

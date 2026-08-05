@@ -6,7 +6,11 @@
 # SOLVER: SuperFast is STIFF (fast radical chemistry), so this uses
 # Rosenbrock23(autodiff=false) — Tsit5 (fine for Stage A pure transport) goes
 # Unstable at the first step on the lifted chemistry. autodiff=false because the
-# tree-walk RHS is not ForwardDiff-compatible (finite-difference Jacobian).
+# NOTE (2026-08-04): the tree-walk RHS IS ForwardDiff-compatible -- `_rhs_value_type`
+# promotes over `values(p)` precisely to admit Duals, and the Float32 guard folds away
+# under them (EarthSciAST compile.jl). Measured: block_ad_jac vs block_fd_jac at a
+# pre-dawn state (NO ~ 3e-26) -- FD loses 18% of the nonzeros and gets d(dO3/dt)/dNO
+# 17% wrong. Prefer block_ad_jac; this script keeps FD only as a historical A/B.
 #
 # BUILD: `preserve_refs=true` carries the PPM stencil references to the build
 # boundary so the compile-once tier factors each body once (RFC step c) instead
