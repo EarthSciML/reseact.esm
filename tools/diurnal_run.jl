@@ -346,8 +346,8 @@ while t < T_END - 1e-9
         # (The digest survives regardless -- every row is printed as it is taken.)
         sink === nothing || (nstep % (OUT_EVERY * FLUSH_EVERY) == 0 && EA.sink_flush!(sink))
     end
-    r = rows[end]
-    d = continuity_drift(u, t)
+    local r = rows[end]
+    local d = continuity_drift(u, t)
     say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  | %8.2e %9.2e %9.2e %-12s %6.1f",
         r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean,
         d.rms_int, d.rms_wall, d.worst_int, string(d.cell_int), r.wall))

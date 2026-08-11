@@ -244,6 +244,21 @@ function merge_oop_rhs(rhs0; count_nodes::Bool=false)
     host_keys   = getfield(rhs0, :host_keys)
     n_cse       = getfield(rhs0, :n_cse)
 
+    # MATERIALIZED ARRAY OBSERVEDS (EarthSciAST 66b8e9a6, `mat_levels`): the
+    # reconstruction below predates that closure layout — it rebuilds the RHS
+    # from rhs_list/cse_prelude/kernels only, so it would never run the level
+    # fills and every reader of an observed slot would see undef (NaN). The
+    # bit-identity gate downstream then rejects the result with maxabs=NaN,
+    # which LOOKS like a merge defect but is this staleness. The in-package
+    # kernel-class merge already ran at build (both emitters receive merged
+    # kernels), so there is nothing left for this pass to do — say so instead
+    # of reconstructing an RHS that silently skips part of the model.
+    if hasfield(typeof(rhs0), :mat_levels) && !isempty(getfield(rhs0, :mat_levels))
+        error("merge_oop_rhs: rhs carries materialized array-observed levels " *
+              "(mat_levels), which this driver-side reconstruction predates; " *
+              "the in-package merge already ran at build — use the stock rhs")
+    end
+
     allouts = reduce(vcat, (pl.out_slots for pl in plans); init=Int[])
     @assert allunique(allouts) "kernel out-slots overlap — merge would reorder writes"
 
