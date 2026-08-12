@@ -1054,8 +1054,22 @@ if want("fdtape") && want("adj")
             @printf("  %-30s %10.3e   % .12e   % .12e   %.3e\n", nm, h, fd, gacc[k], r)
             r < best[1] && (best = (r, h, fd))
         end
-        @printf("  %-30s BEST h=%.3e  fd=%.12e  adjoint=%.12e  rel=%.3e  %s\n",
-                nm, best[2], best[3], gacc[k], best[1], best[1] <= 1e-6 ? "PASS" : "FAIL")
+        # If EVERY step gave a non-finite fd -- which HAPPENS, because the frozen
+        # replay intermittently returns NaN (the non-finite issue in
+        # DIFFERENTIABILITY_PLAN.md) -- `best` is still its `(Inf, 0.0, 0.0)`
+        # initializer, and printing it renders as `fd=0.000000000000e+00
+        # rel=Inf`. That reads as "finite differences measured a ZERO
+        # derivative", which is a different and much more alarming claim than
+        # "no finite difference was obtained" -- and it is the same shape as the
+        # const-folded-parameter trap, where a wrong zero and a wrong check agree
+        # silently. Report what actually happened instead of printing sentinels.
+        if !isfinite(best[1])
+            @printf("  %-30s NO FINITE FD at any step -- every central difference was non-finite. " *
+                    "adjoint=%.12e is UNCHECKED here, not refuted.\n", nm, gacc[k])
+        else
+            @printf("  %-30s BEST h=%.3e  fd=%.12e  adjoint=%.12e  rel=%.3e  %s\n",
+                    nm, best[2], best[3], gacc[k], best[1], best[1] <= 1e-6 ? "PASS" : "FAIL")
+        end
     end
 end
 

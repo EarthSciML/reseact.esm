@@ -1,0 +1,199 @@
+===========================================================================
+run_reseact_adjoint.jl -- simulation gradient demonstration
+===========================================================================
+  mode          : adjoint
+  grid          : 6x6x8   (production is 13x7x72 -- see the blockers in this file's header)
+  window        : 3 macro steps
+  objective     : SuperFast.O3:surf
+  clamp_nonneg  : OFF (blocker 1)
+  base point    : jittered 1e-1 relative (PPM limiter; see header)
+
+  NOTE This demonstrates d(objective)/d(parameters) over a SHORT window on
+       a SMALL grid. It is not a week of CONUS, and the header of this file
+       says precisely what stands between the two.
+
+---------------------------------------------------------------------------
+DISCRETE ADJOINT (Phase 4) -- ALL 49 parameters in ONE backward sweep,
+at a cost independent of the parameter count. Stages:
+  fwd    forward pass, checkpointing (u, t, dt, forcing epoch) per macro
+         step and recording the accepted (t, dt) sequence
+  adj    backward sweep: chemistry VJP then transport VJP per macro step
+         (the adjoint of a composition reverses it)
+  ref    forward-mode reference over the SAME frozen step sequence, plus
+         the per-step dot-product identity <lam,Jv> == <J'lam,v>
+  fdtape central differences of the frozen-dt composed map, through the
+         SAME compiled programs -- the confounder-free acceptance test
+---------------------------------------------------------------------------
+=== reseact-adj : TIME-LOOP ADJOINT (reseact.esm) grid=6x6x8 T0=5400 nmacro=3 macro_dt=300 ujitter=0.1 ===
+    stages: adj, fdtape, fwd, ref
+    (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 599.18 s   nstates=3744  nparams=49  discrete_providers=15
+  NS=13 species, NC=288 cells, N=3744 states
+  parameter vector: 49 runtime scalars
+  base point jittered by 1e-01 relative (seed 31337)
+  objective: mean over 36 states matching SuperFast.O3:surf
+
+---- compiling single-step programs (no while region in any of them) ----
+  [hb] fast=1 helpers=0 rss=2.9GB top_helpers=Pair{String, Int64}[] fast_hits=["multiply" => 1]
+  @compile ssp_step         87.0 s
+  [hb] fast=10901 helpers=162 rss=3.0GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 144, "update_computation" => 12, "reduce_fnadd_sum" => 3, "reactant_ssp_step" => 1] fast_hits=["multiply" => 3452, "add" => 2311, "divide" => 1099, "subtract" => 997, "select" => 832, "compareNE" => 428]
+  [hb] fast=41289 helpers=2058 rss=3.2GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 1228, "reduce_fnadd_sum" => 526, "log10_broadcast_scalar" => 144, "update_computation" => 60] fast_hits=["multiply" => 15518, "add" => 7505, "divide" => 4745, "subtract" => 4539, "select" => 2012, "negate" => 1112]
+  @compile ros_step        102.4 s
+  [hb] fast=52095 helpers=2199 rss=3.4GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 1352, "reduce_fnadd_sum" => 528, "log10_broadcast_scalar" => 144, "update_computation" => 72] fast_hits=["multiply" => 18938, "add" => 9788, "divide" => 5838, "subtract" => 5524, "select" => 2840, "negate" => 1488]
+  @compile ssp_vjp         163.4 s
+  [hb] fast=52096 helpers=2199 rss=7.0GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 1352, "reduce_fnadd_sum" => 528, "log10_broadcast_scalar" => 144, "update_computation" => 72] fast_hits=["multiply" => 18938, "add" => 9788, "divide" => 5838, "subtract" => 5525, "select" => 2840, "negate" => 1488]
+  [hb] fast=82582 helpers=4120 rss=7.0GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 2456, "reduce_fnadd_sum" => 1054, "log10_broadcast_scalar" => 288, "update_computation" => 120] fast_hits=["multiply" => 31038, "add" => 15010, "divide" => 9490, "subtract" => 9078, "select" => 4024, "negate" => 2224]
+  @compile ros_vjp         216.4 s
+  3 macro stops over [5400, 6300] s, 0 of them GEOS-FP boundaries
+
+---- FWD: the macro-step loop, checkpointed ----
+  forward pass 8.93 s over 3 macro steps (2.975 s/macro step)
+  accept/reject per macro step (T then C): 5/0,117/3 3/0,92/1 4/0,30/0
+  251 accepted inner steps total (12 transport, 239 chemistry)
+  checkpoint cost: 3744 states x 8 B = 29.2 kB/macro step, 0.1 MB total
+  J = 38.8441906272653
+
+---- ADJ: the backward sweep (ONE sweep, all 49 parameters) ----
+  macro step  3  t=6000  vjps: 30 chem + 4 transport   ||lambda||=1.999442e-01
+  macro step  2  t=5700  vjps: 92 chem + 3 transport   ||lambda||=1.879569e-01
+  macro step  1  t=5400  vjps: 117 chem + 5 transport   ||lambda||=1.759711e-01
+  backward sweep 50.73 s over 3 macro steps (16.912 s/macro step), 251 VJP calls
+  of which replay-of-the-primal 5.50 s (1.834 s/macro step) and VJPs 45.23 s (15.078 s/macro step, 0.1802 s/VJP)
+  clamp bit on 0 of 939744 (state, accepted-step) pairs on the tape (0.0000%)
+  fixed-sequence replay lands within 0.000e+00 relative of every checkpoint
+  flaky-reverse retries: 2 over 251 VJP calls (0.797%)
+  COST RATIO backward/forward = 5.68  (VJP-only 5.07)  [per macro step 16.912 s vs 2.975 s]
+
+  dJ/dtheta, full parameter vector (sorted by magnitude):
+    DryDepositionGas.kappa         theta=           0.4  dJ/dtheta=-1.143516574656e-01  elasticity=-1.177542e-03
+    NEIRegrid.scale                theta=             1  dJ/dtheta=-8.008172497475e-02  elasticity=-2.061614e-03
+    Transport3D.g_acc              theta=       9.80665  dJ/dtheta= 3.264757134991e-02  elasticity= 8.242244e-03
+    DryDepositionGas.g_const       theta=          9.81  dJ/dtheta=-2.366206487253e-02  elasticity=-5.975793e-03
+    NEIRegrid.g0                   theta=       9.80665  dJ/dtheta=-8.166063332005e-03  elasticity=-2.061614e-03
+    Transport3D.Rd_air             theta=        287.05  dJ/dtheta=-1.115357274268e-03  elasticity=-8.242244e-03
+    Transport3D.tau_pblmix         theta=           900  dJ/dtheta=-4.112488570218e-04  elasticity=-9.528425e-03
+    Transport3D.lon0_deg           theta=        -127.5  dJ/dtheta= 6.911148773587e-05  elasticity=-2.268477e-04
+    Transport3D.lat0_deg           theta=            26  dJ/dtheta= 4.534440990194e-05  elasticity= 3.035086e-05
+    GEOSFP.dt_interp_A1            theta=          3600  dJ/dtheta= 1.063165273096e-05  elasticity= 9.853198e-04
+    GEOSFP.t_interp_ref_A1         theta=          1800  dJ/dtheta= 9.299628500594e-06  elasticity= 4.309353e-04
+    GEOSFP.t_interp_ref_I3         theta=             0  dJ/dtheta=-3.467480342197e-07  elasticity=-0.000000e+00
+    GEOSFP.dt_interp_I3            theta=         10800  dJ/dtheta=-1.890897238628e-07  elasticity=-5.257334e-05
+    GEOSFP.t_interp_ref_A3         theta=          5400  dJ/dtheta= 1.469860924125e-07  elasticity= 2.043355e-05
+    GEOSFP.dt_interp_A3            theta=         10800  dJ/dtheta= 6.680347030118e-09  elasticity= 1.857363e-06
+    SuperFast.CH4                  theta=          1700  dJ/dtheta= 1.592282677104e-09  elasticity= 6.968560e-08
+    WetDeposition.Vdr              theta=             5  dJ/dtheta=-2.826175120385e-19  elasticity=-3.637835e-20
+    WetDeposition.rho_water        theta=          1000  dJ/dtheta= 1.413087560192e-21  elasticity= 3.637835e-20
+    DryDepositionGas.theta         theta=             0  dJ/dtheta=-7.645403545406e-42  elasticity=-0.000000e+00
+    DryDepositionGas.landuse       theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    DryDepositionGas.season        theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    GEOSFP.lat                     theta=             0  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    GEOSFP.lev                     theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    GEOSFP.lon                     theta=             0  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    GEOSFP.t_ref                   theta=             0  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.g0_100             theta=      10.19716  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.lat                theta=     0.6981317  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.lev                theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.lon                theta=     -1.701733  dJ/dtheta= 0.000000000000e+00  elasticity=-0.000000e+00
+    NEI2016Emis.scale              theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.t_ref              theta=  1.462061e+09  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEI2016Emis.Δz                 theta=             1  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.atol                 theta=         1e-12  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.dlat_deg             theta=             4  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.dlon_deg             theta=             5  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lat0_deg             theta=            26  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lcc_R                theta=       6370997  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lcc_lat_0            theta=            40  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lcc_lat_1            theta=            33  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lcc_lat_2            theta=            45  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.lcc_lon_0            theta=           -97  dJ/dtheta= 0.000000000000e+00  elasticity=-0.000000e+00
+    NEIRegrid.lon0_deg             theta=        -127.5  dJ/dtheta= 0.000000000000e+00  elasticity=-0.000000e+00
+    NEIRegrid.src_dx               theta=         12000  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.src_dy               theta=         12000  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    NEIRegrid.src_x0               theta=      -2556000  dJ/dtheta= 0.000000000000e+00  elasticity=-0.000000e+00
+    NEIRegrid.src_y0               theta=      -1728000  dJ/dtheta= 0.000000000000e+00  elasticity=-0.000000e+00
+    NEIRegrid.t_ref                theta=  1.451606e+09  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    SuperFast.O2                   theta=     2.095e+08  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+    WetDeposition.A_wd             theta=           5.2  dJ/dtheta= 0.000000000000e+00  elasticity= 0.000000e+00
+  19 of 49 components nonzero
+
+  STRUCTURAL IDENTITY  scale*dJ/dscale = g0*dJ/dg0 :  -8.008172497475e-02 vs -8.008172497481e-02   rel=7.932e-13  PASS
+
+---- REF: forward-mode JVP chained over the SAME frozen tape ----
+  [hb] fast=82583 helpers=4120 rss=10.1GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 2456, "reduce_fnadd_sum" => 1054, "log10_broadcast_scalar" => 288, "update_computation" => 120] fast_hits=["multiply" => 31039, "add" => 15010, "divide" => 9490, "subtract" => 9078, "select" => 4024, "negate" => 2224]
+  @compile ssp_jvp          72.3 s
+  [hb] fast=93387 helpers=4260 rss=5.8GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 2580, "reduce_fnadd_sum" => 1055, "log10_broadcast_scalar" => 288, "update_computation" => 132] fast_hits=["multiply" => 34457, "add" => 17293, "divide" => 10583, "subtract" => 10064, "select" => 4852, "negate" => 2600]
+  [hb] fast=123871 helpers=6180 rss=5.9GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 3684, "reduce_fnadd_sum" => 1580, "log10_broadcast_scalar" => 432, "update_computation" => 180] fast_hits=["multiply" => 46556, "add" => 22515, "divide" => 14235, "subtract" => 13617, "select" => 6036, "negate" => 3336]
+  @compile ros_jvp         156.3 s
+  zero-seed JVP: r[1] norm=2.326022e+04
+  NO SLOT IS ZERO UNDER A ZERO SEED -- Enzyme's forward mode is returning the primal, not the tangent, on this RHS. The forward-mode reference is NOT AVAILABLE; use the fdtape stage. Skipping ref.
+
+---- FDTAPE: central fd of the FROZEN-dt map (no new compile) ----
+  frozen sequence: 12 transport + 239 chemistry steps over 3 macro steps
+  frozen replay at theta0: J=38.844190627265334 vs forward pass J=38.844190627265334  (diff 0.000e+00)  BIT-IDENTICAL
+  parameter                        h            fd derivative        adjoint dJ/dtheta     rel
+  NEIRegrid.scale                 1.000e-03    NaN   -8.008172497475e-02   NaN
+  NEIRegrid.scale                 1.000e-04    NaN   -8.008172497475e-02   NaN
+  NEIRegrid.scale                 1.000e-05    NaN   -8.008172497475e-02   NaN
+  NEIRegrid.scale                 1.000e-06    NaN   -8.008172497475e-02   NaN
+  NEIRegrid.scale                 1.000e-07   -8.007980056846e-02   -8.008172497475e-02   2.403e-05
+  NEIRegrid.scale                BEST h=1.000e-07  fd=-8.007980056846e-02  adjoint=-8.008172497475e-02  rel=2.403e-05  FAIL
+  Transport3D.tau_pblmix          9.000e-01   -4.112489930345e-04   -4.112488570218e-04   3.307e-07
+  Transport3D.tau_pblmix          9.000e-02   -4.112488372559e-04   -4.112488570218e-04   4.806e-08
+  Transport3D.tau_pblmix          9.000e-03    NaN   -4.112488570218e-04   NaN
+  Transport3D.tau_pblmix          9.000e-04   -4.112488246240e-04   -4.112488570218e-04   7.878e-08
+  Transport3D.tau_pblmix          9.000e-05    NaN   -4.112488570218e-04   NaN
+  Transport3D.tau_pblmix         BEST h=9.000e-02  fd=-4.112488372559e-04  adjoint=-4.112488570218e-04  rel=4.806e-08  PASS
+  NEIRegrid.g0                    9.807e-03    NaN   -8.166063332005e-03   NaN
+  NEIRegrid.g0                    9.807e-04    NaN   -8.166063332005e-03   NaN
+  NEIRegrid.g0                    9.807e-05    NaN   -8.166063332005e-03   NaN
+  NEIRegrid.g0                    9.807e-06    NaN   -8.166063332005e-03   NaN
+  NEIRegrid.g0                    9.807e-07    NaN   -8.166063332005e-03   NaN
+  NEIRegrid.g0                   BEST h=0.000e+00  fd=0.000000000000e+00  adjoint=-8.166063332005e-03  rel=Inf  FAIL
+RESULT label=reseact-adj param=DryDepositionGas.g_const theta0=9.81 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-2.3662064873e-02
+RESULT label=reseact-adj param=DryDepositionGas.kappa theta0=0.4 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-1.1435165747e-01
+RESULT label=reseact-adj param=DryDepositionGas.theta theta0=0 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-7.6454035454e-42
+RESULT label=reseact-adj param=GEOSFP.dt_interp_A1 theta0=3600 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=1.0631652731e-05
+RESULT label=reseact-adj param=GEOSFP.dt_interp_A3 theta0=10800 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=6.6803470301e-09
+RESULT label=reseact-adj param=GEOSFP.dt_interp_I3 theta0=10800 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-1.8908972386e-07
+RESULT label=reseact-adj param=GEOSFP.t_interp_ref_A1 theta0=1800 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=9.2996285006e-06
+RESULT label=reseact-adj param=GEOSFP.t_interp_ref_A3 theta0=5400 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=1.4698609241e-07
+RESULT label=reseact-adj param=GEOSFP.t_interp_ref_I3 theta0=0 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-3.4674803422e-07
+RESULT label=reseact-adj param=NEIRegrid.g0 theta0=9.80665 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-8.1660633320e-03
+RESULT label=reseact-adj param=NEIRegrid.scale theta0=1 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-8.0081724975e-02
+RESULT label=reseact-adj param=SuperFast.CH4 theta0=1700 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=1.5922826771e-09
+RESULT label=reseact-adj param=Transport3D.Rd_air theta0=287.05 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-1.1153572743e-03
+RESULT label=reseact-adj param=Transport3D.g_acc theta0=9.80665 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=3.2647571350e-02
+RESULT label=reseact-adj param=Transport3D.lat0_deg theta0=26 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=4.5344409902e-05
+RESULT label=reseact-adj param=Transport3D.lon0_deg theta0=-127.5 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=6.9111487736e-05
+RESULT label=reseact-adj param=Transport3D.tau_pblmix theta0=900 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-4.1124885702e-04
+RESULT label=reseact-adj param=WetDeposition.Vdr theta0=5 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=-2.8261751204e-19
+RESULT label=reseact-adj param=WetDeposition.rho_water theta0=1000 obj=SuperFast.O3:surf nmacro=3 window_s=900 grid=6x6x8 nstates=3744 ujitter=0.1 J=38.84419063 dJ_dtheta=1.4130875602e-21
+DONE reseact-adj
+
+===========================================================================
+Done. For the full phased plan, the measured capability matrix and the
+retractions behind both, see DIFFERENTIABILITY_PLAN.md; HELPERS.md section 4
+has the same findings in context.
+===========================================================================
+Precompiling packages...
+  24748.8 ms  ✓ EarthSciAST
+  1 dependency successfully precompiled in 25 seconds. 46 already precompiled.
+Precompiling packages...
+   2061.5 ms  ✓ EarthSciAST → EarthSciASTEarthSciIOExt
+  1 dependency successfully precompiled in 2 seconds. 103 already precompiled.
+Precompiling packages...
+   1062.0 ms  ✓ EarthSciASTSplitter
+  1 dependency successfully precompiled in 1 seconds. 47 already precompiled.
+Precompiling packages...
+   7062.1 ms  ✓ EarthSciAST → EarthSciASTReactantExt
+  1 dependency successfully precompiled in 8 seconds. 121 already precompiled.
+Precompiling packages...
+   1790.8 ms  ✓ EarthSciAST → EarthSciASTSimulateExt
+  1 dependency successfully precompiled in 2 seconds. 98 already precompiled.
+Precompiling packages...
+   1874.6 ms  ✓ EarthSciASTSplitter → EarthSciASTSplitterSciMLBaseExt
+  1 dependency successfully precompiled in 3 seconds. 100 already precompiled.
+Precompiling packages...
+   1132.9 ms  ✓ EarthSciAST → EarthSciASTForwardDiffExt
+  1 dependency successfully precompiled in 1 seconds. 54 already precompiled.
+EXIT=0
