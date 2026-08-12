@@ -534,9 +534,19 @@ looks plausible.
    arm has no equivalent. Worth closing before trusting a gradient quantitatively.
 
 5. **Enzyme on the CPU needs `Enzyme.API.strictAliasing!(false)`**, because the walk
-   **loads** a `payload::Any` field, which is heterogeneous by design. With the flag,
-   reverse mode matches ForwardDiff to ~1e-16. *(Corrected 2026-08-12 — the conclusion
-   holds, three details did not.)*
+   **loads** a `payload::Any` field, which is heterogeneous by design. *(Corrected
+   2026-08-12 — the requirement holds, three details did not, and one figure is now
+   unverified.)*
+
+   **The "~1e-16 vs ForwardDiff" figure predates Enzyme 0.13.199 and did not reproduce
+   there.** The *failure* without the flag reproduces in under a minute; the *success*
+   with it was not reproduced — two attempts failed to complete an Enzyme compile of a
+   trivial 2-state model (one killed at 50 min, one 20+ min and still going at 13 GB RSS,
+   compute-bound). So "the flag is required" is measured; "the flag is sufficient" is
+   currently only inherited from an older version. Don't quote the 1e-16 without re-running
+   it. Related trap: with the flag set, loads/stores guess unconditionally and emit a
+   `CannotDeduceType` **warning** that bypasses Enzyme.jl's typed-exception path — so grep
+   stderr for it wherever the flag is set, or a silent type guess reads as success.
 
    * **The struct is `_Node`, not `_VecNode`.** `_VecNode` no longer exists anywhere in
      `EarthSciAST/src` except in comments — zero non-comment uses; the only definition is

@@ -262,7 +262,11 @@ reverse-over-`while` report.
 > SIGSEGV at NS=13, NC=288, N=3744 after a 601.9 s build, with **no Rosenbrock stages,
 > no `blocksolve`, no linear algebra** — and on the **default pass pipeline**, no
 > `excluded_passes`, so the separate `concat_broadcast_slice` miscompile (below) did
-> not contaminate it. Stack matches the predicted mechanism frame for frame:
+> not contaminate it. The **original** form segfaults too, confirming the small one is a
+> genuine reduction of the same bug rather than a different one: reverse over the whole
+> `jac=:ad` ROS23 step, `excluded_passes=String[]`, `EXIT=139` after a 644.4 s build,
+> identical frame sequence (`tools/diag/logs/reseact_ros_advjp.log`). Stack matches the
+> predicted mechanism frame for frame:
 > `DifferentiatePass::runOnOperation → lowerEnzymeCalls → MEnzymeLogic::CreateReverseDiff
 > → differentiate → visitChild → ReverseAutoDiffOpInterface::createReverseModeAdjoint
 > → AutoDiffCallRev::createReverseModeAdjoint → func::CallOp::create → func::CallOp::build
