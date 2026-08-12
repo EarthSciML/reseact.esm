@@ -56,8 +56,13 @@
 #       - Transport3D.tau_pblmix PASSES at 4.8e-8 -- but only at 3 of its 5 step
 #         sizes; at h=9e-3 and h=9e-5 the central difference came back NaN.
 #         NaN at interior step sizes with finite neighbours on BOTH sides is not
-#         a step-size effect. It is blocker 4 (intermittent non-finite results)
-#         landing on the reference, and this run is a clean instance of it.
+#         a step-size effect. It is blocker 4 landing on the reference, and this
+#         run is a clean instance of it. NOW DIAGNOSED as an XLA:CPU threading
+#         race (see blocker 4): at ~251 compiled calls per replay and ~2e-4
+#         state-visible fault rate each, ~5% of replays and ~10% of (parameter, h)
+#         pairs should be hit -- which is what this table shows. The step size is
+#         telling you nothing. Re-running under
+#         `xla_cpu_prefer_vector_width=128`, or on one XLA thread, should clear it.
 #       - NEIRegrid.scale gets ONE finite step out of five, at 2.4e-5.
 #       - NEIRegrid.g0 gets NONE, and used to print `fd=0.0 rel=Inf`, which is
 #         the uninitialised `best` sentinel rendering as though FD had measured a
@@ -113,9 +118,12 @@
 #     point functions, which is the whole of the 3.1e-6 disagreement above.
 #   * Re-running the controller from a checkpoint does NOT reproduce the forward
 #     pass (95/2 accepts vs 92/1, same inputs, same process) because the PI
-#     controller amplifies an ulp into a different accept/reject decision. The
-#     forward pass therefore RECORDS the accepted (t, dt) sequence -- 16 B/step
-#     -- and the backward replay replays it with the controller switched off.
+#     controller turns that into a different accept/reject decision. The forward
+#     pass therefore RECORDS the accepted (t, dt) sequence -- 16 B/step -- and the
+#     backward replay replays it with the controller switched off. (The CAUSE is
+#     not "an amplified ulp", as recorded until 2026-08-12: it is the XLA:CPU race
+#     of blocker 4 NaN-ing `EEst`, which the controller reads as a rejection.
+#     The recording is still needed; only the explanation changed.)
 #
 # ---------------------------------------------------------------------------
 # BLOCKERS TO A WEEK OF CONUS -- in the order they will actually bite
@@ -146,10 +154,34 @@
 #    forward is ~11.5 h, and at the measured 5.1x adjoint ratio ~59 h. That
 #    ratio was measured at demonstration scale, not at CONUS, and the backward
 #    sweep has never been run at CONUS at all. Treat it as an order of magnitude.
-# 4. INTERMITTENT NON-FINITE RESULTS, cause unknown, under investigation at time
-#    of writing: compiled programs returned non-finite values on 2 of 6 sweeps
-#    and 2 of 30 pure primal replays. Until that is understood, a 59-hour run is
-#    a bad bet even if everything above were fixed.
+# 4. INTERMITTENT NON-FINITE RESULTS -- DIAGNOSED 2026-08-12: it is a DATA RACE
+#    IN XLA:CPU's intra-op parallel execution. With ONE XLA thread it does not
+#    happen at all (0 of 400,000 calls across ten compile variants); at 4 threads
+#    it is ~1% per call. The emitted module is a pure StableHLO dataflow graph --
+#    no `while`, `rng`, `custom_call` or `sort` -- so this is not numerics: XLA
+#    is executing a pure function wrongly, and needs concurrency to do it.
+#    Narrowed to the fusion emitters at 256-bit vector width. The corruption is
+#    always the same shape: NaN in exactly the six dry-deposition species at one
+#    cell (essentially always the first surface cell), everything else
+#    bit-identical. Chemistry RHS only; transport is 0 of 70,000.
+#    WORKAROUND, per-compile and no rebuild:
+#      Reactant.CompileOptions(; sync = true,
+#                              xla_debug_options = (; xla_cpu_prefer_vector_width = 128))
+#    0 of 20,000 against a baseline of 4 and 4, at no wall-time cost. NOT
+#    numerically free -- it moves the answer by up to 1.6e-6 relative on one
+#    step, so it is a new floor, not a null change. Pinning XLA:CPU to one thread
+#    also works and changes no numbers at all, at the cost of the thread pool.
+#    Reproduce in ~5 minutes: tools/diag/README-nondet.md.
+#
+#    THIS ALSO EXPLAINS THE REPLAY SIGNATURE. A faulting call NaNs `EEst` while
+#    usually leaving the state bit-identical (the second RHS evaluation feeds
+#    only the error estimate), and `host_adaptive!` maps `isnan(EEst)` to a
+#    rejection -- so the 95/2-vs-92/1 replay discrepancy is SPURIOUS REJECTED
+#    STEPS, not the "PI controller amplifies an ulp" mechanism recorded until
+#    today. There was never a ULP-level difference in over 400,000 calls.
+#    Whether it also explains blocker 1 is untested but is now the obvious first
+#    hypothesis -- run the clamped sweep under the workaround before assuming a
+#    second, independent bug.
 #
 # ---------------------------------------------------------------------------
 # NEXT STEPS, highest value first

@@ -41,9 +41,13 @@
 # controller from a checkpoint does NOT reproduce the forward pass: measured, a
 # replay of macro step 2 took 95 accepts / 2 rejects where the forward pass took
 # 92 / 1 -- same checkpoint, same theta, same forcing, same process. The compiled
-# ROS23 step is not bit-deterministic call to call, and the PI controller
-# amplifies an ulp into a different accept/reject decision (Phase 3 saw the same
-# instability between runs). So the forward pass records the accepted (t, dt) of
+# ROS23 step is not deterministic call to call. NOT, as recorded until 2026-08-12,
+# because "the PI controller amplifies an ulp": in >400,000 calls there was NEVER a
+# ULP-level difference. It is an XLA:CPU intra-op THREADING RACE -- the compiled
+# step returns NaN in exactly the six dry-deposition species at one cell, `EEst`
+# goes NaN with it, and the controller maps NaN to a REJECTION. So the extra
+# rejects are spurious, not amplified roundoff. With one XLA thread it never
+# happens at all. See tools/diag/README-nondet.md. So the forward pass records the accepted (t, dt) of
 # every inner step -- 16 B each -- and the replay REPLAYS THAT SEQUENCE with the
 # controller switched off. `tapes_for` then checks the replayed end state
 # against the next checkpoint, which is the real faithfulness test.
@@ -476,10 +480,11 @@ end
 # checkpoint does NOT reproduce the forward pass. In one run, macro step 2
 # replayed as 95 accepts / 2 rejects where the forward pass took 92 / 1 -- same
 # checkpoint, same theta, same forcing, same process. The compiled ROS23 step is
-# not bit-deterministic call to call (XLA CPU reassociates a reduction), and the
-# PI controller amplifies an ulp into a different accept/reject decision; Phase 3
-# saw the same thing between runs ("116/3 vs 120/4 ... the counts are not stable
-# to that resolution").
+# not deterministic call to call -- an XLA:CPU threading race, NOT reassociation
+# and NOT ulp amplification (both were recorded here until 2026-08-12 and both are
+# wrong; there was never a ULP-level difference in >400,000 calls). The race NaNs
+# `EEst`, and the controller maps NaN to a rejection. Phase 3's unstable counts
+# ("116/3 vs 120/4") are the same fault, not a resolution limit.
 #
 # So the backward sweep must NOT re-derive the step sequence. The forward pass
 # records the accepted (t, dt) of every inner step and the replay REPLAYS THAT,

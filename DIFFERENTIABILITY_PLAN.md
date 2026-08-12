@@ -304,8 +304,9 @@ reverse-over-`while` report.
 Also measured, and it changes an expectation: at 6×6×8 over one 300 s macro step
 the exact Jacobian is compile-neutral (89.3 s vs 87.3 s) and **step-count
 neutral** (120 accepts / 4 rejects vs 116 / 3; a second run gave 116 / 3 for
-both, so the counts are not even stable to that resolution — the controller
-amplifies ulp-level nondeterminism). The native arm's `block_ad_jac` cut
+both, so the counts are not even stable to that resolution — which is now known to
+be the XLA:CPU threading race of FINDING 2, spuriously rejecting steps, not a
+resolution limit and not ulp amplification). The native arm's `block_ad_jac` cut
 rejected steps; this did not, at this size. `RESEACT_RXJAC=ad` exists so it can
 be measured at CONUS, but the default stays `fd` until it is.
 
@@ -433,8 +434,11 @@ separate the two and none of them is an error in either:
 **FINDING 1: re-running the adaptive controller does not reproduce the forward pass.**
 A replay of macro step 2 took 95 accepts / 2 rejects where the forward pass took 92 / 1
 — same checkpoint, same θ, same forcing, same process. The compiled ROS23 step is not
-bit-deterministic call to call and the PI controller amplifies an ulp into a different
-decision (Phase 3 saw the same instability *between* runs). A checkpoint-and-replay
+bit-deterministic call to call — **but not for the reason recorded here until
+2026-08-12.** It is not ulp amplification: across >400,000 calls there was never a
+ULP-level difference. It is the XLA:CPU threading race of FINDING 2, which NaNs `EEst`,
+and `host_adaptive!` maps `isnan(EEst)` to a rejection — so the extra rejects are
+SPURIOUS. Phase 3 saw the same fault *between* runs. A checkpoint-and-replay
 adjoint that re-derives its own step sequence is therefore silently taking the adjoint
 of a different trajectory. The fix is cheap and is now the design: the forward pass
 records the accepted `(t, dt)` of every inner step — **16 B each, against 681 kB for the
@@ -456,6 +460,57 @@ of 251 in the accepted run above); that is a workaround for a nondeterministic f
 a fix, and it is the first thing to pick up. `clamp_nonneg` was the initial suspect and
 is **not** the cause (it moves the objective by only 6.7e−11 relative, but the sweep is
 still run with `RESEACT_ADJ_CLAMP=0` because the clamped sweep failed twice).
+
+> **DIAGNOSED, 2026-08-12: it is a data race in XLA:CPU's intra-op parallel execution.**
+> Reproducible on demand in ~5 minutes — see `tools/diag/README-nondet.md`.
+>
+> | XLA threads | fault rate, chemistry RHS, 40,000 calls/cell |
+> |---|---|
+> | 1 (`taskset -c 8`) | **0 of 40,000** — and 0 of 400,000 across ten compile variants |
+> | 4 (`taskset -c 8-11`) | 310 and 437 of 40,000 ≈ **1 %** |
+> | 20 (unpinned) | 19, 28 of 40,000 ≈ 5–7 × 10⁻⁴ |
+>
+> The emitted module is a pure StableHLO dataflow graph — zero `while`, `rng`,
+> `custom_call`, `sort` — so a call-to-call difference on identical inputs is not a
+> numerics question: XLA is executing a pure function wrongly, and it needs concurrency
+> to do it. Narrowed to the **fusion emitters at 256-bit vector width**: at 4 threads,
+> `xla_cpu_use_fusion_emitters=false`, `xla_cpu_experimental_ynn_fusion_type=[]` and
+> `xla_cpu_prefer_vector_width=128` each give 0 of 200,000 against an expectation of
+> ~800, while `multi_thread_eigen=false`, `use_xnnpack=false` and `max_isa=AVX2/SSE4_2`
+> all still fault at full rate.
+>
+> **The shape never varied:** NaN in exactly the six dry-deposition species
+> (`O3, NO2, NO, HNO3, H2O2, CH2O` — precisely `superfast_deposition_sink.esm`'s list),
+> at one grid cell, essentially always lane 1 = `(1,1,1)`, the first surface cell, with
+> every other entry bit-identical. Chemistry RHS only; the transport RHS is 0 of 70,000.
+>
+> **FINDING 1 and FINDING 2 are the same fault.** Of 32 faulting `ros23_step` calls, all
+> 32 returned `EEst = NaN` and most returned a bit-identical *state* — because
+> `f2 = f(unew, t+dt)` feeds only `k3`, i.e. only the error estimate. `host_adaptive!`
+> maps `isnan(EEst)` to a rejection, so the commonest consequence is a **silent spurious
+> rejected step**, which is exactly the 95/2-vs-92/1 replay signature. A check that looks
+> only at the state undercounts the fault by ~4×.
+>
+> **Workaround**, per-compile, no rebuild:
+> `Reactant.CompileOptions(; sync=true, xla_debug_options=(; xla_cpu_prefer_vector_width=128))`.
+> Confirmed on the full `ros23_step`: 0 of 20,000 against a baseline of 4 and 4, at no
+> wall-time cost. **Not numerically free** — it moves the answer by up to 1.6e-6 relative
+> on one step, so treat it as a new floor rather than a null change. Pinning XLA:CPU to
+> one thread also works and changes no numbers at all, at the cost of the thread pool.
+>
+> **Ruled out with evidence:** `clamp_nonneg`; the integrator algebra, FD Jacobian, block
+> solve and reverse mode (the RHS *alone* faults harder than the step); the inputs;
+> argument donation; the host reading a buffer early; stale/uninitialised allocator memory
+> (poisoning Julia's heap *and* PJRT's own allocator moved nothing — this was the leading
+> hypothesis and it failed); machine load.
+>
+> **Still unexplained:** which fused kernel; why lane 1 essentially always; why chemistry
+> and never transport; and why the rate is *higher* at 4 threads than at 20. **Method
+> caution:** `parallel_codegen_split_count=1` measured 330 then 2 faults per 40,000 in
+> consecutive passes of the *same* executable — a fixed program's rate swings two orders
+> of magnitude, so single-pass comparisons here are worthless. Closest upstream matches:
+> jax-ml/jax#39741, openxla/xla#32974; XLA publishes no CPU determinism guarantee
+> (`openxla.org/xla/determinism` is GPU-only).
 
 **NOT VERIFIED, and worth stating plainly:**
 

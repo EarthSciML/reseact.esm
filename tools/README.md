@@ -134,8 +134,9 @@ of `@compile`, then 2.6 s per macro step forward and 14 s per macro step backwar
 checkpoint does *not* reproduce the forward pass — measured, a replay of macro step 2
 took 95 accepts / 2 rejects where the forward pass took 92 / 1, from the same
 checkpoint, same θ, same forcing, same process. The compiled ROS23 step is not
-bit-deterministic call to call and the controller amplifies an ulp into a different
-decision. So the forward pass records the accepted `(t, dt)` of every inner step (16 B
+bit-deterministic call to call — an XLA:CPU intra-op threading race that NaNs `EEst`,
+which the controller maps to a spurious rejection (NOT ulp amplification, as recorded
+until 2026-08-12; see tools/diag/README-nondet.md). So the forward pass records the accepted `(t, dt)` of every inner step (16 B
 each, against 681 kB for the state) and the backward sweep replays *that sequence* with
 the controller off; the replayed states then match every checkpoint to **0.000e+00**.
 
