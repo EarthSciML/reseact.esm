@@ -335,3 +335,43 @@ arithmetic from folded data — they want different error messages.
   wants anyway.
 * **File reverse-over-while upstream.** If Reactant/Enzyme gains it, Phase 3 collapses
   to nothing. Worth reporting regardless of whether we wait for it.
+
+---
+
+## 5. Two properties of the traced pipeline, established while reviewing Phase 3
+
+**The traced pipeline is BIT-REPRODUCIBLE run to run.** Two independent CONUS
+13×7×72 runs of the same code, in different processes, agree to `0.000e+00` on every
+digest column across all aligned records. This was not previously known — an earlier
+guess in this session attributed a difference between two runs to "XLA
+nondeterminism", and that guess was wrong (the two runs being compared had different
+Jacobians). The practical consequence is large: **any difference between two traced
+runs of the same configuration is signal, not noise**, so a 4-row sanity window is a
+usable regression test for the whole traced path. Use it as one.
+
+**Phase 3 perturbs the production chemistry path at roundoff, and the adaptive
+controller amplifies it.** Merging Phase 3 changed nothing semantically on the
+default path (`jac=:fd`, `unrolled=true` dispatches to exactly the previous
+`fd_block_jac_unrolled` call), but the 3-macro-step CONUS sanity is no longer
+bit-identical to pre-Phase-3 runs:
+
+| | t=1.50 | t=1.58 | t=1.67 | t=1.75 |
+|---|---:|---:|---:|---:|
+| `o3_min` rel | 0 | 4.6e−10 | 1.4e−7 | 1.1e−7 |
+| `o3_mean` rel | 0 | 1.3e−13 | 2.1e−11 | 2.1e−11 |
+| `m_min` rel | 0 | 0 | 0 | 3.4e−14 |
+
+and the chemistry step counts moved from `nC=159/5` to `162/6` (transport `nT=8/0`
+unchanged). The shape is diagnostic: it enters at roundoff after the first chemistry
+step, and AIR MASS — advanced by the transport step, which Phase 3 does not touch —
+stays bit-identical for three macro steps. So this is roundoff in the recompiled
+chemistry step (loading Enzyme into the session changes the pass pipeline), amplified
+by a controller that is chaotic at that level, and not a semantic change. It is four
+orders below the traced-vs-native agreement (1.6e−3) and inside the 5e−2 validation
+tolerance.
+
+Worth stating plainly because both facts cut the same way: the pipeline is
+reproducible enough that small diffs are meaningful, AND the adaptive controller
+converts ulp-level differences into different step counts. Do not read a changed
+accept/reject count as a change in solver quality without checking the magnitude of
+the underlying state difference first.
