@@ -1,3 +1,8 @@
 === rx_adjoint_check: grid 6x6x8 T0=5400 ===
     (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
 BUILD 595.28 s   nstates=3744  nparams=49
+  NS=13 species, NC=288 cells, N=3744 states
+  stages: jacrev
+
+---- jacrev : reverse over the block Jacobian ALONE, NCOL=1 ----
+  [hb] fast=1 helpers=0 rss=3.2GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]

@@ -399,21 +399,42 @@ That is the whole argument for the null check. It is not a nice-to-have: with
 `emitError()` in place this report would have named the op in one run, and
 without it no amount of work on our side can.
 
+### Corroboration: the original form crashes identically
+
+The question as originally posed — reverse-differentiate the **whole `jac=:ad`
+ROS23 step**, not just the Jacobian — gives the same verdict. So the minimal
+form above is a genuine reduction of the real bug, not a different one:
+
+```
+---- ros_advjp : jac=:ad REVERSE only, excluded_passes=String[] ----
+[1469164] signal 11 (1): Segmentation fault
+```
+
+* same grid, build 644.4 s, `EXIT=139` (core dumped)
+* again the **default pipeline, no `excluded_passes`**
+* the same frame sequence: `getAttr` <- `func::CallOp::build` <-
+  `func::CallOp::create` <- `AutoDiffCallRev::createReverseModeAdjoint` <-
+  `visitChild` <- `differentiate` <- `CreateReverseDiff` <- `lowerEnzymeCalls`
+* log: `tools/diag/logs/reseact_ros_advjp.log`
+
+`ros_advjp` is also the stage to re-check a fix with: it compiles only the
+reverse pass, so it does not first pay for the `jac=:ad` JVP.
+
 ### Probes left running at close-out (no verdict)
 
-Three further on-model probes were still compiling when this was written and are
+Two further on-model probes were still compiling when this was written and are
 reported as unfinished rather than guessed. Their logs are in `tools/diag/logs/`
 and each ends in `EXIT=<code>`; 139 is the segfault.
 
 | probe | question it would answer | status |
 |---|---|---|
-| `reseact_ros_advjp.log` | does the original form — the full `jac=:ad` ROS23 step VJP — agree with the `jacrev` result? | reached the VJP compile, no verdict |
-| `reseact_jacrev1b.log` | does a **single** colour (NCOL=1) also segfault? If yes it is a materially smaller reproducer and should replace the NCOL=13 one above | building, no verdict |
+| `reseact_jacrev1b.log` | does a **single** colour (NCOL=1) also segfault? If yes it is a materially smaller reproducer and should replace the NCOL=13 one above | reached the reverse compile, no verdict |
 | `reseact_addump3.log` | op census of the genuine `jac=:ad` module | building, no verdict |
 
-Note that `addump3`'s purpose — confirming the crash verdict is on the AD path —
-was met by the two cheaper checks in "Why this verdict cannot be a mislabel"
-above, so it is corroboration rather than a dependency.
+`addump3`'s purpose — confirming the crash verdict is on the AD path — was met
+by the two cheaper checks in "Why this verdict cannot be a mislabel" above, so
+it is corroboration rather than a dependency. **The NCOL=1 question is genuinely
+open** and is the one thing that would still improve this report.
 
 ## Files in this repo
 
