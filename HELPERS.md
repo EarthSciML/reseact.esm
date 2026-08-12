@@ -538,14 +538,18 @@ looks plausible.
    2026-08-12 — the requirement holds, three details did not, and one figure is now
    unverified.)*
 
-   **The "~1e-16 vs ForwardDiff" figure predates Enzyme 0.13.199 and did not reproduce
-   there.** The *failure* without the flag reproduces in under a minute; the *success*
-   with it was not reproduced — two attempts failed to complete an Enzyme compile of a
-   trivial 2-state model (one killed at 50 min, one 20+ min and still going at 13 GB RSS,
-   compute-bound). So "the flag is required" is measured; "the flag is sufficient" is
-   currently only inherited from an older version. Don't quote the 1e-16 without re-running
-   it. Related trap: with the flag set, loads/stores guess unconditionally and emit a
-   `CannotDeduceType` **warning** that bypasses Enzyme.jl's typed-exception path — so grep
+   **The flag's real cost at 0.13.199 is an unbounded compile, and the obstacle is scale,
+   not semantics.** The relaxed run does not fail — it does not *finish*: a minimised 0-D
+   case (2 states, one shared subexpression) was still compiling 20+ min in at 13.1 GB RSS,
+   CPU time tracking wall clock 1:1 with RSS flat — compute-bound inside Enzyme's type
+   analysis, not leaking or swapping; an earlier attempt was killed at 50 min. The
+   *failure* path, by contrast, takes under a minute. So the flag trades a fast error for
+   an unbounded wait, not for a slow success. But on a **small** walker of the same shape
+   it works exactly, agreeing with ForwardDiff in seconds — so the inherited "~1e-16"
+   figure is probably true and merely unreachable here. Re-run on an idle machine before
+   relying on it; a contended box cannot distinguish "slow but finite" from "does not
+   terminate". Related trap: with the flag set, loads/stores guess unconditionally and emit
+   a `CannotDeduceType` **warning** that bypasses Enzyme.jl's typed-exception path — grep
    stderr for it wherever the flag is set, or a silent type guess reads as success.
 
    * **The struct is `_Node`, not `_VecNode`.** `_VecNode` no longer exists anywhere in
