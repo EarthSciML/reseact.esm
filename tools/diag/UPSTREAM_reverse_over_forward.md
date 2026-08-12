@@ -337,6 +337,25 @@ by itself sufficient.**
 * build 601.9 s, then SIGSEGV (`EXIT=139`) during `@compile`
 * log: `tools/diag/logs/reseact_jacrev13b.log`
 
+**Why this verdict cannot be a mislabel** (it matters — a sibling probe *was*
+mislabelled today, see the provenance note at the end). Two independent checks:
+
+1. **Structural.** `_jdot_ad` calls `RTI.ad_block_jac(...)` *directly*. There is
+   no `jac` kwarg anywhere in this path and therefore no default to inherit
+   silently — which is exactly the failure mode that bit `ros_vjp`. The AD
+   Jacobian is not selected here, it is the only thing called.
+2. **Observed in the IR.** `enzyme.fwddiff` op counts in the pre-pipeline module
+   (`ROF_HLO`, toy at NS=4 so it is cheap and non-crashing):
+
+   | | `enzyme.fwddiff` | `enzyme.autodiff` |
+   |---|---|---|
+   | `jac=:ad` | **4** (= NS colours) | 1 (the outer reverse) |
+   | `jac=:fd` | **0** | 1 |
+
+   So "the AD path" is directly visible as `enzyme.fwddiff` ops in the module,
+   one per colour, and the FD path emits none. The nesting the crash needs is a
+   thing you can count, not a thing you have to trust.
+
 The stack is the mechanism above, frame for frame:
 
 ```

@@ -1,2 +1,9 @@
 === rx_adjoint_check: grid 6x6x8 T0=5400 ===
     (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 644.37 s   nstates=3744  nparams=49
+  NS=13 species, NC=288 cells, N=3744 states
+  stages: ros_advjp
+
+---- ros_advjp : jac=:ad REVERSE only, excluded_passes=String[] ----
+  [hb] fast=1 helpers=0 rss=3.1GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
+  [hb] fast=1138 helpers=108 rss=3.1GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 63, "reduce_fnadd_sum" => 30, "log10_broadcast_scalar" => 6, "update_computation" => 3] fast_hits=["multiply" => 396, "add" => 265, "divide" => 144, "select" => 70, "subtract" => 45, "power" => 43]
