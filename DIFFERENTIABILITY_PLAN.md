@@ -358,10 +358,24 @@ still run with `RESEACT_ADJ_CLAMP=0` because the clamped sweep failed twice).
   built on it returns the state instead of its derivative (‖du‖ came back as 2.3e4 for a
   parameter that does not appear in the transport RHS at all, and the per-step
   dot-product identity read rel = 1.2–1.6). The same call shape returns the correct
-  tangent on a toy carrying the same constructs. `rx_traced_integrator.jl`'s
-  `ros23_step_jvp` / `ssprk43_step_jvp` return that same `r[1]`, so **anything that has
-  been validated through them deserves a second look.** The driver detects this by the
+  tangent on a toy carrying the same constructs. The driver detects this by the
   zero-seed test and skips the stage rather than reporting the state as a derivative.
+
+  **The inference this originally carried — that `rx_traced_integrator.jl`'s
+  `ros23_step_jvp` / `ssprk43_step_jvp` are therefore suspect, and Phase 3's results
+  with them — was CHECKED AND IS WRONG.** Two measurements clear them:
+  * `autodiff(Forward, f, Duplicated, Duplicated(x,dx))[1]` is the DERIVATIVE, host and
+    traced, on a function where primal and tangent are unmistakable; the same call under
+    an exactly zero seed returns exactly zero.
+  * On the REAL model at a jittered base point, CHECK 2 — which calls
+    `ssprk43_step_jvp` directly — satisfies `⟨λ,Jv⟩ == ⟨Jᵀλ,v⟩` to **6.7e-16 (state),
+    1.0e-15 (params), 9.7e-16 (forcing), 3.4e-16 (all)**. If the JVP returned the primal
+    those two numbers could not agree to sixteen digits in four independent directions.
+
+  So the bad slot is real in the *chained forward reference built here*, and its cause is
+  in that construction, not in the merged JVPs. Worth resolving, because a working
+  forward reference is what would let criterion 1 be answered directly instead of through
+  FD on a frozen tape — but nothing already validated needs revisiting.
 * **The 1e−8 target against Phase 2 itself** — for the reasons above, that comparison
   cannot reach 1e−8 while the host loop and the device loop are different floating-point
   programs. Closing it needs either reverse-over-`while` upstream, or an
