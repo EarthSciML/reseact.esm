@@ -399,7 +399,21 @@ That is the whole argument for the null check. It is not a nice-to-have: with
 `emitError()` in place this report would have named the op in one run, and
 without it no amount of work on our side can.
 
-<!-- RESEACT_RESULTS -->
+### Probes left running at close-out (no verdict)
+
+Three further on-model probes were still compiling when this was written and are
+reported as unfinished rather than guessed. Their logs are in `tools/diag/logs/`
+and each ends in `EXIT=<code>`; 139 is the segfault.
+
+| probe | question it would answer | status |
+|---|---|---|
+| `reseact_ros_advjp.log` | does the original form — the full `jac=:ad` ROS23 step VJP — agree with the `jacrev` result? | reached the VJP compile, no verdict |
+| `reseact_jacrev1b.log` | does a **single** colour (NCOL=1) also segfault? If yes it is a materially smaller reproducer and should replace the NCOL=13 one above | building, no verdict |
+| `reseact_addump3.log` | op census of the genuine `jac=:ad` module | building, no verdict |
+
+Note that `addump3`'s purpose — confirming the crash verdict is on the AD path —
+was met by the two cheaper checks in "Why this verdict cannot be a mislabel"
+above, so it is corroboration rather than a dependency.
 
 ## Files in this repo
 
@@ -409,8 +423,8 @@ without it no amount of work on our side can.
 | `tools/diag/rof_sweep.sh` | records the verdict from outside the process |
 | `tools/diag/rof_results.tsv` | every configuration run and its verdict |
 | `tools/diag/rof_bisect_pattern.sh` | binary search that named `concat_broadcast_slice` |
-| `tools/diag/rof_concat_repro.jl` | the 8-line Bug B reproducer |
-| `tools/diag/rof_batchfwd.jl` | batched-forward-mode probe (see below) |
+| `tools/diag/rof_concat_repro.jl` | the five-line Bug B reproducer |
+| `tools/diag/rof_batchfwd.jl` | batched-forward-mode probe (Issue 3) |
 | `tools/rx_adjoint_toy.jl` | the model-free variant harness that predates this |
 | `tools/rx_adjoint_check.jl` | the on-model harness; stages `jacrev`, `ros_advjp`, `addump` |
 

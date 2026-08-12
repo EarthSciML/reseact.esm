@@ -1,2 +1,3 @@
 === rx_adjoint_check: grid 6x6x8 T0=5400 ===
     (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 595.28 s   nstates=3744  nparams=49
