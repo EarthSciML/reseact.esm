@@ -539,10 +539,16 @@ looks plausible.
    unverified.)*
 
    **The flag's real cost at 0.13.199 is an unbounded compile, and the obstacle is scale,
-   not semantics.** The relaxed run does not fail — it does not *finish*: a minimised 0-D
-   case (2 states, one shared subexpression) was still compiling 20+ min in at 13.1 GB RSS,
-   CPU time tracking wall clock 1:1 with RSS flat — compute-bound inside Enzyme's type
-   analysis, not leaking or swapping; an earlier attempt was killed at 50 min. The
+   not semantics.** The relaxed run does not fail — it does not *finish*: two attempts were
+   killed on timeout with no gradient, at 50 min and at 55 min, the second on a minimised
+   0-D case (2 states, one shared subexpression) with nothing else in the process. Its
+   37-sample trace is unusually clean — CPU time tracking wall clock 1:1 throughout, and
+   RSS pinned at 13,140,512 kB, the same value *to the kilobyte*, every sample, for 36
+   straight minutes: not swapping, not leaking, not GC-thrashing, and not allocating in a
+   way that would suggest progress. **Which Enzyme phase is spinning was never
+   instrumented** — attributing it to type analysis is inference from which flag is
+   involved, not measurement, and a flat-RSS 1:1-CPU plateau separates "slow but finite"
+   from "does not terminate" in neither direction. The
    *failure* path, by contrast, takes under a minute. So the flag trades a fast error for
    an unbounded wait, not for a slow success. But on a **small** walker of the same shape
    it works exactly, agreeing with ForwardDiff in seconds — so the inherited "~1e-16"
