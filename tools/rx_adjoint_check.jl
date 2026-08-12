@@ -507,7 +507,7 @@ if want("addump")
     for (nm, f) in (("ad", () -> @code_hlo optimize=false ros_vjp(UR, THC, LAM, TR, DTC_)),
                     ("fd", () -> @code_hlo optimize=false ros_vjp_fd(UR, THC, LAM, TR, DTC_)),
                     ("rhs", () -> @code_hlo optimize=false gC(UR, THC, TR)))
-        p = replace(dest, ".mlir" => "_$nm.mlir")
+        local p = replace(dest, ".mlir" => "_$nm.mlir")   # `p` is also a global here
         t0 = time(); s = sprint(show, f())
         open(p, "w") do io; write(io, s); end
         @printf("  %-4s %8.1f s  %10d bytes  %s\n", nm, time() - t0, filesize(p), p)

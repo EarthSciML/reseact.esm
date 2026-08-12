@@ -1,24 +1,21 @@
 # Upstream report: reverse-over-forward AD in Reactant/Enzyme-MLIR
 
-Written to be filed by a human. Three INDEPENDENT bugs were found while trying
-to put an exact (AD) block Jacobian inside a reverse-mode adjoint; they are
-reported separately because they have different owners, different severities,
-and only two of them are fully isolated.
+Written to be filed by a human, as **two separate issues** (plus a third, minor,
+if wanted). They were all found trying to put an exact (AD) block Jacobian
+inside a reverse-mode adjoint, but they are independent bugs with different
+owners, and each section below is self-contained enough to paste on its own —
+copy the Environment block into each.
 
-* **Bug A — SEGFAULT.** `Enzyme.gradient(Reverse, ...)` over a function that
-  contains `Enzyme.autodiff(Forward, ...)` calls dies in
-  `AutoDiffCallRev::createReverseModeAdjoint` on a NULL `FuncOp`.
-  **Root cause of the CRASH is identified and is a one-line unchecked-null in
-  Enzyme-MLIR. What makes the underlying differentiation FAIL is NOT identified**
-  — see "what we could not establish".
-* **Bug B — MISCOMPILE.** The `concat_broadcast_slice` HLO rewrite merges
-  adjacent `concatenate` operands along the wrong axis and produces a malformed
-  module. **Fully isolated, 8-line reproducer, no autodiff involved, root cause
-  quotable from the source.**
+| | what | file to | isolated? |
+|---|---|---|---|
+| **Bug B** | `concat_broadcast_slice` merges `concatenate` operands along the wrong axis and emits a malformed module | EnzymeAD/**Enzyme-JAX** | **yes** — five-line reproducer, no autodiff, root cause quotable |
+| **Bug A** | reverse-over-forward segfaults on a NULL `FuncOp` in `AutoDiffCallRev::createReverseModeAdjoint` | EnzymeAD/**Enzyme** | **crash mechanism yes, trigger no** — reproduces only on a real model |
+| Bug C | batched forward mode does not lower, by either available route | EnzymeAD/**Reactant.jl** | yes, but minor |
 
-Everything below is measured on this machine, not inferred.
+Everything attributed to *this machine* is measured, not inferred. Where
+something is a hypothesis it says so.
 
-## Versions
+## Environment (copy into each issue)
 
 | | |
 |---|---|
@@ -39,11 +36,15 @@ on the versions in the table.
 
 ---
 
-# Bug B — `concat_broadcast_slice` produces a malformed `stablehlo.concatenate`
+# ISSUE 1 (Bug B) — `concat_broadcast_slice` produces a malformed `stablehlo.concatenate`
 
-Filing target: **EnzymeAD/Enzyme-JAX** (the pattern lives in
-`src/enzyme_ad/jax/Utils.cpp`), cross-referenced from **EnzymeAD/Reactant.jl**
-because Reactant enables the pattern by default.
+**File to: EnzymeAD/Enzyme-JAX** (the pattern lives in
+`src/enzyme_ad/jax/Utils.cpp`); worth cross-referencing from
+**EnzymeAD/Reactant.jl**, which enables the pattern by default.
+
+**Severity: silent wrong-shape miscompile.** Here it failed the verifier loudly,
+but the rewrite itself is a shape error in a rewrite that is on by default, and
+nothing about it is autodiff-specific.
 
 ## Reproducer
 
@@ -166,11 +167,17 @@ presumably why this has not been hit more often.)
 
 ---
 
-# Bug A — segfault in `AutoDiffCallRev::createReverseModeAdjoint`
+# ISSUE 2 (Bug A) — segfault on a NULL `FuncOp` in `AutoDiffCallRev::createReverseModeAdjoint`
 
-Filing target: **EnzymeAD/Enzyme** (`enzyme/Enzyme/MLIR`). The *crash* is
+**File to: EnzymeAD/Enzyme** (`enzyme/Enzyme/MLIR`). The *crash* is
 unambiguously an unchecked null there. Whether the *failure* that produces the
-null is also an Enzyme bug or a Reactant lowering problem is open.
+null is also an Enzyme bug or a Reactant lowering problem is open — and cannot
+be answered from outside, for the reason given under "which callee".
+
+**The ask, in one line:** null-check `revFn` in `edetail::callReverseHandler`
+and `emitError()` instead of dereferencing it, so the failing callee names
+itself. Everything else in this issue is context for *why* that check is the
+thing that unblocks a real diagnosis.
 
 ## Symptom
 
@@ -241,11 +248,11 @@ information about *which* callee failed to differentiate dies with the process.
 
 ## Reproducer status — HONEST ACCOUNT
 
-**We do not have a model-free reproducer.** The crash is reproducible on the
-ReSEACT atmospheric model (13 species, 288 cells, `tools/rx_adjoint_check.jl`
-stage `ros_ad`, ~600 s build), and a substantial bisection *failed* to
-reproduce it on a toy that carries the same nesting. What was ruled out is
-listed below so that whoever picks this up does not re-walk it.
+**We do not have a model-free reproducer.** The crash reproduces on the ReSEACT
+atmospheric model (13 species, 288 cells, `tools/rx_adjoint_check.jl` stage
+`jacrev`, ~600 s build — see "What DOES reproduce it" below), and a substantial
+bisection *failed* to reproduce it on a toy that carries the same nesting. What
+was ruled out is listed below so that whoever picks this up does not re-walk it.
 
 `tools/diag/rof_repro.jl` runs one configuration per process (a segfault cannot
 report its own death, so `tools/diag/rof_sweep.sh` records the verdict from
@@ -276,26 +283,102 @@ had already ruled out `log10`/`floor`/`sum`-reduce individually.
 What is *left* between the toy and the model is the emitted ReSEACT RHS itself
 (EarthSciAST `:oop` emitter: 13 species of SuperFast gas-phase chemistry with
 photolysis, emissions, deposition, and forcing-buffer interpolation). The size
-gap is the whole remaining gap, and it is large. Measured on the module as
-Reactant hands it to Enzyme (`@code_hlo optimize=false`, 6x6x8 grid, N=3744):
+gap is the whole remaining gap, and it is large.
 
-| | toy at the same NS/NC | ReSEACT |
+**Provenance of the numbers below, stated exactly.** They are a census of one
+ROS23 chemistry-step VJP module as Reactant hands it to Enzyme
+(`@code_hlo optimize=false`, 6x6x8 grid, N=3744), and that module is the
+**`jac=:fd`** one — it was dumped before the `ros_vjp` call-site bug (below) was
+found, so the file labelled `_ad` was in fact FD. They are quoted here only to
+bound the SCALE of the emitted RHS, which is common to both Jacobian flavours
+and is the only thing the argument rests on. An equivalent census of the genuine
+`jac=:ad` module is what stage `addump` now produces.
+
+| | toy at the same NS/NC | ReSEACT, ROS23 VJP (`jac=:fd`) |
 |---|---|---|
 | module size | ~0.1 MB | **34.8 MB** (323 435 lines) |
-| `func.func` (minted helpers) | 0–13 | **1346** |
+| `func.func` | 0–13 | **1346** |
 | `stablehlo.gather` | 0 | 3648 |
 | `stablehlo.dynamic_slice` | 0 | 2016 |
 | `stablehlo.scatter` | 0–1 | 48 |
 | `stablehlo.while` | 0 | 0 |
 
-The helper functions the emitted RHS mints, by name and count (from the tracer's
-own instrumentation): `TypeCast{Float64}_broadcast_scalar` 439,
-`reduce_fnadd_sum` 196, `log10_broadcast_scalar` 54, `update_computation`
-(the `stablehlo.scatter` region) 19, out of 745 total. Every one of those is a
-`func.call` the reverse pass must cross, and `AutoDiffCallRev` is the handler
-for exactly that — so "one of these 1346 callees comes back null from
-`CreateReverseDiff`" is the shape of the answer. **Which one, we do not know**,
-and the crash destroys the only place that information exists.
+The helper functions the emitted RHS mints — a property of the RHS, so common to
+both flavours (from the tracer's own instrumentation):
+`TypeCast{Float64}_broadcast_scalar` 439, `reduce_fnadd_sum` 196,
+`log10_broadcast_scalar` 54, `update_computation` (the `stablehlo.scatter`
+region) 19, out of 745 total. Every one of those is a `func.call` the reverse
+pass must cross, and `AutoDiffCallRev` is the handler for exactly that — so
+"one of the callees comes back null from `CreateReverseDiff`" is the shape of
+the answer. **Which one, we do not know**, and the crash destroys the only place
+that information exists.
+
+## What DOES reproduce it: the coloured Jacobian alone, on the model
+
+Reproduced on 2026-08-12 with the stage algebra removed entirely. The
+differentiated program is now just
+
+```julia
+# tools/rx_adjoint_check.jl, stage `jacrev`
+function _jdot_ad(g, u, th, t, ::Val{K}) where {K}
+    Jb = ad_block_jac(uu -> g(uu, th, t), u, Val(K), NC)   # K coloured JVPs
+    sum(sum(Jb[r, s]) for r in 1:K, s in 1:K)
+end
+Enzyme.gradient(Reverse, _jdot_ad, Const(gC), u, theta, Const(t), Const(Val(13)))
+```
+
+— no Rosenbrock stages, no `blocksolve`, no `sum(lambda .* unew)`, no linear
+algebra of any kind. **Reverse mode over the coloured forward-mode Jacobian is
+by itself sufficient.**
+
+* grid 6x6x8, NS=13 species, NC=288 cells, N=3744 states
+* **default pass pipeline — NO `excluded_passes`.** Bug B does not fire here and
+  did not contaminate this verdict.
+* build 601.9 s, then SIGSEGV (`EXIT=139`) during `@compile`
+* log: `tools/diag/logs/reseact_jacrev13b.log`
+
+The stack is the mechanism above, frame for frame:
+
+```
+DifferentiatePass::runOnOperation
+  DifferentiatePass::lowerEnzymeCalls
+    MEnzymeLogic::CreateReverseDiff
+      MEnzymeLogic::differentiate
+        MEnzymeLogic::visitChild
+          ReverseAutoDiffOpInterface::createReverseModeAdjoint
+            AutoDiffCallRev::createReverseModeAdjoint
+              mlir::func::CallOp::create(OpBuilder&, Location, FuncOp, ValueRange)
+                mlir::func::CallOp::build(OpBuilder&, OperationState&, FuncOp, ValueRange)
+                  mlir::Operation::getAttr(llvm::StringRef)   <-- SIGSEGV
+signal 11 (1): Segmentation fault
+```
+
+`func::CallOp::build(..., FuncOp callee, ...)` does `callee.getNameAttr()`,
+i.e. `getAttr("sym_name")`, on the `FuncOp` it is handed. It is handed the
+unchecked `revFn`. So the null comes from `CreateReverseDiff` returning failure
+for one of the callees inside the reverse pass — silently, with no diagnostic
+emitted before the crash.
+
+### Which callee — and why we cannot tell you
+
+**We could not identify the callee whose `CreateReverseDiff` returned null, and
+we do not think it can be identified from outside the compiler.** Three
+independent reasons, all of them checked rather than assumed:
+
+1. The information exists only inside the process that dies. A segfault takes
+   the process with it and a Julia `try`/`catch` cannot see it, so every probe
+   here had to be one configuration per process with the verdict recorded by the
+   parent.
+2. `Reactant_jll` ships a stripped `libReactantExtra.so` — the backtrace above
+   is mangled symbol names with `(unknown line)` throughout. There is nothing to
+   set a breakpoint on and no way to print `fn.getNameAttr()` at the crash site.
+3. **No MLIR diagnostic precedes the fault.** `CreateReverseDiff` returned
+   failure silently; the log goes straight from the last tracer heartbeat to
+   `signal 11`.
+
+That is the whole argument for the null check. It is not a nice-to-have: with
+`emitError()` in place this report would have named the op in one run, and
+without it no amount of work on our side can.
 
 <!-- RESEACT_RESULTS -->
 
@@ -310,13 +393,33 @@ and the crash destroys the only place that information exists.
 | `tools/diag/rof_concat_repro.jl` | the 8-line Bug B reproducer |
 | `tools/diag/rof_batchfwd.jl` | batched-forward-mode probe (see below) |
 | `tools/rx_adjoint_toy.jl` | the model-free variant harness that predates this |
-| `tools/rx_adjoint_check.jl` | the on-model harness; stages `ros_ad`, `jacrev`, `addump` |
+| `tools/rx_adjoint_check.jl` | the on-model harness; stages `jacrev`, `ros_advjp`, `addump` |
+
+## Provenance note, for anyone re-checking these verdicts
+
+Two probes were mislabelled during this work and both are corrected above rather
+than quietly dropped:
+
+1. **`rx_adjoint_check.jl`'s `ros_vjp` never passed `jac=:ad`.** It omitted the
+   kwarg and inherited `ros23_step_vjp`'s `:fd` default, from the first commit
+   on — so the harness stage named "jac=:ad" had been reverse-differentiating
+   the FD Jacobian all along. Proven, not inferred: the two dumped modules are
+   byte-identical after renaming the function. Fixed; the census table above is
+   relabelled accordingly, and a new `ros_advjp` stage compiles only that
+   reverse pass so the question can be asked without first paying for the
+   `jac=:ad` JVP.
+2. **An `EXIT=137` was briefly recorded as evidence about the `jac=:ad` JVP.**
+   It was a memcg OOM-kill caused by running five model builds at once in a
+   40 GiB SLURM step cgroup — self-inflicted, and retracted. Note for anyone
+   running these: `/sys/fs/cgroup/memory.stat` is the whole node; the cap that
+   matters is `system.slice/slurmstepd.scope/<job>/memory.max`, and its `anon`
+   is the number to threshold on.
 
 ---
 
-# Bug C — batched forward mode does not lower, by either route
+# ISSUE 3 (Bug C, minor) — batched forward mode does not lower, by either route
 
-Filing target: **EnzymeAD/Reactant.jl**.
+**File to: EnzymeAD/Reactant.jl.**
 
 Found while evaluating the standing suggestion to *remove* the nesting by
 emitting ONE width-NS forward derivative instead of NS width-1 ones.

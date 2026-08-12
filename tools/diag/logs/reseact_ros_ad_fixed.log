@@ -8,3 +8,95 @@ BUILD 688.46 s   nstates=3744  nparams=49
   [hb] fast=1 helpers=0 rss=3.0GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
   [hb] fast=3047 helpers=239 rss=3.0GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 138, "reduce_fnadd_sum" => 64, "log10_broadcast_scalar" => 18, "update_computation" => 6] fast_hits=["multiply" => 1148, "add" => 646, "divide" => 424, "select" => 148, "power" => 122, "exponential" => 106]
   [hb] fast=30118 helpers=1932 rss=3.1GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 1104, "reduce_fnadd_sum" => 525, "log10_broadcast_scalar" => 144, "update_computation" => 48] fast_hits=["multiply" => 12085, "add" => 5209, "divide" => 3483, "subtract" => 3385, "select" => 1184, "power" => 976]
+  [hb] fast=60236 helpers=3865 rss=3.7GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 2208, "reduce_fnadd_sum" => 1050, "log10_broadcast_scalar" => 288, "update_computation" => 96] fast_hits=["multiply" => 24170, "add" => 10418, "divide" => 6966, "subtract" => 6770, "select" => 2368, "power" => 1952]
+
+[1457866] signal 15: Terminated
+in expression starting at /tmp/claude-1111265/wt-rofdiag/tools/rx_adjoint_check.jl:520
+__futex_abstimed_wait_common at /lib64/libc.so.6 (unknown line)
+pthread_cond_wait at /lib64/libc.so.6 (unknown line)
+uv_cond_wait at /workspace/srcdir/libuv/src/unix/thread.c:822
+ijl_task_get_next at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/scheduler.c:523
+poptask at ./task.jl:1216
+wait at ./task.jl:1228
+#wait#398 at ./condition.jl:141
+wait at ./condition.jl:136 [inlined]
+_trywait at ./asyncevent.jl:185
+profile_printing_listener at ./Base.jl:332
+#start_profile_listener##0 at ./Base.jl:352
+jfptr_YY.start_profile_listenerYY.YY.0_16003.1 at /u/ctessum/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+start_task at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/task.c:1252
+unknown function (ip: (nil)) at (unknown file)
+_ZNK3xla14HloInstruction9unique_idEv at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla12PushDFSChildINS_17DfsHloVisitorBaseIPNS_14HloInstructionEEEEEbPT_PN4absl12lts_2026052613InlinedVectorISt4pairIlS3_ELm16ESaISB_EEES3_ at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xlaL12PostOrderDFSINS_17DfsHloVisitorBaseIPNS_14HloInstructionEEEEEN4absl12lts_202605266StatusES3_PT_St8optionalINS6_11FunctionRefIFbSt4pairIlPKS2_ESF_EEEEbb at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla14HloInstruction6AcceptIPS0_EEN4absl12lts_202605266StatusEPNS_17DfsHloVisitorBaseIT_EEbbb at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZNK3xla14HloComputation6AcceptIPNS_14HloInstructionEEEN4absl12lts_202605266StatusEPNS_17DfsHloVisitorBaseIT_EE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla26AlgebraicSimplifierVisitor3RunEPNS_14HloComputationERKNS_26AlgebraicSimplifierOptionsEPNS_19AlgebraicSimplifierE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla19AlgebraicSimplifier7RunImplEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla16HloPassInterface3RunEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline9RunHelperIPNS_9HloModuleEEEN4absl12lts_202605268StatusOrIbEEPNS_16HloPassInterfaceET_RKNS5_13flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS5_18container_internal10StringHashENSG_8StringEqESaISF_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline17RunPassesInternalIPNS_9HloModuleEEEN4absl12lts_202605268StatusOrIbEET_RKNS_12DebugOptionsERKNS5_13flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS5_18container_internal10StringHashENSH_8StringEqESaISG_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline7RunImplEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla10HloPassFixINS_15HloPassPipelineEE28RunOnChangedComputationsOnceEPNS_9HloModuleEPNS_16HloPassInterface8RunStateERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS9_18container_internal10StringHashENSF_8StringEqESaISE_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla10HloPassFixINS_15HloPassPipelineEE13RunToFixPointEPNS_9HloModuleEPNS_16HloPassInterface8RunStateERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS9_18container_internal10StringHashENSF_8StringEqESaISE_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla10HloPassFixINS_15HloPassPipelineEE7RunImplEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS6_18container_internal10StringHashENSC_8StringEqESaISB_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla16HloPassInterface3RunEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline9RunHelperIPNS_9HloModuleEEEN4absl12lts_202605268StatusOrIbEEPNS_16HloPassInterfaceET_RKNS5_13flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS5_18container_internal10StringHashENSG_8StringEqESaISF_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline17RunPassesInternalIPNS_9HloModuleEEEN4absl12lts_202605268StatusOrIbEET_RKNS_12DebugOptionsERKNS5_13flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS5_18container_internal10StringHashENSH_8StringEqESaISG_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla15HloPassPipeline7RunImplEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla16HloPassInterface3RunEPNS_9HloModuleERKN4absl12lts_2026052613flat_hash_setISt17basic_string_viewIcSt11char_traitsIcEENS4_18container_internal10StringHashENSA_8StringEqESaIS9_EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla3cpu11CpuCompiler29RunHloPassesThroughLayoutAssnEPNS_9HloModuleEbPNS0_21TargetMachineFeaturesE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla3cpu11CpuCompiler12RunHloPassesEPNS_9HloModuleEbPN4llvm13TargetMachineERKNS_8Compiler14CompileOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla3cpu11CpuCompiler12RunHloPassesESt10unique_ptrINS_9HloModuleESt14default_deleteIS3_EEPN15stream_executor14StreamExecutorERKNS_8Compiler14CompileOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla13PjRtCpuClient15CompileInternalERKNS_14XlaComputationERKSt6vectorIPKNS_5ShapeESaIS7_EESt8functionIFN4absl12lts_202605268StatusOrISt4pairIS4_IS5_SaIS5_EES5_EEERKNS_9HloModuleEEENS_14CompileOptionsEPKNS_21AotCompilationOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla13PjRtCpuClient23CompileAndAssignDevicesENS_21MaybeOwningMlirModuleENS_14CompileOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN3xla13PjRtCpuClient14CompileAndLoadENS_21MaybeOwningMlirModuleENS_14CompileOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_Z21ClientCompileInternalPN3xla10PjRtClientE10MlirModuleNS_14CompileOptionsE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+ClientCompileWithProto at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+ClientCompileWithProto at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/MLIR.jl:65 [inlined]
+#20 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/xla/PJRT/LoadedExecutable.jl:75 [inlined]
+try_compile_dump_mlir at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/IR/Pass.jl:164
+try_compile_dump_mlir at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/IR/Pass.jl:159 [inlined]
+#compile#18 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/xla/PJRT/LoadedExecutable.jl:74
+compile at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/xla/PJRT/LoadedExecutable.jl:62
+jfptr_compile_48658 at /tmp/claude-1111265/depot/compiled/v1.12/Reactant/p9PzF_DoGiD.so (unknown line)
+#compile_xla#76 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1392
+compile_xla at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1306 [inlined]
+#compile#78 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1423
+compile at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1420
+unknown function (ip: 0x7f687f20a23f) at (unknown file)
+macro expansion at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Macros.jl:256 [inlined]
+macro expansion at /tmp/claude-1111265/depot/packages/LLVM/zkwaZ/src/base.jl:113 [inlined]
+macro expansion at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Macros.jl:255 [inlined]
+run_checks at /tmp/claude-1111265/wt-rofdiag/tools/rx_adjoint_check.jl:354
+unknown function (ip: 0x7f68a034e29d) at (unknown file)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+do_call at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:123
+eval_value at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:243
+eval_stmt_value at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:194 [inlined]
+eval_body at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:707
+jl_interpret_toplevel_thunk at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:898
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1035
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:975
+ijl_toplevel_eval at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1047
+ijl_toplevel_eval_in at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1092
+eval at ./boot.jl:489
+include_string at ./loading.jl:2874
+_include at ./loading.jl:2934
+include at ./Base.jl:306
+exec_options at ./client.jl:317
+_start at ./client.jl:550
+jfptr__start_63319.1 at /u/ctessum/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+true_main at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:971
+jl_repl_entrypoint at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:1139
+main at julia (unknown line)
+__libc_start_call_main at /lib64/libc.so.6 (unknown line)
+__libc_start_main at /lib64/libc.so.6 (unknown line)
+unknown function (ip: 0x4010b8) at julia
+unknown function (ip: (nil)) at (unknown file)
+Allocations: 6173932518 (Pool: 6173825211; Big: 107307); GC: 1479
+┌ Warning: Assignment to `p` in soft scope is ambiguous because a global variable by the same name exists: `p` will be treated as a new local. Disambiguate by using `local p` to suppress this warning or `global p` to assign to the existing global variable.
+└ @ /tmp/claude-1111265/wt-rofdiag/tools/rx_adjoint_check.jl:508
+EXIT=143
