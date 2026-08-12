@@ -149,6 +149,40 @@ uh = copy(u0)
 scale_u = max.(abs.(uh), 1e-12)
 vuh = randn(N) .* scale_u                     # relative direction in state space
 lamh = randn(N) ./ scale_u                    # dual to it, so <lam,u> is O(1)
+
+# THE DEFAULT BASE POINT IS DEGENERATE, AND CHECK 3 CANNOT SAY SO.
+# `u0` is the model's default IC: every SuperFast field is EXACTLY spatially
+# uniform (only Transport3D.m varies -- it is overwritten with hydrostatic dp
+# above). The PPM advection in EarthSciDiscretizations is monotonicity-limited,
+# and every one of its limiter switches is a product of NEIGHBOUR DIFFERENCES
+# compared against zero -- ppm_slope_mono / ppm_lev_slope_mono (CW84 eq. 1.8,
+# `(ap-a0)*(a0-am) > 0`) and ppmflux_limit_left / ppm_limit_right (eq. 1.10,
+# `(qr-qi)*(qi-ql) <= 0`). On a uniform field every one of those products is
+# exactly 0, so u0 sits ON the switching surface of essentially every interior
+# cell, and the step map is not differentiable there.
+#
+# It is non-differentiable IN A WAY THE fwd/bwd TEST BELOW IS BLIND TO. The
+# guard is QUADRATIC in the perturbation: at u0 +/- e*v it equals
+# e^2*(dv_{i+1}-dv_i)*(dv_i-dv_{i-1}), which has the SAME SIGN for both signs of
+# e. Both one-sided quotients therefore land on the same (other) branch, they
+# agree with each other, and the residual is flat in eps -- the exact signature
+# CHECK 3's banner attributes to "a wrong adjoint". Measured on the transport
+# RHS with ForwardDiff on the HOST (no Reactant, no Enzyme, no integrator): AD
+# at u0 differs from every FD quotient by 9.8e-3 relative and eps-independently,
+# while AD at u0 +/- 1e-14*v -- EITHER SIGN -- agrees with the same FD quotient
+# to 5.6e-10. The 9.15e-6 the step-level check reports is that same gap diluted
+# by dt/||u||, and it carries the same CO 90.7% / O3 9.3% attribution.
+#
+# Set RESEACT_ADJ_UJITTER (e.g. 1e-3) to move the base point off the uniform
+# field. The residual then behaves like an ordinary FD error and shrinks with
+# eps -- provided eps is small enough that the FD stencil does not itself step
+# across a switch, which is why the sweep has to reach 1e-8 to see it.
+const UJIT = parse(Float64, get(ENV, "RESEACT_ADJ_UJITTER", "0"))
+if UJIT > 0
+    # a PRIVATE stream, so switching the knob on does not also move `dtheta_host`
+    uh .*= (1 .+ UJIT .* randn(Random.MersenneTwister(31337), N))
+    say(@sprintf("  base point jittered by %.0e relative (RESEACT_ADJ_UJITTER)", UJIT))
+end
 UR = RX.ConcreteRArray(uh); VU = RX.ConcreteRArray(vuh); LAM = RX.ConcreteRArray(lamh)
 TR = RX.ConcreteRNumber(T0)
 
@@ -324,9 +358,14 @@ function run_checks(nm, TH, dTH, th_host, dth_host, dtval, outf, vjpf, jvpf)
     end
 
     say("  CHECK 3 FD of the SAME compiled step vs AD, per direction.")
-    say("    central = (f(+e)-f(-e))/2e; fwd/bwd are the one-sided quotients --")
-    say("    at a KINK the AD derivative equals ONE side and central splits them,")
-    say("    which is how a nondifferentiable step map is told from a wrong adjoint.")
+    say("    central = (f(+e)-f(-e))/2e; fwd/bwd are the one-sided quotients.")
+    say("    fwd != bwd is SUFFICIENT for a kink but NOT NECESSARY: a switch whose")
+    say("    guard is EVEN in the perturbation -- which is what every PPM limiter")
+    say("    guard is, being a product of neighbour differences -- flips the same")
+    say("    way on both sides, so fwd == bwd == central and the residual is flat")
+    say("    in eps while still not being the derivative. A flat, eps-independent")
+    say("    residual is therefore evidence of a DEGENERATE BASE POINT, not of a")
+    say("    wrong adjoint; re-run with RESEACT_ADJ_UJITTER=1e-3 to tell them apart.")
     for (dn, du_h, dth_h) in dirs
         DU = RX.ConcreteRArray(du_h); DTHd = _todev(dth_h)
         jv = Array(cjvp(UR, DU, TH, DTHd, TR, DT))
@@ -334,7 +373,7 @@ function run_checks(nm, TH, dTH, th_host, dth_host, dtval, outf, vjpf, jvpf)
         pred = cvjp === nothing ? dot(lamh, jv) : dot(lam_in, du_h) + _ip(gth, dth_h)
         f0v = Array(cout(UR, TH, TR, DT))
         best = Inf; bestv = (0.0, 0.0, 0.0)
-        for epsr in (1e-2, 1e-3, 1e-4, 1e-5, 1e-6)
+        for epsr in (1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8)
             Up = RX.ConcreteRArray(uh .+ epsr .* du_h); Um = RX.ConcreteRArray(uh .- epsr .* du_h)
             fp = Array(cout(Up, _pert(th_host, dth_h, epsr), TR, DT))
             fm = Array(cout(Um, _pert(th_host, dth_h, -epsr), TR, DT))
