@@ -421,29 +421,40 @@ Jacobians). The practical consequence is large: **any difference between two tra
 runs of the same configuration is signal, not noise**, so a 4-row sanity window is a
 usable regression test for the whole traced path. Use it as one.
 
-**Phase 3 perturbs the production chemistry path at roundoff, and the adaptive
-controller amplifies it.** Merging Phase 3 changed nothing semantically on the
-default path (`jac=:fd`, `unrolled=true` dispatches to exactly the previous
-`fd_block_jac_unrolled` call), but the 3-macro-step CONUS sanity is no longer
-bit-identical to pre-Phase-3 runs:
+**Phase 3 and the EarthSciAST parameter work are both numerically INERT — and an
+earlier version of this section said otherwise, wrongly.** Three 3-macro-step CONUS
+sanity runs, same slice/window/config:
 
-| | t=1.50 | t=1.58 | t=1.67 | t=1.75 |
-|---|---:|---:|---:|---:|
-| `o3_min` rel | 0 | 4.6e−10 | 1.4e−7 | 1.1e−7 |
-| `o3_mean` rel | 0 | 1.3e−13 | 2.1e−11 | 2.1e−11 |
-| `m_min` rel | 0 | 0 | 0 | 3.4e−14 |
+| | reseact code | EarthSciAST |
+|---|---|---|
+| **A** | pre-Phase-3 driver | `2abfadaf` |
+| **B** | Phase 3, INTERMEDIATE commit | `2abfadaf` |
+| **C** | Phase 3 **as merged** | `18fd10f0` (Phases 1 + 5) |
 
-and the chemistry step counts moved from `nC=159/5` to `162/6` (transport `nT=8/0`
-unchanged). The shape is diagnostic: it enters at roundoff after the first chemistry
-step, and AIR MASS — advanced by the transport step, which Phase 3 does not touch —
-stays bit-identical for three macro steps. So this is roundoff in the recompiled
-chemistry step (loading Enzyme into the session changes the pass pipeline), amplified
-by a controller that is chaotic at that level, and not a semantic change. It is four
-orders below the traced-vs-native agreement (1.6e−3) and inside the 5e−2 validation
-tolerance.
+**A vs C: 28/28 values bit-identical, worst 0.000e+00, `nC=159/5` both.** That single
+comparison carries a lot: it crosses a different EarthSciAST (with the
+parameter-vector ABI and the parameter-class recording, which touches
+`_compile(::VarExpr)` on every model's build path), a different runner, and a
+different Julia environment — and lands on the same bits. Both repos' changes are
+inert for reseact.
 
-Worth stating plainly because both facts cut the same way: the pipeline is
-reproducible enough that small diffs are meaningful, AND the adaptive controller
-converts ulp-level differences into different step counts. Do not read a changed
-accept/reject count as a change in solver quality without checking the magnitude of
-the underlying state difference first.
+B differed from both by 1.4e-7 on `o3_min`, with `nC=162/6`. I diagnosed that at the
+time as "Phase 3 perturbs the chemistry path at roundoff because loading Enzyme
+changes the pass pipeline". **That was wrong**: the merged Phase 3 code also loads
+Enzyme, and reproduces A exactly. The intermediate and merged integrators differ only
+in comments, so B's difference is attributable to neither the EarthSciAST version nor
+the reseact code, and its actual cause is **unestablished** (machine load and XLA
+autotuning are plausible and unproven).
+
+The process lesson is the durable part: **I diagnosed a one-run difference without
+repeating the run.** A lone diff against a recorded baseline is a reason to re-run
+first, not to explain. The explanation I reached was self-consistent, mechanistically
+plausible, and false — and it would have stood unchallenged if an unrelated
+cross-repo integration check had not happened to falsify it.
+
+What survives: the pipeline reproduces bit-exactly across code and environment changes
+in every controlled comparison here, so a diff is worth investigating — but one
+uncontrolled run varied, so confirm before diagnosing. And the adaptive controller does
+convert ulp-level differences into different accept/reject counts, so never read a
+changed step count as changed solver quality without checking the state difference
+behind it.
