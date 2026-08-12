@@ -1,10 +1,32 @@
 # Helper code behind `run_reseact.jl` and `run_reseact_reactant.jl`
 
-The two root scripts are thin drivers. All the reusable machinery lives in helper
-files they `include`. This document (1) summarizes exactly what each configuration
-depends on and (2) proposes where each helper should eventually live — preferably
-in an existing EarthSciML-org package or extension — so the drivers can shrink to
-`using`-lines.
+The two root scripts are the runners. Both default to the same simulation — **one
+week of CONUS at 13×7×72** (6,552 cells, 85,176 states, 300 s macro steps) — and
+differ only in who does the arithmetic: `run_reseact.jl` on the CPU through the
+SciML operator-splitting solver, `run_reseact_reactant.jl` through Reactant/XLA.
+All the reusable machinery lives in helper files they `include`. This document
+(1) summarizes exactly what each configuration depends on and (2) proposes where
+each helper should eventually live — preferably in an existing EarthSciML-org
+package or extension — so the drivers can shrink to `using`-lines.
+
+Measured on this machine, CONUS 13×7×72:
+
+| | build | compile | solve | notes |
+|---|---:|---:|---:|---|
+| `run_reseact.jl`, 1 week, `julia -t 8` | 683 s | — | 15,227 s | ~40× realtime; 2,016 macro steps, 4 bisections, continuity rms ~5e-13 all week |
+| `run_reseact.jl`, 24 h | — | — | 2,143 s | the reference the traced arm is compared against |
+| `run_reseact_reactant.jl`, 24 h | 718 s | 557 s | 5,923 s | 288 macro steps ⇒ **~2.8× slower than native**; the compile is paid once for the whole run |
+
+The traced arm's step cost is strongly **diurnal** — ~9.6 s/step pre-dawn against
+~35 s/step at midday, 20.6 s/step averaged over the day — because photochemistry is
+what makes the chemistry half stiff. Do not extrapolate it from a short window: a
+3-macro-step sanity run sits in the dark *and* carries the first-step warm-up, which
+is how an earlier estimate of this ratio came out badly wrong in both directions.
+
+Agreement of the traced arm with the native arm over 24 h (289 aligned records): max
+relative difference 6.3e-5 on O3_mean, 1.6e-3 on O3_min, 1.1e-3 on OH_max, 5.2e-12 on
+air mass, `cos_sza` exactly 0. Two independent implementations of the same scheme with
+different Jacobians, well inside the 5e-2 validation tolerance.
 
 ---
 
@@ -14,7 +36,7 @@ in an existing EarthSciML-org package or extension — so the drivers can shrink
 
 | Helper | Provides | Notes |
 |---|---|---|
-| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `index_promoted_refs_by_loop!`, `build_split_run`, `reseact_forcing`, `native_slice`, `forcing_days_for` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_following_rule)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific; `index_promoted_refs_by_loop!` is the post-promotion fix-up described below; `native_slice` is the domain seam described below. |
+| `prototypes/reseact_3d_chem/split_common.jl` | `prepare_split_docs`, `index_promoted_refs_by_loop!`, `build_split_run`, `reseact_forcing`, `native_slice`, `forcing_days_for`, `validate_reseact`, `hydrostatic_dp` | Splits the model with `EarthSciASTSplitter.split_system(·, stencil_following_rule)` and wires GEOS-FP forcing exactly as `EarthSciAST.simulate` does. `reseact_forcing` is model-specific; `index_promoted_refs_by_loop!` is the post-promotion fix-up described below; `native_slice` is the domain seam described below. |
 | `prototypes/reseact_3d_chem/block_jac.jl` | `cellmajor_perm`, `cellmajor_rhs`, `block_fd_jac` | Species-major ↔ cell-major permutation (derived purely from state names) and the NS-color block-diagonal finite-difference Jacobian for the pointwise/chemistry part (NS+1 RHS evals per Jacobian instead of N). |
 | `prototypes/reseact_3d_chem/blockdiag_local.jl` | `BlockDiag` module → `BlockDiagonal`, `MapBroadcast` | `include`s EarthSciMLBase's `blockdiagonal.jl` + `map_algorithm.jl` **directly from a sibling checkout** to get `BlockDiagonal` without pulling the full EarthSciMLBase (ModelingToolkit/Catalyst) dependency tree. |
 | `tools/reactant_handoff/op_split.jl` | `lie_trotter_solve` — drives `OrdinaryDiffEqOperatorSplitting.LieTrotterGodunov((SSPRK43, Rosenbrock23/BD))` as a macro-step loop (positivity clamp + forcing refresh between steps). `include`s `blockdiag_similar.jl`. | The real SciML operator-splitting solver, usable only because of the fix below. |
@@ -52,9 +74,16 @@ of a 3-hourly cadence used to ask an 8-record file for record 9.
 
 Builds two in-place `f!(du,u,p,t)` closures and drives the Lie-Trotter split with
 the real operator-splitting solver — `LieTrotterGodunov((SSPRK43 transport,
-Rosenbrock23/BlockDiagonal chemistry))` via `lie_trotter_solve`. This is the
+Rosenbrock23/BlockDiagonal chemistry))` via `lie_trotter_solve_bisect`. This is the
 reference the Reactant runner is validated against. (`RESEACT_MACRO_DT`, default
 300 s, sets the splitting interval.)
+
+It is `lie_trotter_solve_bisect`, not `lie_trotter_solve`, because the week run
+needs it: at the pre-dawn NO minimum the inner Rosenbrock23's TRIAL sub-steps go
+negative and convergence collapses, and `clamp_nonneg` is **inert** against that —
+it inspects only ACCEPTED states, which never go negative. Retrying the macro step
+over two halves clears it in 2 bisections and costs *less* chemistry work than the
+failed 300 s attempt. The durable fix is §3 below.
 
 **Forcing-refresh fencepost — read this before touching `lie_trotter_solve`'s stop
 grid.** Its `fstops` interval is deliberately **half-open on the right**
@@ -84,21 +113,28 @@ so `dp` drops discontinuously by one window's PS change and `m` does not. **A dr
 that steps at forcing boundaries and is flat in between is stale forcing, not a
 discretisation error.**
 
-### `run_reseact_reactant.jl` (Reactant/XLA) — the above **plus** three Reactant helpers
+### `run_reseact_reactant.jl` (Reactant/XLA) — the above **plus** two Reactant helpers
+
+It does **not** use `op_split.jl`: Reactant cannot trace through the SciML solver
+stack, so the Lie-Trotter step is written out by hand in `rx_traced_integrator.jl`.
+The two arms are therefore independent implementations of the same scheme, which is
+what makes the agreement between them (24 h at CONUS: max 6.3e-5 relative on
+O3_mean, `cos_sza` exactly 0) worth anything.
 
 | Helper | Provides | Status |
 |---|---|---|
 | `tools/reactant_handoff/rx_native_patch.jl` | (a) native `stablehlo` broadcast lowering — same-shape primitive broadcasts lower straight to `Reactant.Ops.*` with no `<op>_broadcast_scalar` helper per site (kills the 10 000-name cap); (b) `make_tracer` opaque-leaf registration for `EarthSciAST._Node/_AccKernel/_OopAccPlan/_AccScratch` (skips the O(IR-size) capture walk — hours → minutes). | **Runtime monkey-patch.** Needs a durable home. |
-| `tools/reactant_handoff/rx_merge_lib.jl` | Driver-side kernel-class merge (`RxOopMerge.merge_oop_rhs`). | **Superseded** — the merge now runs inside EarthSciAST `build.jl`, so `build_evaluator(form=:oop)` already returns merged kernels. Kept only as a bit-identity **gate** (346→346 no-op) and as a fallback for a pre-merge EarthSciAST. Removable once the pinned EarthSciAST is guaranteed ≥ the merge commit. |
-| `tools/reactant_handoff/rx_traced_integrator.jl` | The purpose-built traced integrator: ROS23 + SSPRK43 stage algebra, batched pivot-free block Gaussian elimination over cells, masked FD block Jacobian, exact PI controller, and the `@trace while` adaptive loop. This is why the whole window compiles as one `stablehlo.while` program. | **The substantial deliverable.** Generic (not reseact-specific). Needs a package home. |
+| `tools/reactant_handoff/rx_traced_integrator.jl` | The purpose-built traced integrator: ROS23 + SSPRK43 stage algebra, batched pivot-free block Gaussian elimination over cells, masked FD block Jacobian, exact PI controller, and the `@trace while` adaptive loop. This is why one macro step compiles as a single `stablehlo.while` program. | **The substantial deliverable.** Generic (not reseact-specific). Needs a package home. |
 
-Everything else in `tools/reactant_handoff/` is experiment/probe scaffolding
-(`rx_count_walk.jl`, `rx_split_probe.jl`, `rx_iip_merge_probe.jl`, `rx_native_bench.jl`,
-`rx_native_lowering_experiment.jl`, `rx_raise_cap_experiment.jl`, `rx_merge_trace_inc.jl`,
-`rx_merge_kernels.jl` (the annotated prototype `rx_merge_lib.jl` was distilled from),
-`run_split_reactant.jl` (forward-pass-per-eval predecessor of the full-loop runner),
-and `run_traced_chem.jl` (chemistry-only validation)). None are needed to run the model
-— they can be archived or deleted.
+`tools/reactant_handoff/` now holds only these plus `op_split.jl` /
+`blockdiag_similar.jl`. The probe and experiment scaffolding that established the
+Reactant path (`rx_probe.jl`, `rx_count_walk.jl`, `rx_split_probe.jl`,
+`rx_merge_kernels.jl`, the lowering/cap experiments, and the `run_traced_*` /
+`run_split_reactant.jl` predecessors of the full-loop runner) has been **deleted** —
+their conclusions are in that directory's README and in the runners' headers.
+`rx_merge_lib.jl` went with them: the in-package merge (below) superseded it, and its
+driver-side reconstruction predated materialized array-observed levels, so its own
+bit-identity gate had been failing and falling back to the stock RHS on every run.
 
 ---
 
@@ -106,12 +142,30 @@ and `run_traced_chem.jl` (chemistry-only validation)). None are needed to run th
 
 Ordered roughly by payoff / readiness.
 
-### Already migrated ✅ — kernel-class merge
+### Done ✅ — kernel-class merge, and the three emitter fixes that made CONUS compile
 The lane-batching merge that makes the transport half tractable under Reactant is
-**in EarthSciAST `main`** now (`src/tree_walk/oop_merge.jl`, run from `build.jl`
-before the xcse gate, for both `:oop` and `:inplace`). `rx_merge_lib.jl` is therefore
-already redundant. **Action:** once the repo pins EarthSciAST ≥ that commit, delete
-`rx_merge_lib.jl` and drop the driver-side merge block from `run_reseact_reactant.jl`.
+**in EarthSciAST `main`** (`src/tree_walk/oop_merge.jl`, run from `build.jl` before
+the xcse gate, for both `:oop` and `:inplace`). `rx_merge_lib.jl` and the
+driver-side merge block are deleted.
+
+Three further `:oop` emitter changes landed upstream, and together they are what
+turned a CONUS `@compile` that never finished in 3h45m into one that takes ~550 s:
+
+* **lane-batch the per-cell scalar surface** — groups congruent per-cell/per-column
+  scalar entries by structural signature and evaluates each group once over its lane
+  axis. All 1,274 ReSEACT per-column fills collapse to 3 lane-groups.
+* **level-major prefix scan** — scans a whole level at once, which takes the
+  `dynamic_slice` count off the grid entirely (2,016 at both 7×7 and 13×7, Δ0).
+* **read interning** — emits one read per `(SSA value, window)`, so XLA stops
+  rediscovering duplicates. Slices 8,127 → 3,199 (the exact distinct-pair floor),
+  duplicates → 0.
+
+That last one is why the host-unrolled block Jacobian is now the unconditional
+choice in `run_reseact_reactant.jl`: XLA's `cse_slice` pattern is **pairwise** over
+slice ops, so before interning the unrolled form's 16 traced RHS copies cost ~12×
+the compile of the traced loop's 4. With the duplicates gone the quadratic has
+nothing to chew on, and the unrolled form compiles 2% *faster* while solving 1.67×
+faster (rejected chem steps 23 → 5).
 
 ### `EarthSciASTReactantExt` (already exists) — the two `rx_native_patch.jl` pieces
 `ext/EarthSciASTReactantExt.jl` already owns the Reactant seam and knows the
@@ -133,18 +187,34 @@ already produces: the ext gives you a traceable RHS, this gives you a traceable
 adaptive *solve* of it. Its block-diagonal FD Jacobian + cell layout overlap with
 `block_jac.jl` (below) — share one implementation.
 
-### Long-run drivers (`tools/diurnal_run.jl`, `tools/scaling_study.jl`)
-Two drivers added alongside the two root runners. Both reuse `prepare_split_docs`
-/ `build_split_run` / `lie_trotter_solve` — they are drivers, not second solvers.
+### Long-run driving (now IN the root runners) and `tools/scaling_study.jl`
 
-* **`diurnal_run.jl`** steps the Lie-Trotter split by macro dt and records a time
-  series. Full gridded output goes through EarthSciAST's streaming-sink protocol
+The long-run drivers used to be separate files (`tools/diurnal_run.jl` and its
+traced twin) sitting alongside two shorter-window root runners. They have been
+**merged into the root runners**, which is where the long-run behaviour belongs:
+`run_reseact.jl` and `run_reseact_reactant.jl` now default to the one-week CONUS
+simulation and carry the macro-step loop, the streaming sink, and (native arm) the
+bisect-on-failure retry. The separate drivers are deleted.
+
+Things that were learned the hard way and are now load-bearing in those files:
+
+* Full gridded output goes through EarthSciAST's streaming-sink protocol
   (`derive_output_meta` → `build_zarr_sink` → `sink_open!/write!/flush!/close!`),
-  the same surface `simulate` drives via `sinks=`. Two traps: the solve is
+  the same surface `simulate` drives via `sinks=`. Two traps: the native solve is
   CELL-major while the sink wants `var_map` (species-major) order, and EarthSciIO
   keeps its compressors as **weakdeps** — the default `:diagnostic` profile is
   Blosc-zstd, so `using Blosc` is required or `sink_flush!` throws. The sink is
   state-only in its current wave, so j-rates/cos_sza cannot be written through it.
+* Flush periodically, not at the end. Over a multi-day run that is the difference
+  between a crash at hour 40 costing an hour and costing the whole run.
+* A macro step that did not succeed must not be papered over by advancing `t`: the
+  state comes back unchanged and the run marches on producing a frozen trajectory
+  that still *looks* like a completed simulation.
+* Threading is worth ~10× on the native arm (a CONUS week went from ~1:1 realtime
+  to ~40×), and it needs both `julia -t N` **and** Polyester loadable so
+  `EarthSciASTPolyesterExt` activates. `run_reseact.jl` reports which of the two it
+  actually got, because a 10×-slow run otherwise looks completely normal.
+
 * **`scaling_study.jl`** runs grid/window ladders, timing **build**, **first macro
   step** and **subsequent steps** separately. That separation is the whole point:
   the first step carries the one-time codegen compile and can be ~800x the cost of
@@ -313,8 +383,7 @@ sub-step), and it exists only because the callback route is unavailable.
 Consequence today: `callback = DiffEqCallbacks.PositiveDomain(copy(u))` is **silently
 ignored** at both levels. Worse than an error — it looks like it worked. This is why
 `op_split.jl` says the package "does NOT apply discrete callbacks", and why the split
-drivers degraded to `clamp_nonneg`. Note `tools/run_scale.jl` and `tools/run_sweep.jl`,
-which do NOT use the splitter, still pass the real `PositiveDomain` and are unaffected.
+runners degraded to `clamp_nonneg` and then to macro-step bisection.
 
 ### Why it matters here (measured, not assumed)
 
@@ -342,3 +411,102 @@ use `reltols=(1e-4,1e-4)`, `abstols=(1e-6,1e-9)`, and replay macro steps.
 
 If inner `PositiveDomain` proves materially better than macro-level bisection, drop
 `lie_trotter_solve_bisect` and pass the callback instead.
+
+---
+
+## 4. Differentiable simulation: what is already there, and what is missing
+
+The point of the Reactant path is not speed — it is **∂(simulation result)/∂(parameter
+vector)**, the thing DifferentialEquations.jl gives you by letting `p` be a solve-time
+argument. This section records what was measured, not what was assumed. The probe is
+`diffprobe.jl` (see the session bench dir); every claim below is a run, on a small
+reaction–diffusion model built through the same emitter the real model uses.
+
+### Already works, measured
+
+| | result |
+|---|---|
+| host ForwardDiff `d/dp` through the `:oop` RHS | works; nonzero, finite |
+| host ForwardDiff `d/dp` through the in-place `f!` | agrees with `:oop` to rtol 1e-12 |
+| `p` under Reactant | a **real XLA input** — same compiled program, new parameter values, answers follow and match the host |
+| Reactant + Enzyme reverse `d/du` of the traced RHS | matches host ForwardDiff to rtol 1e-8 |
+| Reactant + Enzyme reverse `d/dp` of the traced RHS | matches host ForwardDiff to rtol 1e-8 |
+
+That last row is the one worth pausing on: **reverse-mode parameter gradients through
+the traced RHS already work today.** And because `p` is a genuine XLA input rather
+than a trace-time constant, a gradient does not force a recompile per parameter value
+— which is what makes an optimizer loop affordable at all given a ~550 s compile.
+
+Two pieces of existing design are load-bearing here and should not be "simplified"
+away. `_rhs_value_type` derives the RHS value type from `u`, `p` AND `t` together, so
+`p` going `Dual` while `u` stays `Float64` works (differentiating w.r.t. parameters is
+exactly that case). And `const_tier.jl` deliberately does **not** constant-fold
+parameter-only subexpressions at build time, precisely because freezing them would
+return a zero derivative for every parameter sensitivity — a wrong Jacobian that still
+looks plausible.
+
+### Missing, in dependency order
+
+1. **There is no parameter-VECTOR ABI.** `p` must be a `NamedTuple`;
+   `_rhs_value_type(u, ::Vector, t)` is a `MethodError`. A vector API works only by
+   rebuilding the NamedTuple per call, which needs scalar indexing of a traced array
+   — allowed only under `@allowscalar` (verified: it does then produce the right
+   gradient). ReSEACT has ~56 parameters, so the NamedTuple is not a scaling problem
+   here; the problem is that an optimizer wants `∇_p L` as a dense vector in a stable
+   order. **Fix:** a `_rhs_value_type(u, p::AbstractVector, t)` method, an `_NK_PARAM`
+   variant carrying an index instead of a symbol, and a `param_map::Dict{String,Int}`
+   returned from `build_evaluator` beside `var_map`. Mechanical, low risk. (The
+   ordering already exists implicitly — `param_names` is sorted, so `keys(p)` is a
+   stable order — it is just not exposed as a map.)
+
+2. **`simulate()` REFUSES runtime parameters, by design.** It throws:
+   "parameter overrides are baked into the evaluator at prepare() time (they feed
+   build-time constant folding: setup geometry, value-invention extents, binning
+   coordinates, ic() folds)." This is the deepest item on the list, and it is a design
+   decision rather than plumbing: parameters have to be **partitioned** into
+   STRUCTURAL (fold at build; not differentiable; changing one is a rebuild) and
+   NUMERIC (runtime; differentiable; a solve-time argument). The good news is the
+   partition already half-exists — the tree walk treats `_NK_PARAM` as a runtime read
+   and refuses to fold it — so the work is to make the split explicit at the
+   `prepare`/`simulate` seam and let the numeric half arrive as a vector at solve time.
+
+3. **REVERSE MODE CANNOT CROSS A `stablehlo.while`, and a macro step IS two of them.**
+   The rows above all differentiate the RHS, which is straight-line traced code. The
+   adaptive loops in `rx_traced_integrator.jl` are `Reactant.@trace while` regions, and
+   reverse mode through one fails outright (*MLIR pass pipeline "all" failed*) — for a
+   FIXED trip count as well as a data-dependent one, so it is the while region and not
+   adaptivity. Forward mode crosses the same loop exactly.
+
+   That rules out the obvious design (`Enzyme.gradient` on the compiled macro step) and
+   it matters, because reverse is the only affordable mode at this parameter count:
+   forward costs ∝ n_params, so ~88 h for a 24 h run over 56 parameters against ~4–5 h
+   for an adjoint. The route is a hand-written discrete adjoint of the stage algebra,
+   so each step's VJP is straight-line; then chain them across the time loop with
+   checkpointing (cheap: 681 KB/step ⇒ 196 MB for 24 h). **See DIFFERENTIABILITY_PLAN.md**
+   for the phased plan and the measured capability matrix behind it.
+
+4. **The traced arm's block Jacobian is FINITE DIFFERENCE.** `ros23_step` builds it by
+   FD. Differentiating through an adaptive implicit step whose linearization is
+   FD-perturbed is valid discretize-then-optimize but contaminates the gradient, and
+   `clamp_nonneg` plus the step-size controller make the step piecewise on top of that.
+   The native arm already defaults to an exact `block_ad_jac` (ForwardDiff); the traced
+   arm has no equivalent. Worth closing before trusting a gradient quantitatively.
+
+5. **Enzyme on the CPU needs `Enzyme.API.strictAliasing!(false)`**, because the walk
+   loads fields from `_VecNode`, which is heterogeneous by design (`payload::Any`).
+   With the flag, reverse mode matches ForwardDiff to ~1e-16. The durable fix is a
+   payload-free, concretely-typed lowered IR — and per `oop.jl` that is the same
+   lowering a device backend wants anyway, so the two motivations converge.
+
+6. **Discrete closed functions contribute no derivative, by contract** —
+   `interp.searchsorted` and the calendar `datetime.*` accept a `Dual` and return zero
+   partials. Correct, but it means a parameter reaching the answer *only* through one
+   of them is silently zero-gradient rather than an error.
+
+### The shortest path to a first real result
+
+FORWARD mode already crosses the while regions exactly, so a sensitivity w.r.t. a
+HANDFUL of parameters (`NEIRegrid.scale`, `tau_pblmix`, a split fraction) is available
+today and needs nothing from this list — that is the quickest defensible number, and
+the reference an adjoint gets checked against. The full 56-parameter gradient needs
+(1) then (3) then a time-loop driver. See **DIFFERENTIABILITY_PLAN.md**.

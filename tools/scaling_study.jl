@@ -28,7 +28,11 @@
 import Pkg
 const REPO = dirname(@__DIR__)
 Pkg.activate(get(ENV, "RESEACT_RUN_ENV", joinpath(REPO, "run-model-jl")); io = devnull)
-haskey(ENV, "ESS_KERNEL_CLASS_MERGE_DISABLE") || (ENV["ESS_KERNEL_CLASS_MERGE_DISABLE"] = "1")
+# The kernel-class merge stays ON, matching the runners. This script used to force
+# it OFF by default, which meant the ladder measured a configuration nothing
+# actually runs in -- and specifically the one whose IR grows with the grid, which
+# is the thing a scaling study exists to characterise. Set
+# ESS_KERNEL_CLASS_MERGE_DISABLE=1 explicitly for an A/B against the old numbers.
 using SciMLBase, DiffEqCallbacks
 import OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
 import LinearSolve

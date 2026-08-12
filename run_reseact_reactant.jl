@@ -1,152 +1,186 @@
 #!/usr/bin/env julia
 # ===========================================================================
-# run_reseact_reactant.jl -- run the full ReSEACT model under Reactant/XLA, with
-# the ENTIRE operator-split window compiled as ONE XLA program.
+# run_reseact_reactant.jl -- the traced (Reactant/XLA) twin of run_reseact.jl.
 # ===========================================================================
-# Same Lie-Trotter scheme as run_reseact.jl (SSPRK43 transport then
-# Rosenbrock23 chemistry with a block-diagonal FD Jacobian), but both adaptive
-# time loops run inside `Reactant.@trace while` -> stablehlo.while regions, so
-# each half's RHS graph appears exactly ONCE in the compiled module no matter
-# how many steps the solve takes. There is no host<->device round-trip per RHS
-# eval -- one host call runs the whole window on device.
+# Same default run: a ONE-WEEK CONUS simulation, 13x7x72 (6,552 cells, 85,176
+# states), macro-stepped at 300 s, over the same GEOS-FP meteorology. Same
+# Lie-Trotter scheme (SSPRK43 transport, then Rosenbrock23 chemistry with a block
+# Jacobian). The difference is entirely in who does the arithmetic: both adaptive
+# loops run inside `Reactant.@trace while` -> `stablehlo.while` regions, so each
+# half's RHS graph appears exactly ONCE in the compiled module however many steps
+# the solve takes, and there is no host<->device round trip per RHS evaluation.
 #
-# Result at 7x7x72 (45,864 states): traced window 4.52 s vs 36.57 s for the
-# native runner (8.1x), m/O3 identical to the native baseline. The @compile is a
-# one-time ~54 min and is grid-independent (identical trace at every grid).
+# THE MACRO-STEP LOOP IS THE POINT. This runner used to compile the WHOLE window
+# as one XLA program and take a single Lie-Trotter step over it. That is the right
+# shape for a 60 s validation window and the wrong shape for anything longer: at a
+# week it means a 604,800 s splitting interval with the meteorology frozen at the
+# start of the run. It would return a number, and the number would not be a
+# simulation. So the structure here is
 #
-# This runner reuses the split model as a HOST reference arm -- the REAL SciML
-# operator-splitting solver, LieTrotterGodunov((SSPRK43, Rosenbrock23/BlockDiag))
-# via tools/reactant_handoff/op_split.jl -- and reports the traced-vs-host
-# difference rather than hiding it. (The traced arm below is a purpose-built
-# integrator, NOT this solver: Reactant cannot trace through the SciML solver
-# stack, so the two are independent implementations of the same Lie-Trotter step.)
+#   compile ONCE  ->  call 2016 times  ->  refresh forcing between calls
 #
-# Env:
-#   RESEACT_MODEL      .esm to run             (default: repo-root reseact.esm)
-#   RESEACT_LABEL      tag for the RESULT line (default: basename of the model)
-#   RESEACT_SOLVE_SECS solve window, seconds   (default 60)
-#   RESEACT_LON0/LAT0  native GEOS-FP 4x5 slice origin (default 14/29 = central US;
-#                      11 with NLON=13 gives lon -125..-65, CONUS)
-#   RESEACT_NLON/NLAT/NLEV  grid dims          (bound as .esm metaparameters;
-#                           defaults = the model's own 7/7/72. Each distinct grid
-#                           is a distinct XLA program -> a fresh ~tens-of-minutes
-#                           @compile; the compile is NOT amortized across grids.)
-#   RESEACT_DT0T       initial transport dt    (default 15.0, traced arm)
-#   RESEACT_DT0C       initial chemistry dt    (default 0.5, traced arm)
-#   RESEACT_HOST_ARM   also run the host reference arm (default 1)
-#   RESEACT_RXENV      Julia env WITH Reactant (default: <repo>/run-model-jl)
+# Three properties of the traced program make that work, none of them accidental:
+#
+#   * `t0`, `t1`, `dt0T`, `dt0C` are RUNTIME arguments (ConcreteRNumber) and both
+#     adaptive loops are `stablehlo.while` regions, so the compiled program does
+#     not encode the window. ONE @compile serves every macro step, whatever its
+#     length -- the compile cost is paid once and amortized over the whole run.
+#   * the forcing buffers are REAL XLA INPUTS (`rhs_with_buffers` / B2 form), and
+#     EarthSciAST guarantees that an in-place `copyto!` into those device arrays
+#     between calls is observed on the next call with NO RETRACE. That is what
+#     makes a discrete-cadence refresh survive compilation.
+#   * the state stays on device between calls: `u` is fed straight back in, and so
+#     are the final `dt`s, so the step-size controller carries across macro steps
+#     exactly as it does within one.
+#
+# The forcing refresh needs a DiscreteMaterializer. Both halves get one here, and
+# a refresh is merged_param .= provider_sample -> dm.materialize!() ->
+# sync_forcing! to device.
+#
+# The stop grid follows `lie_trotter_solve`'s, INCLUDING its fencepost: the
+# forcing-boundary set is half-open on the right, because a boundary that lands on
+# a macro-step edge would otherwise be excluded from the step that ends there AND
+# the step that starts there, and never refresh at all. See op_split.jl and
+# HELPERS.md §1.
+#
+# PERFORMANCE, MEASURED OVER A FULL 24 h RUN, SO NOBODY HAS TO GUESS. At CONUS
+# 13x7x72: build 718 s, @compile 557 s (paid ONCE for the whole run), solve
+# 5,923 s for 288 macro steps. The native runner does the same 24 h in 2,143 s,
+# so Reactant is ~2.8x SLOWER on CPU for this model. It is here because it is the
+# route to a DIFFERENTIABLE, device-portable simulation, not because it is faster
+# today -- see DIFFERENTIABILITY_PLAN.md.
+#
+# Do not extrapolate the step cost from a short window: it is strongly diurnal,
+# ~9.6 s/step pre-dawn against ~35 s/step at midday (20.6 s/step averaged over the
+# day), because the photochemistry is what makes the chemistry half stiff. A
+# 3-macro-step sanity window sits in the dark AND carries the first-step warm-up,
+# and gets the right answer for the wrong reasons.
+#
+# Agreement with the native arm over 24 h (289 aligned records): max relative
+# difference 6.3e-5 on O3_mean, 1.6e-3 on O3_min, 1.1e-3 on OH_max, 5.2e-12 on
+# air mass, and cos_sza EXACTLY 0. That divergence is adaptive-solver path (two
+# independent implementations of the same scheme, different Jacobians), not a
+# defect, and it is well inside the 5e-2 validation tolerance.
+#
+# Env: the same as run_reseact.jl (RESEACT_MODEL / LABEL / LON0 / LAT0 / NLON /
+# NLAT / NLEV / T0 / SOLVE_SECS / MACRO_DT / CSV / ZARR / OUT_EVERY /
+# FLUSH_EVERY), plus
+#   RESEACT_DT0T / RESEACT_DT0C  initial transport/chemistry dt (15.0 / 0.5)
+#   RESEACT_RXENV                Julia env WITH Reactant (default run-model-jl)
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/{split_common,blockdiag_local,block_jac}.jl
-#       split build, forcing, cell-major layout, block-diagonal FD Jacobian (host arm)
-#   tools/reactant_handoff/op_split.jl
-#       lie_trotter_solve -- LieTrotterGodunov driver + the BlockDiagonal similar fix (host arm)
-#   tools/reactant_handoff/rx_native_patch.jl
-#       native stablehlo broadcast lowering + make_tracer opaque leaves (trace enablers)
-#   tools/reactant_handoff/rx_merge_lib.jl
-#       driver-side kernel-class merge -- now a bit-identity GATE over the
-#       in-package merge that landed in EarthSciAST (build.jl); kept as a fallback
-#   tools/reactant_handoff/rx_traced_integrator.jl
-#       the purpose-built traced integrator (ROS23 + SSPRK43 under @trace while)
+#   tools/reactant_handoff/rx_native_patch.jl        trace enablers (monkey-patch)
+#   tools/reactant_handoff/rx_traced_integrator.jl   the traced ROS23/SSPRK43 stepper
 # ===========================================================================
 import Pkg
 const REPO = @__DIR__
 Pkg.activate(get(ENV, "RESEACT_RXENV", joinpath(REPO, "run-model-jl")); io = devnull)
 using SciMLBase, DiffEqCallbacks
-import OrdinaryDiffEqRosenbrock, OrdinaryDiffEqSSPRK
-import LinearSolve
-using LinearAlgebra, Printf
+using LinearAlgebra, Printf, Statistics, Logging
 using EarthSciAST, EarthSciIO, JSON3
 using EarthSciASTSplitter
-using EarthSciASTSplitter: split_system, stencil_vs_pointwise
+using EarthSciASTSplitter: split_system
 using Reactant
-using Logging
+using Blosc                      # activates EarthSciIOBloscExt for the Zarr sink
 const EA = EarthSciAST
 const RX = Reactant
-try; RX.set_default_backend("cpu"); catch; end   # no GPU on this box
+try; RX.set_default_backend("cpu"); catch; end
 
 const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
 const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
 include(joinpath(CHEMDIR, "split_common.jl"))
+# block_jac.jl needs `BlockDiagonal` in scope even though this driver only wants
+# `cellmajor_perm` from it (the block-diagonal Jacobian is the HOST arm's tool;
+# the traced arm builds its own inside ros23_step).
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))
-include(joinpath(RXDIR, "op_split.jl"))            # lie_trotter_solve (+ BlockDiagonal similar fix) -- host arm
-include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize   # slice_hybrid_coefs (NLEV<72)
+include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize
 say(s) = (println(s); flush(stdout))
 
 const MODEL      = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
-const LABEL      = get(ENV, "RESEACT_LABEL", basename(MODEL))
-const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "60"))
-# Grid dims as .esm metaparameters (empty -> the model's own defaults 7/7/72).
+const LABEL      = get(ENV, "RESEACT_LABEL", "reseact-rx")
+const T0         = parse(Float64, get(ENV, "RESEACT_T0", "5400"))
+const SOLVE_SECS = parse(Float64, get(ENV, "RESEACT_SOLVE_SECS", "604800"))   # 7 days
+const MACRO_DT   = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
+const CSV        = get(ENV, "RESEACT_CSV", "")
+const ZARR       = get(ENV, "RESEACT_ZARR", "")
+const OUT_EVERY  = parse(Int, get(ENV, "RESEACT_OUT_EVERY", "12"))     # hourly at macro_dt=300
+const FLUSH_EVERY = parse(Int, get(ENV, "RESEACT_FLUSH_EVERY", "12"))
+const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
+const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
-# One origin -> metaparameters + the degree-space lon0_deg/lat0_deg parameters +
-# the native index base hydrostatic_dp reads. See `native_slice` in
-# split_common.jl: the .esm cannot derive one currency from the other, and a
-# mismatch silently runs the meteorology of one place under the sun of another.
-const SLICE = native_slice(lon0 = _env("LON0", 14), lat0 = _env("LAT0", 29),
-                           nlon = _env("NLON", 7), nlat = _env("NLAT", 7),
+const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
+                           nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
                            nlev = _env("NLEV", 72))
 const GRID_MP  = SLICE.metaparameters
 const NLEV_EFF = GRID_MP["NLEV"]
-const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
-const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
-const HOST_ARM   = get(ENV, "RESEACT_HOST_ARM", "1") == "1"
-const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))   # s since 2016-01-01T00:00Z
-const T_END = T0 + SOLVE_SECS
-const RTOL  = 1e-4
-const ATOL_T = 1e-6         # transport abstol
-const ATOL_C = 1e-9         # chemistry abstol
-const LU    = LinearSolve.LUFactorization()
-const PS_REF = 101325.0
-rc_ok(rc) = (rc == SciMLBase.ReturnCode.Success || rc == SciMLBase.ReturnCode.Default)
+const T_END    = T0 + SOLVE_SECS
+const NDAYS    = forcing_days_for(T0, T_END)
+const RTOL, ATOL_T, ATOL_C = 1e-4, 1e-6, 1e-9
+
+# Row-label sun angle at the domain centre (see run_reseact.jl).
+const K_GAMMA, D2R = 0.01721420632103996, 0.017453292519943295
+const LON_MID = sum(SLICE.lon_deg) / 2
+const LAT_MID = sum(SLICE.lat_deg) / 2
+function cos_sza(t, lat, lon)
+    g = K_GAMMA * (-12 / 24 + t / 86400)
+    dec = 0.006918 - 0.399912cos(g) + 0.070257sin(g) - 0.006758cos(2g) +
+          0.000907sin(2g) - 0.002697cos(3g) + 0.00148sin(3g)
+    eqt = 229.18 * (0.000075 + 0.001868cos(g) - 0.032077sin(g) -
+                    0.014615cos(2g) - 0.040849sin(2g))
+    w = D2R * ((t / 60 + eqt + 4lon) / 4 - 180)
+    return clamp(sin(D2R * lat) * sin(dec) + cos(D2R * lat) * cos(dec) * cos(w), -1, 1)
+end
+
+say("=== $LABEL : traced macro-step run ($(basename(MODEL))) " *
+    "grid=$(GRID_MP["NLON"])x$(GRID_MP["NLAT"])x$NLEV_EFF T0=$(round(Int,T0)) " *
+    "window=$(round(SOLVE_SECS/3600, digits=2)) h macro_dt=$(round(Int,MACRO_DT)) ===")
+say(@sprintf("    slice: lon %.1f..%.1f, lat %.1f..%.1f (native origin %d,%d); forcing spans %d daily files",
+    SLICE.lon_deg[1], SLICE.lon_deg[2], SLICE.lat_deg[1], SLICE.lat_deg[2],
+    SLICE.lon0, SLICE.lat0, NDAYS))
 
 # --------------------------------------------------------------------------- #
-# 1. Split + build both halves as out-of-place (form=:oop) RHS over shared live
-#    GEOS-FP forcing buffers. :oop is required for tracing: an in-place f!
-#    captures host scratch per node and cannot trace.
+# 1. Split + build both halves :oop, over shared live forcing buffers, each with
+#    its OWN DiscreteMaterializer so a refresh re-derives that half's caches.
+#    :oop is required for tracing: an in-place f! captures host scratch per node
+#    and cannot trace.
 # --------------------------------------------------------------------------- #
-say("=== $LABEL : split + build oop halves ($MODEL) ===")
-say(@sprintf("    slice: lon %.1f..%.1f, lat %.1f..%.1f (native origin %d,%d) grid=%dx%dx%d",
-    SLICE.lon_deg[1], SLICE.lon_deg[2], SLICE.lat_deg[1], SLICE.lat_deg[2],
-    SLICE.lon0, SLICE.lat0, GRID_MP["NLON"], GRID_MP["NLAT"], GRID_MP["NLEV"]))
-fo = Vector{Any}(undef, 2); u0 = p = var_map = nothing
-merged_param = Dict{String,Any}(); discrete_providers = Dict{String,Any}()
+validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
+fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
+u0 = p = var_map = docs1 = nothing
+merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
+ff = nothing
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
-    global fo, u0, p, var_map, merged_param, discrete_providers
+    global fo, dms, u0, p, var_map, merged_param, discrete, ff, docs1
     file = EA.load(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)
-    # Same post-promotion gather-ification prepare_split_docs does -- see
-    # index_promoted_refs_by_loop! in split_common.jl for why it is needed.
     promoted = EA.promoted_array_names(pre, flat)
-    # stencil_following_rule, NOT the shipped stencil_vs_pointwise: the air-mass
-    # equation reads `divh_fix`, an OBSERVED that is a stencil, and the syntactic
-    # rule sees only a name and would post that term to the chemistry half. See
-    # split_common.jl for the full argument -- this runner splits by hand rather
-    # than through prepare_split_docs, so it has to pass the rule itself.
     parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
-    ff = reseact_forcing(CHEMDIR; ndays = forcing_days_for(T0, T_END))
-    # NLEV<72 -> slice the 72-entry hybrid table to the truncated column.
-    ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
+    docs1 = docs[1]
+    f0 = reseact_forcing(CHEMDIR; ndays = NDAYS)
+    ff = merge(f0, (; const_arrays = GridResize.slice_hybrid_coefs(f0.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
     for (rawk, prov) in ff.providers
         k = String(rawk); fld = EA._provider_const_field(EA.provider_sample(prov, T0), k)
         if EA.provider_is_const(prov)
             merged_const[k] = fld
         else
-            merged_param[k] = fld; discrete_providers[k] = prov
+            merged_param[k] = fld
+            discrete[k] = prov
         end
     end
     ov = Dict{String,Float64}(String(k) => Float64(v) for (k, v) in ff.parameters)
-    # The slice's degree parameters must travel with its metaparameters; this
-    # runner splits by hand, so it applies what build_split_run would apply.
     merge!(ov, Dict{String,Float64}(k => Float64(v) for (k, v) in SLICE.parameters))
     for i in 1:2
+        dms[i] = EA.DiscreteMaterializer()
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
-            parameter_overrides = ov, const_arrays = merged_const, param_arrays = merged_param)
+            parameter_overrides = ov, const_arrays = merged_const,
+            param_arrays = merged_param, materialize_out = dms[i])
         fo[i] = fi
         if i == 1
             u0, p, var_map = u0i, pi, vmi
@@ -155,14 +189,12 @@ Logging.with_logger(Logging.NullLogger()) do
         end
     end
 end
-say(@sprintf("BUILD %s: %.2f s   nstates=%d", LABEL, time() - tb, length(u0)))
+foreach(d -> d.materialize!(), dms)
+say(@sprintf("BUILD %.2f s   nstates=%d  discrete_providers=%d",
+    time() - tb, length(u0), length(discrete)))
 
-# Seed air mass m(0) = dA + dB*ps_ref (species-major, via var_map names).
-# m(0) from the REAL GEOS-FP PS at T0, not a constant -- see hydrostatic_dp in
-# split_common.jl for why the old constant-PS_REF seed was wrong by the terrain.
-let ff = reseact_forcing(CHEMDIR; ndays = forcing_days_for(T0, T_END))
-    ca = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)
-    dp0 = hydrostatic_dp(merged_param, ca, T0; slice = SLICE)
+# Seed m(0) from the real GEOS-FP surface pressure (species-major state here).
+let dp0 = hydrostatic_dp(merged_param, ff.const_arrays, T0; slice = SLICE)
     for (nm, idx) in var_map
         mm = match(r"^Transport3D\.m\[(\d+),(\d+),(\d+)\]$", nm)
         mm === nothing && continue
@@ -171,82 +203,26 @@ let ff = reseact_forcing(CHEMDIR; ndays = forcing_days_for(T0, T_END))
     end
 end
 
-# --------------------------------------------------------------------------- #
-# 2. Native broadcast lowering + kernel-class merge (bit-identity gated).
-#    The in-package merge (EarthSciAST build.jl) already runs at build; the
-#    driver-side merge is now a no-op gate that verifies bit-identity and falls
-#    back to the stock RHS for any half that is not bit-identical.
-# --------------------------------------------------------------------------- #
-include(joinpath(RXDIR, "rx_native_patch.jl"))      # AFTER `using Reactant`, `using EarthSciAST`
-include(joinpath(RXDIR, "rx_merge_lib.jl"))
+include(joinpath(RXDIR, "rx_native_patch.jl"))       # AFTER using Reactant/EarthSciAST
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
+
+# The kernel-class merge runs INSIDE EarthSciAST's build (src/tree_walk/oop_merge.jl),
+# so `build_evaluator(form=:oop)` already hands back lane-batched kernels and the
+# RHS here needs nothing further. There used to be a driver-side merge with a
+# bit-identity gate in front of it (rx_merge_lib.jl); its reconstruction predated
+# materialized array-observed levels and had been failing its own gate -- i.e.
+# falling back to this same stock RHS -- on every run since. Deleted rather than
+# repaired: the in-package merge is the one that is tested.
 const PARTNAME = ("transport", "pointwise")
 host_bufs = [EA.forcing_buffers(fo[i]) for i in 1:2]
-g4 = Vector{Any}(undef, 2)
-for i in 1:2
-    g4[i] = EA.rhs_with_buffers(fo[i]); kdesc = "stock"
-    try
-        mg = RxOopMerge.merge_oop_rhs(getfield(fo[i], :rhs))
-        dmax = maximum(abs, mg.rhs(u0, p, T0, host_bufs[i]) .- fo[i](u0, p, T0))
-        if dmax == 0.0
-            g4[i] = mg.rhs; kdesc = "merged $(mg.stats.n_kernels)->$(mg.stats.n_merged)"
-        else
-            say("  half[$i]=$(PARTNAME[i]) merge NOT bit-identical (maxabs=$dmax) -> stock")
-        end
-    catch e
-        say("  half[$i]=$(PARTNAME[i]) merge FAILED ($(sprint(showerror, e))) -> stock")
-    end
-    say("  half[$i]=$(PARTNAME[i]) rhs: $kdesc")
-end
+g4 = [EA.rhs_with_buffers(fo[i]) for i in 1:2]
 
 P = cellmajor_perm(var_map)
 const NS = P.NS; const NC = P.NC; const N = P.N
 masks = RxTracedIntegrator.species_masks(var_map, NS, NC)
-say("  species-major layout verified: NS=$NS NC=$NC")
-if !isempty(discrete_providers)
-    say("  note: $(length(discrete_providers)) discrete providers; single-window solve (no interior refresh for $(SOLVE_SECS)s)")
-end
 
 # --------------------------------------------------------------------------- #
-# 3. HOST reference arm: the SAME Lie-Trotter split as run_reseact.jl, driven by
-#    the REAL operator-splitting solver (LieTrotterGodunov via lie_trotter_solve)
-#    on the merged interpreted RHS reading the live buffers. Matched to the traced
-#    arm for a fair comparison: ONE Lie-Trotter step over the whole window
-#    (macro_dt = window, as the traced arm's adaptive_solve spans [t0, t1]), the
-#    same reltol/abstol, and STATIC forcing (no interior refresh).
-# --------------------------------------------------------------------------- #
-host_iip(g, bufs) = (du, u, p, t) -> (copyto!(du, g(u, p, t, bufs)); nothing)
-tgz(g, u, p, t)   = (fill!(g, 0); nothing)
-to_sm(ucm) = (usm = similar(ucm); for i in 1:N; usm[P.sm_of_cm[i]] = ucm[i]; end; usm)
-
-uH = nothing; hostT = (0, 0); hostC = (0, 0); host_s = NaN; host_ok = false
-if HOST_ARM
-    f_trans_cm! = cellmajor_rhs(host_iip(g4[1], host_bufs[1]), P.sm_of_cm)
-    f_chem_cm!  = cellmajor_rhs(host_iip(g4[2], host_bufs[2]), P.sm_of_cm)
-    jac_cm!, mkjp = block_fd_jac(f_chem_cm!, NS, NC)
-    fc = SciMLBase.ODEFunction(f_chem_cm!; jac = jac_cm!, jac_prototype = mkjp(), tgrad = tgz)
-    inner_algs = (OrdinaryDiffEqSSPRK.SSPRK43(),
-                  OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff = false, linsolve = LU))
-    u0cm = u0[P.sm_of_cm]
-    ts = time()
-    res = lie_trotter_solve(f_trans_cm!, fc, u0cm, (T0, T_END), p, inner_algs;
-        macro_dt = SOLVE_SECS,                                # one split step, like the traced arm
-        reltols = (RTOL, RTOL), abstols = (ATOL_T, ATOL_C),   # match the traced arm
-        clamp_nonneg = true)                                  # static forcing (no refresh)
-    global host_s = time() - ts
-    global uH = to_sm(res.u)
-    global hostT = (res.naT, res.nrT)
-    global hostC = (res.naC, res.nrC)
-    global host_ok = rc_ok(res.retcode)
-    say(@sprintf("HOST   window: %.2f s  transport nacc=%d nrej=%d  chem nacc=%d nrej=%d  macro=%d  ok=%s",
-        host_s, hostT[1], hostT[2], hostC[1], hostC[2], res.nmacro, host_ok))
-end
-
-# --------------------------------------------------------------------------- #
-# 4. TRACED arm: one @compile for the whole window (both adaptive loops).
-#    Traced deps (params, forcing buffers) flow through the loop-carried `aux`,
-#    NOT closure capture -- @trace while builds its operands only from the
-#    syntactically-collected loop variables.
+# 2. The traced advance: ONE Lie-Trotter step over [t0, t1].
 # --------------------------------------------------------------------------- #
 const CTRL_T = RxTracedIntegrator.pictrl_ssprk43()
 const CTRL_C = RxTracedIntegrator.pictrl_ros23()
@@ -256,12 +232,19 @@ adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
             (uu, tt) -> gT(uu, aux.p, tt, aux.bufs), u, t, dtc, ATOL_T, RTOL)
         uT, _, dtTend, naT, nrT = RxTracedIntegrator.adaptive_solve(
             fT, uR, t0R, t1R, dtTR, CTRL_T, (p = pR, bufs = bufsT); clamp_nonneg = true)
-        # unrolled=true: the traced-loop Jacobian is a measured net LOSS for the
-        # small chem RHS (nested while defeats MLIR cross-copy CSE: warm trace+opt
-        # 40.5->75.5 s, optimized module 0.71->1.44 MB); the loop pays off only on
-        # the big transport RHS (3308->999 s), which SSPRK43 uses.
         fC = (u, t, dtc, aux) -> RxTracedIntegrator.ros23_step(
             (uu, tt) -> gC(uu, aux.p, tt, aux.bufs), u, t, dtc, NS, NC, masks, ATOL_C, RTOL;
+            # The host-unrolled Jacobian emits 16 traced copies of the chem RHS per
+            # step against the traced loop's 4. That used to make it compile-
+            # intractable at CONUS -- XLA's `cse_slice` pattern is pairwise over
+            # slice ops, so 4x the copies was ~12x the compile work, and this
+            # configuration once ran 3h45m without finishing. EarthSciAST's read
+            # interning (one emitted read per (SSA value, window)) removed the
+            # duplicate slices feeding that quadratic and the cost went away.
+            # Measured head to head at CONUS, same slice and window: unrolled
+            # compiles 2% FASTER (547 s vs 560 s) and solves 1.67x faster, because
+            # the better Jacobian also cuts rejected chem steps from 23 to 5.
+            # There is no tradeoff left, so there is no knob.
             unrolled = true)
         uC, _, dtCend, naC, nrC = RxTracedIntegrator.adaptive_solve(
             fC, uT, t0R, t1R, dtCR, CTRL_C, (p = pR, bufs = bufsC); clamp_nonneg = true)
@@ -271,38 +254,162 @@ end
 _dev(pp::NamedTuple) = NamedTuple{keys(pp)}(map(RX.ConcreteRNumber, values(pp)))
 _dev(::Nothing) = nothing
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
-for i in 1:2
-    EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i]))
-end
-UR = RX.ConcreteRArray(u0); PRd = _dev(p)
-targs() = (UR, PRd, RX.ConcreteRNumber(T0), RX.ConcreteRNumber(T_END),
-           RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C), dev_bufs[1], dev_bufs[2])
-say("  @compile of the full window starting (2x transport RHS + 4x chem RHS traced call sites in the two while bodies; the stage/Jacobian loops are traced stablehlo.whiles)...")
+push_forcing!() = for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+push_forcing!()
+
+PRd = _dev(p)
+UR = RX.ConcreteRArray(copy(u0))
+say("  @compile of ONE macro step (t0/t1/dt are runtime args, so this compile " *
+    "serves every step of the run)...")
 tc = time()
-xadv = RX.@compile sync=true adv(targs()...)
-comp_s = time() - tc
-say(@sprintf("TRACED @compile: %.1f s", comp_s))
-report_patch_stats()
-tr = time()
-res = xadv(targs()...)
-run_s = time() - tr
-uT = Array(res[1])
-naT = Int(round(Float64(res[2]))); nrT = Int(round(Float64(res[3])))
-naC = Int(round(Float64(res[4]))); nrC = Int(round(Float64(res[5])))
-say(@sprintf("TRACED window: %.2f s  transport nacc=%d nrej=%d  chem nacc=%d nrej=%d",
-    run_s, naT, nrT, naC, nrC))
+xadv = RX.@compile sync=true adv(UR, PRd, RX.ConcreteRNumber(T0),
+                                 RX.ConcreteRNumber(T0 + MACRO_DT),
+                                 RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C),
+                                 dev_bufs[1], dev_bufs[2])
+say(@sprintf("TRACED @compile: %.1f s", time() - tc))
+try; report_patch_stats(); catch; end
 
 # --------------------------------------------------------------------------- #
-# 5. Report (m/O3 ranges + host comparison).
+# 3. Forcing refresh -- the whole point of macro-stepping. EarthSciAST documents
+#    that copyto! into the device buffers between calls is observed with NO
+#    retrace (rhs_with_buffers), so this costs one host->device copy, not a
+#    recompile.
 # --------------------------------------------------------------------------- #
-midx = sort!([idx for (nm, idx) in var_map if startswith(nm, "Transport3D.m[")])
-o3idx = sort!([idx for (nm, idx) in var_map if startswith(nm, "SuperFast.O3[")])
-mf = uT[midx]; o3 = uT[o3idx]
-finiteT = all(isfinite, uT)
-mrel = uH === nothing ? NaN : maximum(abs.(uT .- uH) ./ max.(abs.(uH), 1e-9))
-ok = finiteT && all(>(0), mf) && (uH === nothing || mrel < 5e-2) && (!HOST_ARM || host_ok)
-say(@sprintf("RESULT label=%s cells=%d nstates=%d NS=%d window=ONE_XLA_PROGRAM solve_secs=%.0f | traced: nT=%d/%d nC=%d/%d run=%.2fs compile=%.1fs | host: nT=%d/%d nC=%d/%d run=%.2fs | m=[%.3e,%.3e] O3=[%.4e,%.4e] maxrel_vs_host=%.3e ok=%s",
-    LABEL, NC, N, NS, SOLVE_SECS, naT, nrT, naC, nrC, run_s, comp_s,
-    hostT[1], hostT[2], hostC[1], hostC[2], host_s,
-    minimum(mf), maximum(mf), minimum(o3), maximum(o3), mrel, ok))
+function refresh_forcing(t)
+    for (k, prov) in discrete
+        merged_param[k] .= EA._provider_const_field(EA.provider_sample(prov, t), k)
+    end
+    foreach(d -> d.materialize!(), dms)
+    push_forcing!()
+end
+
+# Stop grid: the macro lattice UNION the GEOS-FP cadence boundaries. Half-open on
+# the right, exactly as lie_trotter_solve builds it -- a boundary landing on a
+# macro edge must belong to the step that ENDS there, or it is skipped by both
+# neighbours and never refreshes (op_split.jl documents the measurement).
+tstops = sort!(unique!(Float64[t for prov in values(discrete)
+                               for t in EarthSciIO.refresh_times(prov)]))
+fstops = Set(round(t; digits = 6) for t in tstops if T0 + 1e-6 < t <= T_END + 1e-6)
+stops  = sort!(unique!(vcat(collect((T0 + MACRO_DT):MACRO_DT:(T_END - 1e-9)),
+                            collect(fstops), Float64[T_END])))
+say(@sprintf("  %d macro stops, %d of them GEOS-FP cadence boundaries", length(stops),
+             length(fstops)))
+
+# --------------------------------------------------------------------------- #
+# 4. Digest + the continuity regression check (same quantities as run_reseact.jl,
+#    computed on the SPECIES-MAJOR state the traced arm carries).
+# --------------------------------------------------------------------------- #
+idxof(pre) = sort!([idx for (nm, idx) in var_map if startswith(nm, pre)])
+const O3I = idxof("SuperFast.O3["); const OHI = idxof("SuperFast.OH[")
+const NO2I = idxof("SuperFast.NO2["); const MI = idxof("Transport3D.m[")
+const MCELL = let d = Dict{NTuple{3,Int},Int}()
+    for (nm, idx) in var_map
+        mm = match(r"^Transport3D\.m\[(\d+),(\d+),(\d+)\]$", nm)
+        mm === nothing && continue
+        d[(parse(Int, mm.captures[1]), parse(Int, mm.captures[2]),
+           parse(Int, mm.captures[3]))] = idx
+    end
+    d
+end
+const NLON_ = maximum(c[1] for c in keys(MCELL))
+const NLAT_ = maximum(c[2] for c in keys(MCELL))
+const _dA = Float64.(ff.const_arrays["Transport3D.dA"])
+const _dB = Float64.(ff.const_arrays["Transport3D.dB"])
+w_I3(t) = (t - 10800.0 * floor(t / 10800.0)) / 10800.0
+function continuity_drift(u, t)
+    F = merged_param["GEOSFP.GEOSFP_I3.PS"]; w = w_I3(t)
+    isw(c) = c[1] == 1 || c[1] == NLON_ || c[2] == 1 || c[2] == NLAT_
+    s2i = 0.0; ni = 0; s2w = 0.0; nw = 0; worsti = 0.0; wci = (0, 0, 0)
+    for (c, idx) in MCELL
+        i, j, k = c
+        ps = 100.0 * ((1 - w) * F[1, SLICE.lat0 + j, SLICE.lon0 + i] +
+                            w * F[2, SLICE.lat0 + j, SLICE.lon0 + i])
+        dp = _dA[k] + _dB[k] * ps
+        r = (u[idx] - dp) / dp
+        if isw(c)
+            s2w += r * r; nw += 1
+        else
+            s2i += r * r; ni += 1
+            abs(r) > abs(worsti) && (worsti = r; wci = c)
+        end
+    end
+    return (rms_int = sqrt(s2i / max(ni, 1)), rms_wall = sqrt(s2w / max(nw, 1)),
+            worst_int = worsti, cell_int = wci)
+end
+
+sink = nothing
+if !isempty(ZARR)
+    out_times = collect(T0:(MACRO_DT * OUT_EVERY):T_END)
+    sink = EA.build_zarr_sink(var_map, ZARR; output_times = out_times,
+                              meta = EA.derive_output_meta(docs1))
+    EA.sink_open!(sink)
+    say("  gridded output -> $ZARR  ($(length(out_times)) records)")
+end
+sink_put!(t, u) = sink === nothing ? nothing :
+    EA.sink_write!(sink, EA.StateSnapshot(Float64(t), [(u, (1:N,))], Dict{String,Array}()))
+
+rows = NamedTuple[]
+push_row!(t, u, wall) = push!(rows, (t = t, hours = t / 3600,
+    cos_sza = cos_sza(t, LAT_MID, LON_MID),
+    o3_min = minimum(u[O3I]), o3_mean = mean(u[O3I]), o3_max = maximum(u[O3I]),
+    oh_max = maximum(u[OHI]), no2_mean = mean(u[NO2I]),
+    m_min = minimum(u[MI]), wall = wall))
+report(t, u, wall) = begin
+    push_row!(t, u, wall); r = rows[end]; d = continuity_drift(u, t)
+    say(@sprintf("   %6.2f  %7.4f  %9.5f  %9.5f  %9.5f  %10.3e  %9.3e  | %8.2e %9.2e %9.2e %-12s %6.1f",
+        r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max, r.oh_max, r.no2_mean,
+        d.rms_int, d.rms_wall, d.worst_int, string(d.cell_int), r.wall))
+end
+
+# --------------------------------------------------------------------------- #
+# 5. The macro-step loop. State and step sizes stay on device between calls.
+# --------------------------------------------------------------------------- #
+say("  t_hours  cos_sza     O3_min     O3_mean     O3_max      OH_max     NO2_mean  | rms_int  rms_wall  worst_int @cell_int    wall_s")
+report(T0, copy(u0), 0.0); sink_put!(T0, copy(u0))
+
+ts = time(); tcur = T0; nT = nC = nrTt = nrCt = 0; nstep = 0; nrefresh = 0; ok = true
+dtT = RX.ConcreteRNumber(DT0T); dtC = RX.ConcreteRNumber(DT0C)
+for tnext in stops
+    tnext <= tcur + 1e-9 && continue
+    res = xadv(UR, PRd, RX.ConcreteRNumber(tcur), RX.ConcreteRNumber(tnext),
+               dtT, dtC, dev_bufs[1], dev_bufs[2])
+    global UR = res[1]
+    global dtT = res[6]; global dtC = res[7]
+    global nT += Int(round(Float64(res[2]))); global nrTt += Int(round(Float64(res[3])))
+    global nC += Int(round(Float64(res[4]))); global nrCt += Int(round(Float64(res[5])))
+    global tcur = tnext; global nstep += 1
+    uh = Array(UR)
+    if !all(isfinite, uh)
+        global ok = false
+        say("  !! non-finite state after macro step ending at t=$tnext -- stopping")
+        break
+    end
+    report(tnext, uh, time() - ts)
+    if nstep % OUT_EVERY == 0
+        sink_put!(tnext, uh)
+        sink === nothing || (nstep % (OUT_EVERY * FLUSH_EVERY) == 0 && EA.sink_flush!(sink))
+    end
+    if round(tnext; digits = 6) in fstops
+        refresh_forcing(tnext); global nrefresh += 1
+    end
+end
+solve_s = time() - ts
+sink === nothing || (EA.sink_flush!(sink); EA.sink_close!(sink);
+                     say("  gridded output committed: $ZARR"))
+
+o3m = [r.o3_mean for r in rows]
+say(@sprintf("RESULT label=%s cells=%d nstates=%d window_h=%.2f macro_dt=%.0f nmacro=%d nrefresh=%d nT=%d/%d nC=%d/%d solve_s=%.1f",
+    LABEL, NC, N, SOLVE_SECS / 3600, MACRO_DT, nstep, nrefresh, nT, nrTt, nC, nrCt, solve_s))
+say(@sprintf("DIURNAL O3_mean: start=%.5f min=%.5f max=%.5f end=%.5f  peak-to-trough=%.5f ppb  ok=%s",
+    o3m[1], minimum(o3m), maximum(o3m), o3m[end], maximum(o3m) - minimum(o3m), ok))
+if !isempty(CSV)
+    open(CSV, "w") do io
+        println(io, "t,hours,cos_sza,o3_min,o3_mean,o3_max,oh_max,no2_mean,m_min,wall")
+        for r in rows
+            println(io, join((r.t, r.hours, r.cos_sza, r.o3_min, r.o3_mean, r.o3_max,
+                              r.oh_max, r.no2_mean, r.m_min, r.wall), ","))
+        end
+    end
+    say("wrote $CSV")
+end
 say("DONE $LABEL")

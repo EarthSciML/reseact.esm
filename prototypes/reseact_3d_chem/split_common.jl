@@ -341,14 +341,22 @@ end
 # So derive all of them here, from one (lon0, lat0), and never write the
 # literals at a call site again.
 #
-#   native_slice(lon0 = 11, nlon = 13)   -> lon -125..-65, the CONUS span
-#   native_slice()                       -> the 7x7x72 central-US default
+#   native_slice()                       -> CONUS, lon -125..-65, 13x7x72
+#   native_slice(lon0 = 14, nlon = 7)    -> the old 7x7x72 central-US box
+#
+# The DEFAULT is CONUS, and it agrees with `reseact.esm`'s own metaparameter
+# defaults (NLON=13, LON0=11) and its `lon0_deg` parameter default (-127.5). All
+# three have to say the same thing: this function is the only place that derives
+# the degree-space twins from the index origin, but the .esm defaults are what a
+# bare `EA.load(model)` gets, so a disagreement between them would put a
+# metaparameter-free load on a different domain than a slice-driven one -- the
+# same silent class of failure the degree/index seam already invites.
 #
 # GEOS-FP 4x5 geometry: lon CENTRES are -180 + 5*(i-1) with cell edges 2.5 deg
 # either side; lat POINTS are -90 + 4*(j-1) (the two polar rows are half cells,
 # which is caveat (3) in the model description, not something this fixes).
-function native_slice(; lon0::Integer = 14, lat0::Integer = 29,
-                        nlon::Integer = 7, nlat::Integer = 7, nlev::Integer = 72)
+function native_slice(; lon0::Integer = 11, lat0::Integer = 29,
+                        nlon::Integer = 13, nlat::Integer = 7, nlev::Integer = 72)
     lon0 >= 1 || throw(ArgumentError("lon0 >= 1: the west halo reads native cell lon0"))
     lat0 >= 1 || throw(ArgumentError("lat0 >= 1: the south flank reads native point lat0"))
     lon0 + nlon + 1 <= 72 || throw(ArgumentError(
@@ -371,6 +379,53 @@ function native_slice(; lon0::Integer = 14, lat0::Integer = 29,
             # human-readable extent, for logging a run's actual footprint
             lon_deg = (-180.0 + 5.0 * lon0, -180.0 + 5.0 * (lon0 + nlon - 1)),
             lat_deg = (-90.0 + 4.0 * lat0, -90.0 + 4.0 * (lat0 + nlat - 1)))
+end
+
+# --------------------------------------------------------------------------- #
+# 2a. Structural validation, with ONE known-false diagnostic exempted by exact
+#     shape and nothing else.
+#
+# `manifold` is a SCALAR-FIELD substitution site (esm-spec §9.6.1): a geometry
+# kernel's manifold is bound to the LITERAL "planar"/"spherical"/"geodesic", and
+# §9.6.9 discharges its admissibility on the EXPANDED form. But validate's
+# reference walk descends `apply_expression_template` bindings as expressions, so
+# it parses the literal as a bare variable and reports it undefined. This is not
+# reseact's: it reproduces on a four-variable fixture containing one
+# conservative_overlap call and nothing else, and wildlandfire.esm's Era5Regrid
+# spells its manifold binding identically. The tree-walk BUILD is unaffected --
+# it expands the template and sees the scalar field, which is why NEIRegrid
+# builds and runs.
+#
+# Exempted narrowly (this error_type, this literal set) so a genuinely undefined
+# variable anywhere else still stops the run before a multi-hour build is spent
+# on a model that cannot be right.
+const _MANIFOLD_LITERALS = ("planar", "spherical", "geodesic")
+_is_manifold_false_positive(e) =
+    e.error_type == "undefined_variable" &&
+    any(m -> occursin("Variable '$m' referenced", e.message), _MANIFOLD_LITERALS)
+
+"""
+    validate_reseact(model; metaparameters, say = println) -> Int
+
+Validate `model` at the given metaparameters, throwing on any structural error
+that is not the known-false `manifold` scalar-field diagnostic. Returns the
+number of exemptions applied (0 means the model validated outright).
+"""
+function validate_reseact(model; metaparameters::AbstractDict = Dict{String,Int}(),
+                          say = println)
+    r = isempty(metaparameters) ? EA.validate(model) :
+        EA.validate(EA.load(model; metaparameters = metaparameters))
+    real_errors = filter(!_is_manifold_false_positive, r.structural_errors)
+    exempted = length(r.structural_errors) - length(real_errors)
+    exempted == 0 ||
+        say("    ($exempted manifold scalar-field diagnostic(s) exempted; see validate_reseact)")
+    if !isempty(real_errors)
+        for e in real_errors[1:min(6, end)]
+            say("    $(e.error_type)@$(e.path): $(e.message)")
+        end
+        error("invalid model: $(length(real_errors)) structural error(s)")
+    end
+    return exempted
 end
 
 # --------------------------------------------------------------------------- #

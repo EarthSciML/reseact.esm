@@ -40,7 +40,11 @@ include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize
 say(s) = (println(s); flush(stdout))
 
 const MODEL = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
-const NLON  = parse(Int, get(ENV, "RESEACT_NLON", "7"))
+# Grid defaults follow the model's own metaparameters (CONUS 13x7x72). The
+# slice ORIGIN is not spelled here at all: it comes from the .esm defaults
+# (LON0/LAT0) and the matching degree-space twins `native_slice()` applies
+# through `build_split_run`, so the two currencies cannot drift apart here.
+const NLON  = parse(Int, get(ENV, "RESEACT_NLON", "13"))
 const NLAT  = parse(Int, get(ENV, "RESEACT_NLAT", "7"))
 const NLEV  = parse(Int, get(ENV, "RESEACT_NLEV", "72"))
 const T0    = parse(Float64, get(ENV, "RESEACT_T0", "64800"))
