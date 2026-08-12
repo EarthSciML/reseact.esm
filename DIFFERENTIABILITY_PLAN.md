@@ -322,6 +322,35 @@ arithmetic from folded data — they want different error messages.
 
 ## 4. Cross-cutting caveats
 
+* **THE TRANSPORT STEP IS ONLY PIECEWISE DIFFERENTIABLE, AND THE DEFAULT IC SITS
+  EXACTLY ON A SWITCH.** The most important entry here, because it makes the obvious
+  validation procedure return the wrong verdict. ReSEACT's transport is
+  monotonicity-limited PPM, and every limiter switch in EarthSciDiscretizations is a
+  PRODUCT OF NEIGHBOUR DIFFERENCES compared with zero — CW84 eq.(1.8)
+  `ifelse((ap-a0)*(a0-am) > 0, …, 0)` in `ppm_slope_mono.esm` / `ppm_lev_slope_mono.esm`,
+  and eq.(1.10) in `ppmflux_limit_left.esm` / `ppm_limit_right.esm`.
+
+  Every SuperFast field in the default IC is EXACTLY spatially uniform — visible in the
+  first digest row of any run, where `O3_min == O3_mean == O3_max == 40.00000`. On a
+  uniform field every guard product is exactly 0, so `u0` sits ON the switching surface
+  of essentially every interior cell.
+
+  **And the usual kink test cannot see it.** The guard is *quadratic* in the
+  perturbation: at `u0 ± e·v` it equals `e²·(dv_{i+1}-dv_i)(dv_i-dv_{i-1})` — the SAME
+  SIGN on both sides. Both one-sided quotients flip to the same other branch, so
+  forward, backward and central all agree with each other and the residual stays flat as
+  `eps` shrinks. `fwd ≠ bwd` is sufficient for a kink but **not necessary**, and this is
+  the case that proves it. Measured: at `u0` the AD-vs-FD disagreement is 100%; displace
+  the base point by ±1e-14 *in either direction* and AD matches FD to 2.2e-13
+  (`tools/diag/ppm_limiter_kink_repro.jl` — host-only, ~40 lines of `.esm`, runs in
+  seconds).
+
+  Two consequences, both load-bearing. AD returns the exact derivative of the ACTIVE
+  BRANCH, so gradients are correct almost everywhere — this is the familiar 4D-Var
+  situation with limited advection, not a defect. But **never finite-difference-validate
+  at the default IC**: use a spun-up or jittered state (`RESEACT_ADJ_UJITTER=1e-1`,
+  `eps ≤ 1e-6`), and prefer checking an adjoint against forward-mode AD over checking it
+  against FD at all.
 * **`clamp_nonneg` zeroes gradients where it bites.** It is a nonlinear edit of the
   state; a clamped component contributes nothing. Offer a gradient mode without it.
 * **Discrete closed functions contribute no derivative by contract** —
