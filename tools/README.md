@@ -110,6 +110,61 @@ reach the runtime `p` (which is 49 scalars and nothing else), so the driver reje
 them by name rather than returning a zero that a finite difference would happily
 "confirm".
 
+## Whole-window gradients (reverse mode / discrete adjoint)
+
+`adjoint_gradient.jl` is Phase 4: it turns Phase 3's per-step VJP into **dJ/dθ for the
+whole 49-scalar parameter vector in ONE backward sweep**, at a cost independent of how
+many parameters you ask for. That is the entire point — `sensitivity_forward.jl` costs
+one window pass per parameter.
+
+```bash
+RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 RESEACT_ADJ_CLAMP=0 \
+  julia --project=run-model-jl tools/adjoint_gradient.jl
+```
+
+**The adaptive time loop runs on the HOST.** Reverse mode cannot cross a
+`stablehlo.while`, so nothing XLA is asked to differentiate may contain one. The driver
+therefore lifts the whole controller — stage attempts, PI update, accept/reject,
+`clamp_nonneg` — into Julia, and the only compiled objects are single steps at a fixed
+`dt`: `ssp_step` / `ros_step` and their VJPs. At 6×6×8 that is 80 s, 92 s, 139 s, 164 s
+of `@compile`, then 2.6 s per macro step forward and 14 s per macro step backward
+(**5.4× the forward pass**, of which 4.7× is VJPs and 0.7× the replay).
+
+**The replay is sequence-forced, and it has to be.** Re-running the controller from a
+checkpoint does *not* reproduce the forward pass — measured, a replay of macro step 2
+took 95 accepts / 2 rejects where the forward pass took 92 / 1, from the same
+checkpoint, same θ, same forcing, same process. The compiled ROS23 step is not
+bit-deterministic call to call and the controller amplifies an ulp into a different
+decision. So the forward pass records the accepted `(t, dt)` of every inner step (16 B
+each, against 681 kB for the state) and the backward sweep replays *that sequence* with
+the controller off; the replayed states then match every checkpoint to **0.000e+00**.
+
+**`RESEACT_ADJ_CLAMP=0` is required today.** With `clamp_nonneg` on, λ acquires
+non-finite entries partway back — and not reproducibly: the `PROBE` stage re-runs the
+exact failing VJP (same `u`, λ, `t`, `dt`, θ) and gets a finite answer, for four
+different seeds including all-ones and all-zeros, with a finite primal. The clamp moves
+the objective by 6.7e−11 relative, so the unclamped gradient is a gradient of the same
+trajectory for any practical purpose, but this is unexplained and is the first thing to
+pick up.
+
+**How it is checked.** `fdtape` central-differences the *frozen-dt* composed map through
+the same compiled single-step programs — the confounder-free reference, because the
+discrete adjoint is by construction the derivative of exactly that map. The structural
+identity `scale·dJ/dscale ≡ g0·dJ/dg0` is checked on the adjoint gradient alone.
+Comparing against `sensitivity_forward.jl` instead carries three confounders that are
+each larger than 1e−8: it differentiates the controller's `dt` as well (a discrete
+adjoint holds `dt` fixed), it runs the clamp, and its trajectory is the device
+while-loop's rather than the host loop's — the `ctl` stage measures that last gap at
+8.8e−16 relative for transport and 2.8e−10 for chemistry over one macro step, with
+identical accept/reject counts.
+
+**The forward-mode reference in `ref` does not work on this RHS.** `Enzyme.autodiff(
+Forward, …, Duplicated, …)` comes back with a single slot, and under an exactly zero
+seed that slot has norm ≈ ‖u‖ — it is the primal, not the tangent. The same call shape
+returns the correct tangent on a toy carrying the same constructs. The stage detects
+this and skips itself rather than reporting the state as a derivative;
+`rx_traced_integrator.jl`'s `*_step_jvp` return that same `r[1]`.
+
 ## Measuring how it scales
 
 `scaling_study.jl` runs a ladder of (grid, window) points in ONE warm session and

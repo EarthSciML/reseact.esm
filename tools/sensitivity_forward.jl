@@ -109,7 +109,7 @@ import Pkg
 const REPO = normpath(joinpath(@__DIR__, ".."))
 Pkg.activate(get(ENV, "RESEACT_RXENV", joinpath(REPO, "run-model-jl")); io = devnull)
 using SciMLBase
-using LinearAlgebra, Printf, Statistics, Logging
+using LinearAlgebra, Printf, Statistics, Logging, Random
 using EarthSciAST, EarthSciIO, JSON3
 using EarthSciASTSplitter
 using EarthSciASTSplitter: split_system
@@ -213,6 +213,21 @@ let dp0 = hydrostatic_dp(merged_param, ff.const_arrays, T0; slice = SLICE)
         u0[idx] = dp0(parse(Int, mm.captures[1]), parse(Int, mm.captures[2]),
                       parse(Int, mm.captures[3]))
     end
+end
+
+# THE DEFAULT BASE POINT IS DEGENERATE FOR VALIDATION. Every SuperFast field in
+# the default IC is EXACTLY spatially uniform, which puts u0 on the switching
+# surface of essentially every PPM monotonicity limiter -- and the guard is
+# quadratic in the perturbation, so the fd study below cannot see it (the long
+# note in tools/rx_adjoint_check.jl has the measurement). RESEACT_SENS_UJITTER
+# moves the base point off the uniform field using the SAME seeded stream that
+# tools/rx_adjoint_check.jl and tools/adjoint_gradient.jl use, so "the jittered
+# base point" is literally the same point in all three drivers and their
+# gradients are directly comparable.
+const UJIT = parse(Float64, get(ENV, "RESEACT_SENS_UJITTER", "0"))
+if UJIT > 0
+    u0 .*= (1 .+ UJIT .* randn(Random.MersenneTwister(31337), length(u0)))
+    say(@sprintf("  base point jittered by %.0e relative (seed 31337)", UJIT))
 end
 
 # --------------------------------------------------------------------------- #

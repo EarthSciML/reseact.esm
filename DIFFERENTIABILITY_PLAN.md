@@ -265,6 +265,108 @@ backward sweep replays it from the checkpointed epoch.
 **Acceptance:** ∂(24 h CONUS mean O₃)/∂p for the full numeric vector, finite-difference
 checked on 2–3 components.
 
+#### Phase 4 status — a working whole-window gradient, and two nondeterminism findings
+
+Landed as `tools/adjoint_gradient.jl`. It produces **dJ/dθ for all 49 runtime scalar
+parameters in ONE backward sweep**, and the cost does not depend on how many parameters
+you ask for — which was the entire point of the phase.
+
+Everything below is at **6×6×8** (3,744 states), `T0 = 5400`, three 300 s macro steps,
+objective = domain-mean surface O₃ at the end of the window, at a **jittered base point**
+(`RESEACT_ADJ_UJITTER=1e-1`, seed 31337 — the same stream `rx_adjoint_check.jl` uses, so
+"the jittered base point" is literally the same point in all three drivers), with
+`RESEACT_ADJ_CLAMP=0`. **It has not been run at CONUS.**
+
+**The architecture.** Reverse cannot cross a `stablehlo.while`, so the whole adaptive
+controller — stage attempts, PI update, accept/reject, `clamp_nonneg` — is lifted onto
+the host, and the only compiled objects are single steps at a fixed `dt`. A macro step is
+2.6 s forward; the backward sweep is 13.2 s per macro step, i.e. **5.1× the forward
+pass** (4.6× VJPs at 0.14 s each over 251 calls, 0.6× the replay). Compiles: `ssp_step`
+80 s, `ros_step` 92 s, `ssp_vjp` 139 s, `ros_vjp` 164 s.
+
+**Acceptance, measured.** Against central finite differences of the *frozen-dt* composed
+map — the map the discrete adjoint is by construction the derivative of — through the
+same compiled single-step programs, on the same 12-transport + 239-chemistry step
+sequence, whose replay at θ₀ reproduces the forward pass's objective **bit-identically**:
+
+| parameter | adjoint ∂J/∂θ | best fd rel | at h |
+|---|---|---|---|
+| `NEIRegrid.scale` | −8.008172497475e−02 | **4.3e−10** | 1e−3 |
+| `Transport3D.tau_pblmix` | −4.112488570218e−04 | **2.8e−9** | 9e−3 |
+| `NEIRegrid.g0` | −8.166063332005e−03 | **5.5e−11** | 9.8e−3 |
+
+The structural identity `scale·∂J/∂scale ≡ g0·∂J/∂g0` holds on the adjoint gradient to
+**7.9e−13** (and 3.6e−12 on a second run). That is looser than Phase 2's forward sweeps
+(7.8e−15 at this grid) and it should be: the adjoint accumulates 251 separately-rounded
+VJP contributions into each component, where a forward sweep carries one chained tangent.
+
+**Against Phase 2 directly the agreement is 3.1e−6, not 1e−8, and that is expected.**
+`sensitivity_forward.jl` at the same base point gives −8.008197329598e−02 /
+−4.112291264030e−04 / −8.166088653717e−03. Three confounders, each larger than 1e−8,
+separate the two and none of them is an error in either:
+
+* it **differentiates the controller's `dt`**; a discrete adjoint holds `dt` fixed;
+* it runs the **clamp**, which the adjoint cannot (below);
+* its trajectory is the **device while-loop's**, not the host loop's. Measured over one
+  macro step (`ctl` stage): identical accept/reject counts (5/0 transport, 117/3
+  chemistry) but states 8.8e−16 relative apart for transport and **2.8e−10** for
+  chemistry. The chemistry half runs the *same Julia source* in both arms, so that is
+  XLA's: the same stage algebra compiled standalone and compiled inside a `while` body
+  are not the same floating-point program. It compounds to 3.8e−6 in J over three macro
+  steps, the same order as the gradient gap. **This is a floor on how well any
+  host-lifted adjoint can match a device-loop forward sensitivity**, and it is why the
+  acceptance check above uses a reference computed with the adjoint's own programs.
+
+**FINDING 1: re-running the adaptive controller does not reproduce the forward pass.**
+A replay of macro step 2 took 95 accepts / 2 rejects where the forward pass took 92 / 1
+— same checkpoint, same θ, same forcing, same process. The compiled ROS23 step is not
+bit-deterministic call to call and the PI controller amplifies an ulp into a different
+decision (Phase 3 saw the same instability *between* runs). A checkpoint-and-replay
+adjoint that re-derives its own step sequence is therefore silently taking the adjoint
+of a different trajectory. The fix is cheap and is now the design: the forward pass
+records the accepted `(t, dt)` of every inner step — **16 B each, against 681 kB for the
+state** — and the replay replays that sequence with the controller off. The replayed
+states then match every checkpoint to **0.000e+00**.
+
+**FINDING 2: the compiled programs intermittently return non-finite values, and it is
+not reproducible.** Across six sweeps of ~251 VJP calls, two acquired non-finite λ
+partway back (once with the clamp on, once with it off), always as 312 entries at once =
+24 cells × all 13 state groups. The `PROBE` stage re-runs the exact failing VJP — same
+`u`, λ, `t`, `dt`, θ — and gets a **finite** answer, for four different seeds including
+all-ones and all-zeros, at a step whose primal is finite, with no exact zeros in `u`, and
+at 0.1× and 0.01× the step size. It is **not confined to reverse mode**: in the same run
+that produced the acceptance table above, 2 of the 30 pure-primal frozen replays in the
+`fdtape` sweep returned a NaN objective, and re-running the identical replay produced a
+finite one. So this is the compiled ReSEACT step program on this box, not the adjoint.
+The driver re-issues the identical call on detection and **reports the retry count** (0
+of 251 in the accepted run above); that is a workaround for a nondeterministic fault, not
+a fix, and it is the first thing to pick up. `clamp_nonneg` was the initial suspect and
+is **not** the cause (it moves the objective by only 6.7e−11 relative, but the sweep is
+still run with `RESEACT_ADJ_CLAMP=0` because the clamped sweep failed twice).
+
+**NOT VERIFIED, and worth stating plainly:**
+
+* **CONUS.** Everything above is 6×6×8. A CONUS build is ~740 s and the VJP compiles
+  would be several times the 139/164 s measured here.
+* **A window that crosses a GEOS-FP refresh.** The three-macro-step window at `T0=5400`
+  contains **zero** forcing boundaries, so the epoch-replay path — checkpoint the epoch,
+  re-`refresh_forcing` on the way back — is implemented and exercised, but the *changing*
+  of the epoch mid-window has never actually happened in a validated run.
+* **The forward-mode reference does not work on this RHS.** `Enzyme.autodiff(Forward,
+  …, Duplicated, …)` comes back with a single slot, and under an exactly zero seed that
+  slot has norm ≈ ‖u‖ — it is the primal, not the tangent, so a chained forward reference
+  built on it returns the state instead of its derivative (‖du‖ came back as 2.3e4 for a
+  parameter that does not appear in the transport RHS at all, and the per-step
+  dot-product identity read rel = 1.2–1.6). The same call shape returns the correct
+  tangent on a toy carrying the same constructs. `rx_traced_integrator.jl`'s
+  `ros23_step_jvp` / `ssprk43_step_jvp` return that same `r[1]`, so **anything that has
+  been validated through them deserves a second look.** The driver detects this by the
+  zero-seed test and skips the stage rather than reporting the state as a derivative.
+* **The 1e−8 target against Phase 2 itself** — for the reasons above, that comparison
+  cannot reach 1e−8 while the host loop and the device loop are different floating-point
+  programs. Closing it needs either reverse-over-`while` upstream, or an
+  `adaptive_solve` whose body is compiled identically inside and outside the region.
+
 ### Phase 5 — structural/numeric partition + the SciML surface (~1 week)
 **Structural = its value changes the shape of the problem.** You cannot differentiate
 w.r.t. something that changes the dimension of the answer — the sharpest case is
