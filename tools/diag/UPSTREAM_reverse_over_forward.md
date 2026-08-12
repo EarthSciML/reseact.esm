@@ -186,10 +186,11 @@ Compiling a Reactant function whose body is
 ```
 Enzyme.gradient(Reverse, f, ...)          # outer reverse
   -> f calls Enzyme.autodiff(Forward, Const(g), Duplicated, Duplicated(u, v))
-     once per colour (13 colours), to build a block Jacobian by JVPs
 ```
 
-segfaults inside `DifferentiatePass`:
+segfaults inside `DifferentiatePass`. **One** inner forward call is enough; the
+original use case had thirteen (one per Jacobian colour) but that turns out to
+be incidental.
 
 ```
 AutoDiffCallRev::createReverseModeAdjoint
@@ -280,6 +281,11 @@ NamedTuple carrying mixed traced scalars and arrays, **not** the block width,
 presence of `func.call`s inside the differentiated region. `tools/rx_adjoint_toy.jl`
 had already ruled out `log10`/`floor`/`sum`-reduce individually.
 
+The colour-count row is worth reading together with the on-model NCOL=1 result
+above: the two agree. **The nesting count is not the trigger on either side** —
+the toy survives 13 nested `enzyme.fwddiff` ops and the model dies with 1. The
+difference between them is the RHS, not the derivative structure.
+
 What is *left* between the toy and the model is the emitted ReSEACT RHS itself
 (EarthSciAST `:oop` emitter: 13 species of SuperFast gas-phase chemistry with
 photolysis, emissions, deposition, and forcing-buffer interpolation). The size
@@ -288,11 +294,10 @@ gap is the whole remaining gap, and it is large.
 **Provenance of the numbers below, stated exactly.** They are a census of one
 ROS23 chemistry-step VJP module as Reactant hands it to Enzyme
 (`@code_hlo optimize=false`, 6x6x8 grid, N=3744), and that module is the
-**`jac=:fd`** one — it was dumped before the `ros_vjp` call-site bug (below) was
-found, so the file labelled `_ad` was in fact FD. They are quoted here only to
-bound the SCALE of the emitted RHS, which is common to both Jacobian flavours
-and is the only thing the argument rests on. An equivalent census of the genuine
-`jac=:ad` module is what stage `addump` now produces.
+**`jac=:fd`** one. They are quoted here to bound the SCALE of the emitted RHS,
+which is common to both Jacobian flavours and is the only thing this argument
+rests on. The genuine `jac=:ad` module — 120.1 MB, 13 `enzyme.fwddiff` — is
+censused under "Why this verdict cannot be a mislabel" below.
 
 | | toy at the same NS/NC | ReSEACT, ROS23 VJP (`jac=:fd`) |
 |---|---|---|
@@ -315,27 +320,44 @@ that information exists.
 
 ## What DOES reproduce it: the coloured Jacobian alone, on the model
 
-Reproduced on 2026-08-12 with the stage algebra removed entirely. The
-differentiated program is now just
+Reproduced on 2026-08-12. The smallest crashing program we have is
 
 ```julia
-# tools/rx_adjoint_check.jl, stage `jacrev`
+# tools/rx_adjoint_check.jl, stage `jacrev`, RESEACT_ADJ_NCOL=1
 function _jdot_ad(g, u, th, t, ::Val{K}) where {K}
     Jb = ad_block_jac(uu -> g(uu, th, t), u, Val(K), NC)   # K coloured JVPs
     sum(sum(Jb[r, s]) for r in 1:K, s in 1:K)
 end
-Enzyme.gradient(Reverse, _jdot_ad, Const(gC), u, theta, Const(t), Const(Val(13)))
+Enzyme.gradient(Reverse, _jdot_ad, Const(gC), u, theta, Const(t), Const(Val(1)))
 ```
 
-— no Rosenbrock stages, no `blocksolve`, no `sum(lambda .* unew)`, no linear
-algebra of any kind. **Reverse mode over the coloured forward-mode Jacobian is
-by itself sufficient.**
+At `K = 1`, `ad_block_jac` is exactly one
 
-* grid 6x6x8, NS=13 species, NC=288 cells, N=3744 states
-* **default pass pipeline — NO `excluded_passes`.** Bug B does not fire here and
-  did not contaminate this verdict.
-* build 601.9 s, then SIGSEGV (`EXIT=139`) during `@compile`
-* log: `tools/diag/logs/reseact_jacrev13b.log`
+```julia
+Enzyme.autodiff(Forward, Const(f), Duplicated, Duplicated(u, seed))
+```
+
+against the emitted chemistry RHS. **So the trigger is not "many nested
+derivatives" — ONE `enzyme.fwddiff` inside ONE reverse pass is enough.** No
+Rosenbrock stages, no `blocksolve`, no `sum(lambda .* unew)`, no linear algebra,
+no colouring loop. This agrees with the model-free bisection below, where the
+colour count never mattered either.
+
+Three probes, all SIGSEGV (`EXIT=139`), all at grid 6x6x8 (NS=13 species,
+NC=288 cells, N=3744 states), all on the **default pass pipeline with NO
+`excluded_passes`** — so Bug B does not fire in any of them and did not
+contaminate any verdict — and all with the identical frame sequence. The
+reduction is therefore of the real bug, not of a different one:
+
+| stage | differentiated program | colours | build | verdict |
+|---|---|---|---|---|
+| `jacrev` NCOL=1 | the Jacobian alone | **1** | 595.3 s | **SIGSEGV** |
+| `jacrev` NCOL=13 | the Jacobian alone | 13 | 601.9 s | **SIGSEGV** |
+| `ros_advjp` | the whole `jac=:ad` ROS23 step VJP — the question as originally posed | 13 | 644.4 s | **SIGSEGV** |
+
+Logs: `tools/diag/logs/reseact_jacrev1b.log`, `reseact_jacrev13b.log`,
+`reseact_ros_advjp.log`. Use `ros_advjp` to re-check a fix: it compiles only the
+reverse pass, so it does not first pay for the `jac=:ad` JVP.
 
 **Why this verdict cannot be a mislabel** (it matters — a sibling probe *was*
 mislabelled today, see the provenance note at the end). Two independent checks:
@@ -344,17 +366,23 @@ mislabelled today, see the provenance note at the end). Two independent checks:
    no `jac` kwarg anywhere in this path and therefore no default to inherit
    silently — which is exactly the failure mode that bit `ros_vjp`. The AD
    Jacobian is not selected here, it is the only thing called.
-2. **Observed in the IR.** `enzyme.fwddiff` op counts in the pre-pipeline module
-   (`ROF_HLO`, toy at NS=4 so it is cheap and non-crashing):
+2. **Observed in the IR, on the model itself.** Census of the pre-pipeline
+   modules (stage `addump`, same 6x6x8 build; `optimize=false` stops before the
+   pipeline, so it runs no `DifferentiatePass` and survives the crash):
 
-   | | `enzyme.fwddiff` | `enzyme.autodiff` |
-   |---|---|---|
-   | `jac=:ad` | **4** (= NS colours) | 1 (the outer reverse) |
-   | `jac=:fd` | **0** | 1 |
+   | module | `enzyme.fwddiff` | `enzyme.autodiff` | `func.func` | `stablehlo.while` | size | trace |
+   |---|---|---|---|---|---|---|
+   | ROS23 VJP, `jac=:ad` | **13** (= NS colours) | 1 (outer reverse) | 1359 | 0 | 120.1 MB | 148.5 s |
+   | ROS23 VJP, `jac=:fd` | **0** | 1 | 1346 | 0 | 34.8 MB | 24.2 s |
+   | chemistry RHS `gC` alone | 0 | 0 | 85 | 0 | 8.1 MB | 4.3 s |
 
-   So "the AD path" is directly visible as `enzyme.fwddiff` ops in the module,
-   one per colour, and the FD path emits none. The nesting the crash needs is a
-   thing you can count, not a thing you have to trust.
+   The AD path is visible as thirteen `enzyme.fwddiff` ops, one per species
+   colour; the FD path emits none. The nesting the crash needs is something you
+   can count, not something you have to trust.
+
+   The same census also closes the harness bug for good: the old mislabelled
+   `_ad` dump is 34 764 311 bytes against this `fd` module's 34 764 314 — a
+   three-byte delta, the length of the function name.
 
 The stack is the mechanism above, frame for frame:
 
@@ -399,42 +427,21 @@ That is the whole argument for the null check. It is not a nice-to-have: with
 `emitError()` in place this report would have named the op in one run, and
 without it no amount of work on our side can.
 
-### Corroboration: the original form crashes identically
+### Reproducing this
 
-The question as originally posed — reverse-differentiate the **whole `jac=:ad`
-ROS23 step**, not just the Jacobian — gives the same verdict. So the minimal
-form above is a genuine reduction of the real bug, not a different one:
+All the on-model probes are stages of `tools/rx_adjoint_check.jl` at a 6x6x8
+grid (~600 s build). One process per stage — a segfault takes the process with
+it, so every log ends in `EXIT=<code>` written by the parent shell; 139 is the
+segfault.
 
+```bash
+export JULIA_DEPOT_PATH=...   RESEACT_RXENV=<the Reactant env>
+RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 \
+RESEACT_ADJ_STAGES=jacrev RESEACT_ADJ_NCOL=1 \
+  julia --project=$RESEACT_RXENV tools/rx_adjoint_check.jl     # smallest crash
+RESEACT_ADJ_STAGES=ros_advjp  ...                             # re-check a fix here
+RESEACT_ADJ_STAGES=addump     ...                             # census, never crashes
 ```
----- ros_advjp : jac=:ad REVERSE only, excluded_passes=String[] ----
-[1469164] signal 11 (1): Segmentation fault
-```
-
-* same grid, build 644.4 s, `EXIT=139` (core dumped)
-* again the **default pipeline, no `excluded_passes`**
-* the same frame sequence: `getAttr` <- `func::CallOp::build` <-
-  `func::CallOp::create` <- `AutoDiffCallRev::createReverseModeAdjoint` <-
-  `visitChild` <- `differentiate` <- `CreateReverseDiff` <- `lowerEnzymeCalls`
-* log: `tools/diag/logs/reseact_ros_advjp.log`
-
-`ros_advjp` is also the stage to re-check a fix with: it compiles only the
-reverse pass, so it does not first pay for the `jac=:ad` JVP.
-
-### Probes left running at close-out (no verdict)
-
-Two further on-model probes were still compiling when this was written and are
-reported as unfinished rather than guessed. Their logs are in `tools/diag/logs/`
-and each ends in `EXIT=<code>`; 139 is the segfault.
-
-| probe | question it would answer | status |
-|---|---|---|
-| `reseact_jacrev1b.log` | does a **single** colour (NCOL=1) also segfault? If yes it is a materially smaller reproducer and should replace the NCOL=13 one above | reached the reverse compile, no verdict |
-| `reseact_addump3.log` | op census of the genuine `jac=:ad` module | building, no verdict |
-
-`addump3`'s purpose — confirming the crash verdict is on the AD path — was met
-by the two cheaper checks in "Why this verdict cannot be a mislabel" above, so
-it is corroboration rather than a dependency. **The NCOL=1 question is genuinely
-open** and is the one thing that would still improve this report.
 
 ## Files in this repo
 
@@ -537,12 +544,28 @@ reproduce it — compile seconds, `tools/diag/logs/cost_*`:
 
 At ReSEACT's NS=13 the AD JVP is 14% dearer than the FD one, not 35x. So the
 cost is not in the number of nested derivatives per se; it scales with what is
-*inside* each of them. `ad_block_jac` emits NS separate `enzyme.fwddiff` ops
-(measured, section (a) above), and on ReSEACT each one wraps a 3000-op RHS with
-745 minted helper functions — so the differentiated program is ~13 copies of
-that before the outer derivative starts, while the FD Jacobian is 13 *calls* to
-one copy. That is a plausible mechanism and it is consistent with the numbers
-above, but **it is a hypothesis: it was not measured on the model here.**
+*inside* each of them.
+
+**Measured on the model** (the `addump` census above, same 6x6x8 build), the
+mechanism is visible before the reverse pass even starts:
+
+| | `jac=:fd` | `jac=:ad` | ratio |
+|---|---|---|---|
+| module handed to Enzyme | 34.8 MB | **120.1 MB** | **3.5x** |
+| Julia trace time | 24.2 s | **148.5 s** | **6.1x** |
+| `func.func` | 1346 | 1359 | +13 |
+
+The `+13` functions are one per colour, and the growth in bytes —
+120.1 − 34.8 = 85.3 MB against a standalone chemistry RHS module of 8.1 MB —
+is about ten RHS-sized copies. So `ad_block_jac`'s NS `enzyme.fwddiff` ops do
+**not** share one differentiated callee: each colour carries roughly its own
+copy of the RHS, where the FD Jacobian is NS *calls* into one copy. An outer
+derivative then has to cross all of it.
+
+That is now a measurement, not a hypothesis, **for the trace and module-size
+half**. What is still *not* measured here is the pass-pipeline/XLA time on top
+of it — the reported "85 minutes, did not finish" was not reproduced in this
+work, and no attempt here ran to completion.
 
 The other half of the suggestion — "build the Jacobian columns directly against
 `Reactant.Ops` instead of through `Enzyme.autodiff`" — has no target to aim at:

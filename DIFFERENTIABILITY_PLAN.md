@@ -259,14 +259,24 @@ reverse-over-`while` report.
 > Jb = ad_block_jac(uu -> gC(uu, th, t), u, Val(13), NC)   # 13 coloured JVPs
 > sum(sum(Jb[r,s]) for r in 1:13, s in 1:13)               # reverse-differentiated
 > ```
-> SIGSEGV at NS=13, NC=288, N=3744 after a 601.9 s build, with **no Rosenbrock stages,
-> no `blocksolve`, no linear algebra** — and on the **default pass pipeline**, no
-> `excluded_passes`, so the separate `concat_broadcast_slice` miscompile (below) did
-> not contaminate it. The **original** form segfaults too, confirming the small one is a
-> genuine reduction of the same bug rather than a different one: reverse over the whole
-> `jac=:ad` ROS23 step, `excluded_passes=String[]`, `EXIT=139` after a 644.4 s build,
-> identical frame sequence (`tools/diag/logs/reseact_ros_advjp.log`). Stack matches the
-> predicted mechanism frame for frame:
+> Five on-model probes, all `EXIT=139`, all on the **default pass pipeline** with no
+> `excluded_passes` — so the separate `concat_broadcast_slice` miscompile (below) did not
+> contaminate any of them — and all with an identical frame sequence:
+>
+> | stage | program | colours | build | verdict |
+> |---|---|---|---|---|
+> | `jacrev` NCOL=1 | the Jacobian alone | **1** | 595.3 s | SIGSEGV |
+> | `jacrev` NCOL=13 | the Jacobian alone | 13 | 601.9 s | SIGSEGV |
+> | `ros_advjp` | full `jac=:ad` ROS23 step VJP (the original question) | 13 | 644.4 s | SIGSEGV |
+>
+> `ros_advjp` agreeing is what makes the Jacobian-only form a reduction of the *real* bug
+> rather than a different one. And **NCOL=1 crashing reduces the upstream reproducer to
+> "one `enzyme.fwddiff` inside one reverse pass"** — at K=1, `ad_block_jac` is a single
+> `Enzyme.autodiff(Forward, Const(f), Duplicated, Duplicated(u, seed))`. That turns an
+> absence into a finding: the toy survives **13** nested `enzyme.fwddiff` ops, the model
+> dies with **1**, so the nesting count is not the trigger on either side — the difference
+> is the RHS, not the derivative structure. Stack matches the predicted mechanism frame for
+> frame:
 > `DifferentiatePass::runOnOperation → lowerEnzymeCalls → MEnzymeLogic::CreateReverseDiff
 > → differentiate → visitChild → ReverseAutoDiffOpInterface::createReverseModeAdjoint
 > → AutoDiffCallRev::createReverseModeAdjoint → func::CallOp::create → func::CallOp::build
@@ -328,6 +338,32 @@ be measured at CONUS, but the default stays `fd` until it is.
   nesting — Enzyme's batched forward mode over the `Val(NS)` colours, or an
   `ad_block_jac` written directly against `Reactant.Ops` — rather than by waiting
   for the upstream crash to be fixed.
+
+  **The mechanism is now measured, not argued** (2026-08-12, `addump` op census of the
+  genuine `jac=:ad` module):
+
+  | module | `enzyme.fwddiff` | `func.func` | size | trace |
+  |---|---:|---:|---:|---:|
+  | `jac=:ad` | **13** | 1359 | 120.1 MB | 148.5 s |
+  | `jac=:fd` | 0 | 1346 | 34.8 MB | 24.2 s |
+  | chemistry RHS alone | 0 | 85 | 8.1 MB | 4.3 s |
+
+  3.5× the size and 6.1× the trace time, for +13 `func.func` against a standalone RHS of
+  8.1 MB. So `ad_block_jac`'s NS `enzyme.fwddiff` ops do **not** share one differentiated
+  callee — each colour carries roughly its own copy of the RHS, where the FD Jacobian is
+  NS *calls* into one copy. That is the cost mechanism. Boundary kept explicit: this is
+  the trace/size half only; the pass-pipeline and XLA time on top of it remains
+  unmeasured, and the "85 minutes, did not finish" above was not reproduced.
+
+  The census also confirms the AD label **on the model** rather than only on a toy — 13
+  `enzyme.fwddiff`, one per species colour, against 0 for FD — and closes the harness bug
+  numerically: the old mislabelled `_ad` dump is 34,764,311 bytes against this `fd`
+  module's 34,764,314, a three-byte delta that is exactly the length of the function name.
+
+  Two routes to remove the nesting are both blocked upstream: `BatchDuplicated` leaves an
+  `enzyme.extract` that XLA export rejects, and `Ops.batch` around a `fwddiff` emits a
+  rank-mismatched transpose. "Build the columns directly against `Reactant.Ops`" has no
+  target, because the only Ops-level derivative primitive *is* `enzyme.fwddiff`.
 
 ### Phase 4 — the time-loop adjoint driver (~1 week)
 Forward pass checkpoints `(u_k, t_k, forcing epoch)`; backward sweep accumulates

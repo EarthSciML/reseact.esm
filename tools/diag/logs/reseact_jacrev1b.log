@@ -6,3 +6,64 @@ BUILD 595.28 s   nstates=3744  nparams=49
 
 ---- jacrev : reverse over the block Jacobian ALONE, NCOL=1 ----
   [hb] fast=1 helpers=0 rss=3.2GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
+  [hb] fast=1524 helpers=123 rss=3.2GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 69, "reduce_fnadd_sum" => 33, "log10_broadcast_scalar" => 9, "update_computation" => 3] fast_hits=["multiply" => 574, "add" => 323, "divide" => 212, "select" => 74, "power" => 61, "exponential" => 53]
+
+[1472094] signal 11 (1): Segmentation fault
+in expression starting at /tmp/claude-1111265/wt-rofdiag/tools/rx_adjoint_check.jl:296
+_ZN4mlir9Operation7getAttrEN4llvm9StringRefE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir4func6CallOp5buildERNS_9OpBuilderERNS_14OperationStateENS0_6FuncOpENS_10ValueRangeE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir4func6CallOp6createERNS_9OpBuilderENS_8LocationENS0_6FuncOpENS_10ValueRangeE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZNK15AutoDiffCallRev24createReverseModeAdjointEPN4mlir9OperationERNS0_9OpBuilderEPNS0_6enzyme21MGradientUtilsReverseEN4llvm11SmallVectorINS0_5ValueELj6EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6enzyme6detail41ReverseAutoDiffOpInterfaceInterfaceTraits13FallbackModelI15AutoDiffCallRevE24createReverseModeAdjointEPKNS2_7ConceptEPNS_9OperationERNS_9OpBuilderEPNS0_21MGradientUtilsReverseEN4llvm11SmallVectorINS_5ValueELj6EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6enzyme26ReverseAutoDiffOpInterface24createReverseModeAdjointERNS_9OpBuilderEPNS0_21MGradientUtilsReverseEN4llvm11SmallVectorINS_5ValueELj6EEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6enzyme12MEnzymeLogic10visitChildEPNS_9OperationERNS_9OpBuilderEPNS0_21MGradientUtilsReverseE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6enzyme12MEnzymeLogic13differentiateEPNS0_21MGradientUtilsReverseERNS_6RegionES5_N4llvm12function_refIFvRNS_9OpBuilderEPNS_5BlockEEEESt8functionIFSt4pairINS_5ValueESG_ENS_4TypeEEE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6enzyme12MEnzymeLogic17CreateReverseDiffENS_19FunctionOpInterfaceESt6vectorI10DIFFE_TYPESaIS4_EES6_RNS0_13MTypeAnalysisES3_IbSaIbEESA_14DerivativeModebmNS_4TypeENS0_11MFnTypeInfoESA_PvbN4llvm9StringRefEbb at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN12_GLOBAL__N_117DifferentiatePass16lowerEnzymeCallsERN4mlir21SymbolTableCollectionENS1_19FunctionOpInterfaceE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6detail4walkINS_15ForwardIteratorEEEvPNS_9OperationEN4llvm12function_refIFvS4_EEENS_9WalkOrderE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN12_GLOBAL__N_117DifferentiatePass14runOnOperationEv at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir6detail17OpToOpPassAdaptor3runEPNS_4PassEPNS_9OperationENS_15AnalysisManagerEbj at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+_ZN4mlir11PassManager3runEPNS_9OperationE at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+mlirPassManagerRunOnOp at /tmp/claude-1111265/depot/artifacts/d975db83abaffa8c78119f6fff78094d18f83415/lib/libReactantExtra.so (unknown line)
+mlirPassManagerRunOnOp at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/libMLIR_h.jl:11804 [inlined]
+run! at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/IR/Pass.jl:188
+run! at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/OptimizationPasses.jl:207
+#run_pass_pipeline!#25 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/OptimizationPasses.jl:222
+run_pass_pipeline! at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/OptimizationPasses.jl:217 [inlined]
+#compile_mlir!#45 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:452
+unknown function (ip: 0x7fb9debcc94f) at (unknown file)
+compile_mlir! at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:238
+compile_mlir! at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:238
+#compile_xla#76 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1331
+compile_xla at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1306 [inlined]
+#compile#78 at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1423
+compile at /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1420
+unknown function (ip: 0x7fb9debaa2bf) at (unknown file)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+do_call at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:123
+eval_value at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:243
+eval_stmt_value at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:194 [inlined]
+eval_body at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:707
+eval_body at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:558
+jl_interpret_toplevel_thunk at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/interpreter.c:898
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1035
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:975
+ijl_toplevel_eval at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1047
+ijl_toplevel_eval_in at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1092
+eval at ./boot.jl:489
+include_string at ./loading.jl:2874
+_include at ./loading.jl:2934
+include at ./Base.jl:306
+exec_options at ./client.jl:317
+_start at ./client.jl:550
+jfptr__start_63319.1 at /u/ctessum/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+true_main at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:971
+jl_repl_entrypoint at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:1139
+main at julia (unknown line)
+__libc_start_call_main at /lib64/libc.so.6 (unknown line)
+__libc_start_main at /lib64/libc.so.6 (unknown line)
+unknown function (ip: 0x4010b8) at julia
+Allocations: 5969059025 (Pool: 5969041058; Big: 17967); GC: 1365
+timeout: the monitored command dumped core
+EXIT=139

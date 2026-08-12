@@ -1,2 +1,15 @@
 === rx_adjoint_check: grid 6x6x8 T0=5400 ===
     (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 638.68 s   nstates=3744  nparams=49
+  NS=13 species, NC=288 cells, N=3744 states
+  stages: addump
+
+---- addump: pre-pipeline modules ----
+  [hb] fast=1 helpers=0 rss=3.0GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
+  [hb] fast=7825 helpers=635 rss=3.2GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 373, "reduce_fnadd_sum" => 166, "log10_broadcast_scalar" => 45, "update_computation" => 16] fast_hits=["multiply" => 2929, "add" => 1661, "divide" => 1074, "select" => 390, "power" => 308, "exponential" => 267]
+  ad      148.5 s   120145370 bytes  /tmp/claude-1111265/adcheck_ad.mlir
+  fd       24.2 s    34764314 bytes  /tmp/claude-1111265/adcheck_fd.mlir
+  rhs       4.3 s     8070871 bytes  /tmp/claude-1111265/adcheck_rhs.mlir
+
+DONE
+EXIT=0
