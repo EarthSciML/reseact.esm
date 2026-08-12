@@ -210,9 +210,38 @@ than silently baking — but it is too broad. Narrow it:
   Overloading it to re-run `prepare` would make gradients impossible by construction.
   A structural change is an explicit re-`prepare`, not something hidden inside `remake`.
 
-**Acceptance on `reseact.esm`:** `scale`, `F_NO`…`F_FORM`, `tau_pblmix`, `Rd_air`,
-`g_acc` land **numeric**; `lon0_deg`, `lat0_deg`, `dlon_deg`, `dlat_deg`, `src_x0/y0/dx/dy`,
-`lcc_lat_1/2/0`, `lcc_lon_0`, `lcc_R`, `atol`, `lev` land **structural**.
+**There are THREE categories, not two.** An earlier draft of this document had only
+structural and numeric, and put `F_NO`…`F_FORM` in "numeric" on the strength of their
+being declared `"type": "parameter"` in the `.esm`. Phase 2 found that wrong by trying
+to differentiate one. The missing category:
+
+* **structural** — read at build; its value changes the SHAPE of the problem (index-set
+  extents, geometry weights, which cells overlap). Not differentiable; changing one is a
+  rebuild.
+* **numeric** — a scalar in the runtime `p`. Differentiable. This is what a parameter
+  vector exposes.
+* **const-folded data** — declared a parameter, but supplied by a CONST provider and
+  collapsed into `const_arrays` at build (`EarthSciIO.const_provider`, wired in
+  `split_common.jl`). It never reaches `p` at all. Differentiating w.r.t. one returns an
+  unconditional zero — and, the reason this category has to be named rather than lumped
+  in with structural, **a finite-difference check would "confirm" that zero**, because
+  perturbing the declared default changes nothing either. A wrong gradient and a wrong
+  check agreeing silently is the worst failure mode available here.
+
+Declared type is therefore NOT the discriminator; where the value is CONSUMED is. The
+automatic partition must classify by consumption, and must distinguish folded
+arithmetic from folded data — they want different error messages.
+
+**Acceptance on `reseact.esm`** (the runtime `p` is 49 scalars, measured):
+* **numeric**: `NEIRegrid.scale`, `NEIRegrid.g0`, `Transport3D.tau_pblmix`, `Rd_air`,
+  `g_acc` — the first three confirmed by an actual measured sensitivity in Phase 2.
+* **structural**: `lon0_deg`, `lat0_deg`, `dlon_deg`, `dlat_deg`, `src_x0/y0/dx/dy`,
+  `lcc_lat_1/2/0`, `lcc_lon_0`, `lcc_R`, `atol`, `lev`.
+* **const-folded data**: `NEIRegrid.F_NO`, `F_NO2`, `F_CO`, `F_ISOP`, `F_FORM` — the
+  whole NEI2016 12US1 source-grid emission fields, collapsed by the conservative regrid
+  at build. Making these differentiable is separate, larger work: the regrid would have
+  to become a runtime operation. Until then, per-species emissions sensitivity is only
+  reachable through the scalars multiplying the folded field (`scale`, `g0`).
 
 ## 4. Cross-cutting caveats
 
