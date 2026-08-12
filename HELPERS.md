@@ -503,10 +503,19 @@ looks plausible.
    partials. Correct, but it means a parameter reaching the answer *only* through one
    of them is silently zero-gradient rather than an error.
 
-### The shortest path to a first real result
+### The shortest path to a first real result — TAKEN: `tools/sensitivity_forward.jl`
 
 FORWARD mode already crosses the while regions exactly, so a sensitivity w.r.t. a
-HANDFUL of parameters (`NEIRegrid.scale`, `tau_pblmix`, a split fraction) is available
-today and needs nothing from this list — that is the quickest defensible number, and
-the reference an adjoint gets checked against. The full 56-parameter gradient needs
-(1) then (3) then a time-loop driver. See **DIFFERENTIABILITY_PLAN.md**.
+HANDFUL of parameters needed nothing from this list. That driver now computes
+d(domain-mean surface O₃)/d(`NEIRegrid.scale`, `Transport3D.tau_pblmix`,
+`NEIRegrid.g0`) through the compiled macro step, chained across the window, and checks
+itself against a central-finite-difference step-size sweep: agreement 5.5e-9 / 1.6e-7 /
+7.5e-9 relative at CONUS 13×7×72 over three 300 s macro steps (build 770 s, JVP
+`@compile` 770 s, 124 s per window pass). It is the reference an adjoint gets checked
+against — and it should be checked against the AD number, not against fd, because the
+fd floor is domain-size dependent (~5e-7 at 6×6×8, where a handful of kinked states
+dominates a 36-cell mean). **There is no split fraction to differentiate** — `NEIRegrid.F_NO`
+… `F_FORM` are the NEI2016 source-grid emission FIELDS, const arrays folded at build
+time, not scalars (item 6's silent-zero hazard, caught by name rather than by a zero).
+The full 56-parameter gradient still needs (1) then (3) then a time-loop driver. See
+**DIFFERENTIABILITY_PLAN.md**.

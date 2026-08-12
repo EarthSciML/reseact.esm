@@ -59,6 +59,57 @@ RESEACT_LON0=14 RESEACT_NLON=7 RESEACT_SOLVE_SECS=3600 \
   julia -t 8 --project=run-model-jl run_reseact.jl
 ```
 
+## Parameter sensitivities (forward mode)
+
+`sensitivity_forward.jl` computes **d(scalar objective)/d(parameter)** through the
+compiled Reactant macro step and chains it across a short macro-step window. It is
+Phase 2 of `../DIFFERENTIABILITY_PLAN.md`, and it exists because forward mode crosses a
+`Reactant.@trace while` region exactly while reverse mode cannot — so a sensitivity
+w.r.t. a *handful* of parameters is available today, at a cost proportional to how many
+you ask for, while the full adjoint waits on Phase 3.
+
+```bash
+RESEACT_LON0=14 RESEACT_LAT0=29 RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 \
+RESEACT_SENS_PARAM=NEIRegrid.scale,Transport3D.tau_pblmix \
+  julia --project=run-model-jl tools/sensitivity_forward.jl
+```
+
+It **always** validates itself against a central finite difference of the same
+objective, over a step-size sweep rather than one `h`, through the *same* compiled
+program with the tangent seed zeroed — so fd and AD never differ merely because they
+ran different arithmetic. One `@compile` serves every parameter (a one-hot tangent seed
+picks the direction) and every fd evaluation (`p` is a real XLA input, so new parameter
+values do not retrace); the compile is the expensive part and it is paid once.
+
+Measured at **CONUS 13×7×72**, `T0=5400`, three 300 s macro steps, objective =
+domain-mean **surface** O₃ at the end of the window (39.6531 ppb):
+
+| parameter | ∂J/∂θ | units | best fd/AD rel |
+|---|---|---|---|
+| `NEIRegrid.scale` | −7.387076375067e−02 | ppb per unit scale | 5.5e−9 |
+| `Transport3D.tau_pblmix` | −6.906232719590e−05 | ppb per second | 1.6e−7 |
+| `NEIRegrid.g0` | −7.532721546163e−03 | ppb per m s⁻² | 7.5e−9 |
+
+Negative because the window is at night, when NOx titrates O₃. Build 770 s, JVP
+`@compile` 770 s, ~124 s per 3-macro-step window pass; ~2 h for the whole self-check.
+
+The chain is pinned separately by an identity finite differences cannot fake: emissions
+are literally `∝ scale·g0` and `g0` appears nowhere else, so
+`scale·dJ/dscale ≡ g0·dJ/dg0`, and two independently seeded forward sweeps satisfy it to
+2.3e−13. Note that the fd/AD agreement is **domain-size dependent** — the same driver at
+6×6×8 floors at ~5e−7, flat across four decades of `h`, which is a small fixed set of
+kinked states (`clamp_nonneg`'s `max(u,0)`, the `max(|u|,1e-9)` in the FD block-Jacobian
+step, the controller's `q` clamps) dominating a 36-cell mean. Validate at a realistic
+domain, and check an adjoint against the AD number rather than against fd.
+
+**`NEIRegrid.F_NO` … `F_FORM` are not differentiable through this route, and they are
+not split fractions.** They are the whole NEI2016 12US1 source-grid emission *fields*,
+wired in as CONST provider arrays and collapsed at build time by the conservative
+regrid (deliberately — see `prototypes/reseact_3d_chem/split_common.jl`). They never
+reach the runtime `p` (which is 49 scalars and nothing else), so the driver rejects
+them by name rather than returning a zero that a finite difference would happily
+"confirm".
+
 ## Measuring how it scales
 
 `scaling_study.jl` runs a ladder of (grid, window) points in ONE warm session and

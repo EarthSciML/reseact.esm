@@ -96,14 +96,63 @@ no `@allowscalar`; the Float64 path stays **bit-identical** (the repo already pi
 — `build.jl` warns that a runtime-symbol `getfield` on a NamedTuple boxes the union, so
 an index into a homogeneous vector should be strictly better, but measure it.
 
-### Phase 2 — first real sensitivities, forward mode (2–3 days, parallel)
-Forward mode already crosses the while regions exactly, so this needs nothing from
-Phase 1. Target a handful of parameters where cost ∝ n_params is affordable:
-`NEIRegrid.scale` (the uniform emissions knob), `Transport3D.tau_pblmix`, one split
-fraction. Produces a defensible ∂(CONUS O₃)/∂(emissions scale) early, and the reference
-Phase 3 is checked against.
+### Phase 2 — first real sensitivities, forward mode — **DONE** ✅
+`tools/sensitivity_forward.jl`. Forward mode already crosses the while regions exactly,
+so this needed nothing from Phase 1. The macro step is `@compile`d through
+`Enzyme.autodiff(ForwardWithPrimal, …)` and the tangent is loop-carried across the
+macro-step window alongside the state — **including the two step-size tangents**,
+because the adaptive controller carries `dt` across macro steps and `dt` is a function
+of `u` and `p`. The parameters ride in as a tuple argument merged back into `p` inside
+the trace, so ONE compile serves every parameter (a one-hot seed picks the direction)
+AND every finite-difference evaluation (perturbed values, zero seed) — which is only
+affordable because `p` is a real XLA input.
 
-**Acceptance:** vs central finite differences on a 3-macro-step window, ~1e-6 relative.
+**Acceptance: MET, at CONUS.** 13×7×72 (85,176 states), `T0 = 5400`, three 300 s macro
+steps, objective = domain-mean **surface** O₃ at the end of the window (39.6531 ppb):
+
+| parameter | ∂J/∂θ | units | best fd/AD rel | at h |
+|---|---|---|---|---|
+| `NEIRegrid.scale` | −7.387076375067e−02 | ppb per unit scale | **5.5e−9** | 1e−4 |
+| `Transport3D.tau_pblmix` | −6.906232719590e−05 | ppb per second | **1.6e−7** | 9e−2 |
+| `NEIRegrid.g0` | −7.532721546163e−03 | ppb per m s⁻² | **7.5e−9** | 9.8e−4 |
+
+All three negative, and that is the physics: the window sits at night, when NOx titrates
+O₃, so more emissions — or slower PBL mixing, which keeps fresh NO at the surface —
+means *less* surface ozone. The accept/reject pattern was unchanged at every h tried, so
+no controller branch flip is in play. In elasticity terms a +1% emissions perturbation
+moves 15-minute domain-mean surface O₃ by **−0.00186%**.
+
+Costs at CONUS: build 770 s, JVP `@compile` 770 s (vs 557 s for the primal alone — the
+forward program is ~1.4× the compile, not the feared 2×), ~124 s per 3-macro-step window
+pass. The whole run — 1 baseline + 3 AD sweeps + 24 fd evaluations — is ~2 h wall.
+
+Four things worth carrying forward:
+
+* **A structural identity pins the chain in a way fd cannot.** Every NEI emission rate
+  in `reseact.esm` is literally `∝ scale · g0 / delp`, and `g0` appears nowhere else, so
+  `scale·∂J/∂scale ≡ g0·∂J/∂g0` exactly. Two independently seeded forward sweeps satisfy
+  it to **2.3e−13** relative (7.8e−15 at the small grid). A seeding or loop-carry error
+  that corrupted both sweeps identically would still break that ratio.
+* **Kink contamination is a small-domain effect.** The same driver at 6×6×8 (3,744
+  states, 36 surface cells) floors at **~5e−7** fd/AD agreement, flat across four
+  decades of h — neither the `h²` of truncation nor the `1/h` of cancellation, which is
+  what §4's first caveat looks like quantitatively: a fixed handful of kinked states
+  (`clamp_nonneg`'s `max(u,0)`, the `max(|u|,1e-9)` in the FD block-Jacobian step, the
+  controller's `q` clamps). At CONUS the floor is ~100× lower, which is consistent with
+  those kinks averaging out over ~100× more states — an inference from two grid points,
+  not a measurement of the mechanism. Practical consequence: **check Phase 3's adjoint
+  against the AD number, not against fd**, and do it at a realistic domain size.
+* **`NEIRegrid.F_NO`…`F_FORM` are NOT split fractions and are NOT differentiable here.**
+  They are the whole NEI2016 12US1 source-grid emission *fields*, wired in as CONST
+  provider arrays and collapsed at build time by the conservative regrid. They never
+  reach the runtime `p` (49 scalars, nothing else). Phase 5's acceptance list below has
+  to move them out of "numeric", or the regrid has to become a runtime operation first.
+  `NEIRegrid.g0` stands in as the third parameter.
+* **`Transport3D.tau_pblmix` barely moves with domain**: −6.892e−05 at 6×6×8 against
+  −6.906e−05 at CONUS, 0.2% apart, as a local PBL process should be. `NEIRegrid.scale`
+  moves a lot (−1.115e−01 vs −7.387e−02) because the domain, the emissions map and the
+  truncated 8-level column are all different — so quote the emissions sensitivity with
+  its grid attached.
 
 ### Phase 3 — a discrete adjoint of the step (1–2 weeks; the real work)
 Write the **VJP of the ROS23 / SSPRK43 stage algebra by hand**, so the reverse sweep is
