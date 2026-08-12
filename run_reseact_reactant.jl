@@ -67,6 +67,8 @@
 # FLUSH_EVERY), plus
 #   RESEACT_DT0T / RESEACT_DT0C  initial transport/chemistry dt (15.0 / 0.5)
 #   RESEACT_RXENV                Julia env WITH Reactant (default run-model-jl)
+#   RESEACT_RXJAC                chem block Jacobian: fd (default) or ad (exact,
+#                                coloured forward-mode JVPs) -- see below
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/{split_common,blockdiag_local,block_jac}.jl
@@ -226,6 +228,8 @@ masks = RxTracedIntegrator.species_masks(var_map, NS, NC)
 # --------------------------------------------------------------------------- #
 const CTRL_T = RxTracedIntegrator.pictrl_ssprk43()
 const CTRL_C = RxTracedIntegrator.pictrl_ros23()
+const JACMODE = Symbol(get(ENV, "RESEACT_RXJAC", "fd"))
+JACMODE in (:fd, :ad) || error("RESEACT_RXJAC must be fd or ad, got $JACMODE")
 adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
     (uR, pR, t0R, t1R, dtTR, dtCR, bufsT, bufsC) -> begin
         fT = (u, t, dtc, aux) -> RxTracedIntegrator.ssprk43_step(
@@ -245,7 +249,18 @@ adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
             # compiles 2% FASTER (547 s vs 560 s) and solves 1.67x faster, because
             # the better Jacobian also cuts rejected chem steps from 23 to 5.
             # There is no tradeoff left, so there is no knob.
-            unrolled = true)
+            unrolled = true,
+            # RESEACT_RXJAC=ad swaps the FD block Jacobian for the EXACT one
+            # (coloured forward-mode JVPs, `ad_block_jac`). Default stays :fd
+            # because the exact Jacobian has not been shown to pay for itself
+            # HERE: measured at 6x6x8 over one 300 s macro step it is compile-
+            # neutral (89.3 s vs 87.3 s) and step-count-neutral (120 accepts /
+            # 4 rejects vs 116 / 3), agreeing with the FD arm to 8.9e-4 max
+            # relative on the smallest species. The native arm's switch to an
+            # AD Jacobian cut rejected steps at CONUS, so this may well win at
+            # CONUS too -- but nobody has measured that, and the default should
+            # not change on a hope. See tools/rx_adjoint_check.jl.
+            jac = JACMODE)
         uC, _, dtCend, naC, nrC = RxTracedIntegrator.adaptive_solve(
             fC, uT, t0R, t1R, dtCR, CTRL_C, (p = pR, bufs = bufsC); clamp_nonneg = true)
         return uC, naT, nrT, naC, nrC, dtTend, dtCend

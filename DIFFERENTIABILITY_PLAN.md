@@ -175,6 +175,83 @@ native arm's switch to `block_ad_jac` cut rejected steps.
 **Acceptance:** matches Phase 2's forward sensitivity to ~1e-8 on the parameters both
 can do.
 
+#### Phase 3 status — what landed, and the one wall
+
+Landed in `tools/reactant_handoff/rx_traced_integrator.jl`, validated by
+`tools/rx_adjoint_check.jl` (which builds ReSEACT through the same path
+`run_reseact_reactant.jl` uses):
+
+* `ros23_step_vjp` / `ssprk43_step_vjp` — one step's `(∂u_out/∂u_in)ᵀλ` and
+  `(∂u_out/∂θ)ᵀλ` as ONE traced program, plus matching `*_jvp` for the
+  dot-product identity. `θ` is the RHS's differentiable payload made an explicit
+  argument (the production call site hides it in a closure, and a closure is
+  opaque to Enzyme); a nested `NamedTuple` of traced scalars **and** arrays
+  works, so all 49 runtime parameters and the forcing buffers come back at once.
+* `ad_block_jac` — the exact block Jacobian by coloured forward-mode JVPs,
+  replacing finite differences. `ros23_step(...; jac=:ad)`.
+
+**The route is Enzyme reverse over a straight-line step body, not a hand-derived
+stage adjoint.** The tableau part of the adjoint is mechanical, but `W` is built
+from `J(u)`, so the exact step adjoint needs `d(Jv)/du` — a second derivative of
+an arbitrary emitted RHS. Enzyme has that; hand-derivation could only introduce
+error. The Phase 3 constraint ("no while region in the differentiated path") is
+then met by *construction* — route through `ssprk43_step_unrolled` and
+`ros23_step` with a host-unrolled Jacobian — rather than by rewriting algebra.
+Verified by grepping the raw (pre-optimization) MLIR: every module in the
+differentiated path has **`stablehlo.while` = 0**, against **2** in the
+`adaptive_solve` control.
+
+**THE WALL: reverse-over-forward SEGFAULTS on the real RHS.** With `jac=:ad` the
+step contains a nested `enzyme.fwddiff`, and reverse over it dies inside
+Enzyme-MLIR — `AutoDiffCallRev::createReverseModeAdjoint` → `func::CallOp::build`
+→ `getAttr` on a **null** FuncOp, from `DifferentiatePass`. It is a crash, not a
+diagnostic, and it is upstream, not a limit of this design: the identical nesting
+is exact on a small model (dot-product test 1.8e-16) and survives every
+helper-minting construct ReSEACT's RHS uses — `tools/rx_adjoint_toy.jl <variant>`
+runs that isolation in about a minute. Plain reverse (`jac=:fd`) compiles
+and runs on ReSEACT. So `ros23_step_vjp` defaults to `jac=:fd`, and until that is
+fixed **the exact Jacobian is a forward-solve win only** — the adjoint still
+carries the FD contamination of §4 item 4. Worth filing upstream next to the
+reverse-over-`while` report.
+
+Also measured, and it changes an expectation: at 6×6×8 over one 300 s macro step
+the exact Jacobian is compile-neutral (89.3 s vs 87.3 s) and **step-count
+neutral** (120 accepts / 4 rejects vs 116 / 3; a second run gave 116 / 3 for
+both, so the counts are not even stable to that resolution — the controller
+amplifies ulp-level nondeterminism). The native arm's `block_ad_jac` cut
+rejected steps; this did not, at this size. `RESEACT_RXJAC=ad` exists so it can
+be measured at CONUS, but the default stays `fd` until it is.
+
+#### Phase 3 — what is NOT verified, and the next question
+
+* **A systematic 9.2e-6 disagreement between forward-mode AD and finite
+  differences of the SSPRK43 step in the STATE direction**, concentrated in
+  `SuperFast.CO` (91%) and `SuperFast.O3` (9%). It is not a kink: the forward,
+  backward and central quotients agree with each other to every digit printed
+  and the residual is flat from eps 1e-2 to 1e-6, so AD and the true derivative
+  differ by a fixed vector. It is also **not** an adjoint error — the
+  dot-product identity in that same direction is 5.7e-16, so the VJP is the
+  exact transpose of whatever the JVP computes. That makes it a question about
+  the derivative of the emitted `:oop` RHS, not about the stage algebra: the
+  obvious suspect is a closed discrete function contributing no partials by
+  contract (§4), and the test that would settle it is Phase 0's missing one —
+  traced `∂/∂u` of the RHS against host ForwardDiff, per state group.
+* **Whether the exact Jacobian removes the parameter-direction FD disagreement**
+  is unmeasured. With `jac=:fd` the FD check in the θ directions has no clean
+  eps window at all (best 2e1 relative in the parameter direction, 9e-4 in the
+  forcing-buffer direction) — consistent with the FD difference quotient's own
+  noise floor sitting above the signal, which is exactly what the exact Jacobian
+  should fix. The forward-only probe for it (`RESEACT_ADJ_STAGES=ros_adfwd`,
+  which needs no reverse pass and so dodges the segfault) never finished: one
+  attempt was OOM-killed by the shared cgroup, and a second was abandoned after
+  **85 minutes inside XLA** with the trace long done — against **141 s** for the
+  same JVP of the `jac=:fd` step, and 89 s for the `jac=:ad` step's own primal.
+  So nesting AD around `ad_block_jac` has a compile-cost problem *independent of*
+  the segfault, and a second attempt should probably start by removing the
+  nesting — Enzyme's batched forward mode over the `Val(NS)` colours, or an
+  `ad_block_jac` written directly against `Reactant.Ops` — rather than by waiting
+  for the upstream crash to be fixed.
+
 ### Phase 4 — the time-loop adjoint driver (~1 week)
 Forward pass checkpoints `(u_k, t_k, forcing epoch)`; backward sweep accumulates
 `λ_k = (∂step/∂u)ᵀ λ_{k+1}` and `g += (∂step/∂p)ᵀ λ_{k+1}`.

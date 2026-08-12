@@ -41,11 +41,35 @@
 # every block (the driver asserts this from var_map). Chemistry never couples
 # cells, so its Jacobian is block-diagonal per cell; batched over cells, every
 # operation on a "block matrix entry" is elementwise over length-NC vectors.
+#
+# The block Jacobian comes in two flavours. `fd_block_jac` is finite difference;
+# `ad_block_jac` is EXACT, by coloured forward-mode JVPs at the same RHS call
+# count, and it is straight-line (no `@trace for`), which is what lets a reverse
+# pass cross the step at all.
+#
+# `:fd` REMAINS THE DEFAULT, for measured reasons rather than taste:
+#   * on the FORWARD solve the exact Jacobian has not been shown to pay for
+#     itself here -- compile-neutral (89.3 s vs 87.3 s) and step-count-neutral
+#     at 6x6x8. The native arm's switch to an AD Jacobian DID cut rejected steps
+#     at CONUS, so this may still win at scale; nobody has measured that yet.
+#   * under a REVERSE pass it currently cannot be used at all: `jac=:ad` makes
+#     the adjoint reverse-over-forward, which SEGFAULTS on the real model
+#     (`AutoDiffCallRev::createReverseModeAdjoint`, upstream) while being exact
+#     on a toy carrying the same constructs.
+# So reach for `:ad` when you want an exact Jacobian in a FORWARD solve, and
+# expect to stay on `:fd` under a reverse sweep until that upstream bug clears.
+#
+# The last section of this file is the DISCRETE ADJOINT: `ros23_step_vjp` and
+# `ssprk43_step_vjp` give one step's (du_out/du_in)^T lam and (du_out/dtheta)^T
+# lam as ONE traced program with no while region in it, so a reverse sweep over
+# a whole simulation can be a host loop over steps. See the section banner and
+# DIFFERENTIABILITY_PLAN.md Phase 3; validated by tools/rx_adjoint_check.jl.
 
 module RxTracedIntegrator
 
 using Reactant
 const RX = Reactant
+const EZ = Reactant.Enzyme   # Enzyme is not a direct dep; Reactant re-exports it
 
 # ---------------- controller settings (host-side constants) -------------------
 Base.@kwdef struct PICtrl
@@ -175,6 +199,48 @@ function fd_block_jac_unrolled(f, u, f0b, NS::Int, NC::Int, masks)
     return J
 end
 
+# EXACT block Jacobian by COLOURED FORWARD-MODE JVPs, batched over cells. Same
+# colouring as the FD version -- chemistry never couples cells, so seeding
+# species s in EVERY cell at once is a structurally orthogonal colour and one
+# JVP fills column s of every cell's block. NS JVPs, the same RHS call count as
+# FD, but exact: no h, no cancellation, and no sqrt(eps)-scale kink in the step
+# map (which is what makes the step's own derivative meaningful).
+#
+# Two Reactant/Enzyme gotchas are designed around here, both measured:
+#   * `Enzyme.jacobian(Forward, ...)` fails under Reactant with a `tupstack`
+#     MethodError, so the columns are assembled by hand.
+#   * the colour index must be a COMPILE-TIME literal: `ntuple(..., Val(NS))`
+#     keeps `s` an `Int`, whereas `map(s -> ..., 1:NS)` traces the range and `s`
+#     arrives as a `TracedRNumber{Int64}` that can index neither a tuple nor a
+#     host-side seed mask. That is also why the seeds are host `Vector`s lifted
+#     with `Ops.constant`: they are structure, not data.
+# `f` is u -> du at fixed (p, t), and is Const for the INNER derivative (we want
+# df/du, not df/dp); an outer reverse pass still reaches p through the primal.
+#
+# COST WARNING: this is cheap to compile on its own and inside a step (89 s for
+# the ROS23 primal at ReSEACT 6x6x8, against 87 s with the FD Jacobian), but
+# NESTING further AD around it is not. A forward JVP of the jac=:ad step did not
+# finish compiling in 85 minutes at that size, against 141 s for the same JVP of
+# the jac=:fd step -- and reverse over it crashes outright (see ros23_step_vjp).
+# If the exact Jacobian is ever needed INSIDE a derivative, the nesting is the
+# thing to remove: batched forward mode over the Val(NS) colours, or building
+# the columns directly against Reactant.Ops.
+function ad_block_jac(f, u, ::Val{NS}, NC::Int) where {NS}
+    N = NS * NC
+    cols = ntuple(Val(NS)) do s
+        seed = zeros(Float64, N)
+        seed[((s - 1) * NC + 1):(s * NC)] .= 1.0
+        v = RX.Ops.constant(seed)
+        r = EZ.autodiff(EZ.Forward, EZ.Const(f), EZ.Duplicated, EZ.Duplicated(u, v))
+        return r[1]
+    end
+    Jb = Matrix{Any}(undef, NS, NS)
+    for si in 1:NS, r in 1:NS
+        Jb[r, si] = cols[si][((r - 1) * NC + 1):(r * NC)]
+    end
+    return Jb
+end
+
 # ---------------- Rosenbrock23 step (stiff, cell-local chemistry) -------------
 const ROS23_d = 1 / (2 + sqrt(2))
 const ROS23_c32 = 6 + sqrt(2)
@@ -186,12 +252,19 @@ const ROS23_c32 = 6 + sqrt(2)
 # sites per step); the default traced-loop Jacobian has 4 (f0, jac loop, f1, f2).
 # `masks` is only consumed by the unrolled path; the traced path derives the
 # layout from (NS, NC) directly (species_masks has already asserted it).
+# `jac` selects how the block Jacobian is built:
+#   :fd  finite difference (historical default; `unrolled` picks host-unrolled
+#        vs `@trace for` species loop)
+#   :ad  exact, coloured forward-mode JVPs (`ad_block_jac`). Always host-
+#        unrolled, so it is straight-line -- which is what lets a reverse pass
+#        cross the whole step. `unrolled` is ignored.
 function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64;
-        unrolled::Bool=false)
+        unrolled::Bool=false, jac::Symbol=:fd)
     N = NS * NC
     f0 = f(u, t)
     f0b = [_blk(f0, r, NC) for r in 1:NS]
-    J = unrolled ? fd_block_jac_unrolled(uu -> f(uu, t), u, f0b, NS, NC, masks) :
+    J = jac === :ad ? ad_block_jac(uu -> f(uu, t), u, Val(NS), NC) :
+        unrolled ? fd_block_jac_unrolled(uu -> f(uu, t), u, f0b, NS, NC, masks) :
         fd_block_jac(uu -> f(uu, t), u, f0, NS, NC)
     dtgamma = dt * ROS23_d
     W = Matrix{Any}(undef, NS, NS)
@@ -410,6 +483,137 @@ function adaptive_solve(stepfn, u0, t0, tend, dt0, ctrl::PICtrl, aux;
     end
     return u, t, dt, nacc, nrej
 end
+
+# =============================================================================
+# DISCRETE ADJOINT of ONE step (Phase 3 of DIFFERENTIABILITY_PLAN.md)
+# =============================================================================
+# Given lambda_out = dJ/du_out, produce
+#     lambda_in = (du_out/du_in)^T lambda_out    and    (du_out/dtheta)^T lambda_out
+# so a reverse sweep can be a HOST loop over steps, each step's VJP being one
+# traced program. The reason this file has to care at all:
+#
+#   REVERSE MODE CANNOT CROSS A `stablehlo.while` (measured: "MLIR pass pipeline
+#   'all' failed", for a FIXED trip count as well as a data-dependent one -- so
+#   the blocker is the while REGION, not adaptivity). `adaptive_solve` is a while
+#   region and so are the `@trace for` loops inside `fd_block_jac` and
+#   `ssprk43_step`. Every function below therefore routes through the
+#   STRAIGHT-LINE variants: `ssprk43_step_unrolled`, and `ros23_step` with
+#   `jac=:ad` (or `unrolled=true`), which emit no region ops at all.
+#
+# WHY ENZYME RATHER THAN A HAND-DERIVED STAGE ADJOINT. The stage algebra's
+# adjoint is mechanical (transpose the tableau, and each `blocksolve(W, b)`
+# adjoints to a `blocksolve(W^T, .)` plus a rank-1 update to W), but W itself is
+# built from J(u), so the exact adjoint needs d(J v)/du -- a SECOND derivative.
+# Deriving that by hand for an arbitrary emitted RHS is not something we can do;
+# Enzyme has it, and hand-derivation would buy nothing and could only introduce
+# error. So the constraint "no while region in the differentiated path" is met
+# by construction (route through the straight-line variants) rather than by
+# rewriting the algebra. `tools/rx_adjoint_check.jl` greps the module Enzyme is
+# handed for `stablehlo.while` to keep that honest.
+#
+# The second-derivative half of that only actually works with `jac=:fd` on a
+# real model -- `jac=:ad` makes it reverse-over-forward, which is exact on a
+# toy and SEGFAULTS on ReSEACT. See the note on `ros23_step_vjp` below.
+#
+# WHAT IS AND IS NOT DIFFERENTIATED. This is the derivative of ONE STEP MAP at a
+# FIXED dt -- the standard discrete-adjoint convention. dt's own dependence on
+# the state through the PI controller, and the accept/reject branch, are not
+# differentiated: they are a discrete decision, and the accepted trajectory is
+# what the adjoint is taken along. `EEst` is dead code here (only `unew` feeds
+# the objective) so it costs nothing. Likewise `clamp_nonneg`, if the driver
+# applies it, is a nonlinear edit of the state OUTSIDE the step and contributes
+# a diagonal 0/1 factor the caller owns (see plan section 4).
+#
+# `g(u, theta, t) -> du` is the RHS with its differentiable payload made an
+# EXPLICIT argument -- `theta` is whatever container Enzyme can seed (a Vector,
+# or the forcing-buffer arrays). The production call site captures p in a
+# closure instead; that closure is opaque to Enzyme, which is exactly why the
+# adjoint entry points take `g` and `theta` apart.
+
+# The scalar objective <lambda, unew>. Its gradient IS the VJP, and a scalar
+# active return is the shape Reactant's Enzyme integration handles best (an
+# array-returning reverse would need a Duplicated out-argument, i.e. mutation of
+# a traced array).
+function _ros23_ldotu(g, u, theta, lambda, t, dt, NS, NC, masks, abstol, reltol, jac)
+    unew, _ = ros23_step((uu, tt) -> g(uu, theta, tt), u, t, dt, NS, NC, masks,
+                         abstol, reltol; unrolled=true, jac=jac)
+    return sum(lambda .* unew)
+end
+function _ssprk43_ldotu(g, u, theta, lambda, t, dt, abstol, reltol)
+    unew, _ = ssprk43_step_unrolled((uu, tt) -> g(uu, theta, tt), u, t, dt, abstol, reltol)
+    return sum(lambda .* unew)
+end
+
+# unew alone, for the primal and for forward-mode cross-checks.
+function ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol; jac::Symbol=:ad)
+    unew, _ = ros23_step((uu, tt) -> g(uu, theta, tt), u, t, dt, NS, NC, masks,
+                         abstol, reltol; unrolled=true, jac=jac)
+    return unew
+end
+function ssprk43_step_out(g, u, theta, t, dt, abstol, reltol)
+    unew, _ = ssprk43_step_unrolled((uu, tt) -> g(uu, theta, tt), u, t, dt, abstol, reltol)
+    return unew
+end
+
+# ---- the VJPs. Return (lambda_in, grad_theta). ------------------------------
+# Everything that is host structure (g, NS, NC, masks, tolerances, jac) rides as
+# Const; only (u, theta) are active. The differentiated function is TOP-LEVEL,
+# not a closure, so Enzyme never has to decide what to do with captured traced
+# values.
+# jac=:fd is the DEFAULT here, and deliberately so, even though :ad is the right
+# default for the forward solve. MEASURED on ReSEACT 6x6x8 (13 species, 288
+# cells): jac=:fd reverse-differentiates fine, and jac=:ad SEGFAULTS inside
+# Enzyme-MLIR --
+#   AutoDiffCallRev::createReverseModeAdjoint -> func::CallOp::build ->
+#   Operation::getAttr on a NULL FuncOp,  reached from DifferentiatePass
+# i.e. reverse-over-forward: the inner `enzyme.fwddiff` (what `ad_block_jac`
+# emits) becomes a call whose reverse-mode callee comes back null. It is an
+# upstream crash, not a limit of this design: the SAME nesting is exact on a
+# small model (dot-product test 1.8e-16, and `tools/rx_adjoint_toy.jl <variant>`
+# shows it also survives every helper-minting construct ReSEACT's RHS uses).
+# Until that is fixed upstream the exact Jacobian is a FORWARD-solve win only,
+# and the adjoint carries the FD Jacobian's contamination -- which is not free:
+# the FD difference quotient inside the step makes the step map ill-conditioned
+# in u, and the dot-product identity degrades from 1.8e-16 to 6.2e-14 on the toy
+# and to 1.1e-6 on ReSEACT. See plan section 4 item 4.
+function ros23_step_vjp(g, u, theta, t, dt, lambda, NS::Int, NC::Int, masks,
+                        abstol::Float64, reltol::Float64; jac::Symbol=:fd)
+    r = EZ.gradient(EZ.Reverse, _ros23_ldotu, EZ.Const(g), u, theta,
+                    EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
+                    EZ.Const(NS), EZ.Const(NC), EZ.Const(masks),
+                    EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac))
+    return r[2], r[3]
+end
+function ssprk43_step_vjp(g, u, theta, t, dt, lambda, abstol::Float64, reltol::Float64)
+    r = EZ.gradient(EZ.Reverse, _ssprk43_ldotu, EZ.Const(g), u, theta,
+                    EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
+                    EZ.Const(abstol), EZ.Const(reltol))
+    return r[2], r[3]
+end
+
+# ---- the matching JVPs, for the dot-product identity <lam, Jv> == <J'lam, v>.
+# That identity is the strongest cheap check there is: it is exact arithmetic,
+# needs no step size, and fails loudly on any transposition or index error.
+function ros23_step_jvp(g, u, du, theta, dtheta, t, dt, NS::Int, NC::Int, masks,
+                        abstol::Float64, reltol::Float64; jac::Symbol=:ad)
+    r = EZ.autodiff(EZ.Forward, _ros23_out_c, EZ.Duplicated, EZ.Const(g),
+                    EZ.Duplicated(u, du), EZ.Duplicated(theta, dtheta),
+                    EZ.Const(t), EZ.Const(dt), EZ.Const(NS), EZ.Const(NC),
+                    EZ.Const(masks), EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac))
+    return r[1]
+end
+function ssprk43_step_jvp(g, u, du, theta, dtheta, t, dt, abstol::Float64, reltol::Float64)
+    r = EZ.autodiff(EZ.Forward, _ssprk43_out_c, EZ.Duplicated, EZ.Const(g),
+                    EZ.Duplicated(u, du), EZ.Duplicated(theta, dtheta),
+                    EZ.Const(t), EZ.Const(dt), EZ.Const(abstol), EZ.Const(reltol))
+    return r[1]
+end
+# positional-only twins of the *_step_out entry points (Enzyme.autodiff cannot
+# forward keyword arguments to the differentiated callee)
+_ros23_out_c(g, u, theta, t, dt, NS, NC, masks, abstol, reltol, jac) =
+    ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol; jac=jac)
+_ssprk43_out_c(g, u, theta, t, dt, abstol, reltol) =
+    ssprk43_step_out(g, u, theta, t, dt, abstol, reltol)
 
 # ---------------- host-side layout helper -------------------------------------
 # Derive the species-major block layout from var_map and build the per-species

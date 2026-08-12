@@ -137,3 +137,39 @@ here was measured with `run_scale.jl` (deleted, along with `run_sweep.jl` — bo
 needed one pre-generated `.esm` per grid) under the pre-merge codegen default, so
 it is not comparable to anything you can run today and has been removed rather
 than left to be misread.
+
+## Checking the one-step discrete adjoint
+
+Phase 3 of `../DIFFERENTIABILITY_PLAN.md` put a VJP of ONE ROS23 / SSPRK43 step in
+`reactant_handoff/rx_traced_integrator.jl` (`ros23_step_vjp`, `ssprk43_step_vjp`),
+so a reverse sweep over a whole simulation can be a host loop over steps. Two
+harnesses check it, and they differ in cost by three orders of magnitude:
+
+```bash
+# ~1 min, no model build: the stage algebra is model-independent, so this is the
+# one to run while editing the integrator. Also `... rx_adjoint_toy.jl log10` etc.
+julia --project=run-model-jl tools/rx_adjoint_toy.jl
+
+# ~10 min build + a few min of compiles, on the real model. Run ONE stage per
+# process: reverse mode segfaults on some of them and a segfault cannot be caught,
+# so a shared process would throw away the build.
+RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 RESEACT_ADJ_STAGES=census,jac,solve \
+  julia --project=run-model-jl tools/rx_adjoint_check.jl
+```
+
+What each check is for, since they fail in different ways and only one of them
+proves the adjoint is right:
+
+* **dot-product identity** `⟨λ, Jv⟩ == ⟨Jᵀλ, v⟩`. Exact arithmetic, no step size.
+  This is the one that says the VJP is the transpose of the JVP; it fails loudly
+  on any transposition or index error. Measured 5.7e-16 (SSPRK43).
+* **finite differences** of the same compiled step. This compares AD against the
+  *function*, so it also fires when the function is not differentiable, or when a
+  closed discrete function contributes no derivative by contract
+  (plan §4). The harness reports one-sided quotients next to the central one
+  precisely so a kink can be told from a wrong adjoint, and attributes the
+  residual by state group.
+* **`stablehlo.while` census** of the module Enzyme is handed. Reverse mode
+  cannot cross a while region, so the differentiated path must contain none; the
+  `adaptive_solve` control in the same census must contain some, or the census is
+  measuring nothing.

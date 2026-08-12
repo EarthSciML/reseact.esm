@@ -184,8 +184,15 @@ reseact specifics. Best home is a small EarthSciML-org package, e.g.
 **`EarthSciMLTracedIntegrators.jl`** (or a `solve`-side companion inside
 `EarthSciASTReactantExt`). It pairs naturally with the traced `:oop` RHS the ext
 already produces: the ext gives you a traceable RHS, this gives you a traceable
-adaptive *solve* of it. Its block-diagonal FD Jacobian + cell layout overlap with
+adaptive *solve* of it. Its block-diagonal Jacobian + cell layout overlap with
 `block_jac.jl` (below) — share one implementation.
+
+The file now also carries the **one-step discrete adjoint** (`ros23_step_vjp` /
+`ssprk43_step_vjp`) and an **exact coloured-AD block Jacobian** (`ad_block_jac`,
+`jac=:ad`). Those travel with the stepper, not separately: the adjoint's only
+real constraint is that the step body it differentiates contains no
+`stablehlo.while`, which is a property of the stage code sitting next to it.
+Validated by `tools/rx_adjoint_check.jl`.
 
 ### Long-run driving (now IN the root runners) and `tools/scaling_study.jl`
 
