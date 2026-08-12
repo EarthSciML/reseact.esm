@@ -8,7 +8,9 @@ argument.
 This document records what was **measured** (not assumed), the one architectural
 constraint that follows, and the phased plan. Every row of the capability matrix is a
 run against a small reaction–diffusion model built through the same `:oop` emitter the
-real model uses; the probes are `diffprobe{,2,3,4,5}.jl` and `whilegrad{,2}.jl`.
+real model uses; the probes are `diffprobe{,2,3,4,5}.jl` and `whilegrad{,2}.jl`, plus
+`whilegrad{3,4}.jl`, `loopshape.jl`, `reducegrad.jl`, `maskedloop.jl` and `maskedcost.jl`
+in `EarthSciAST/bench/` for the 2026-08-12 loop-shape correction under §1.
 
 Companion reading: HELPERS.md §4 (the same findings in context), and §2 for where each
 helper should eventually live.
@@ -21,8 +23,23 @@ helper should eventually live.
 |---|---|---|
 | the `:oop` RHS (straight-line traced) | ✅ exact | ✅ exact vs host ForwardDiff |
 | coloured block Jacobian, one traced program | ✅ exact (worst error 0.0) | ✅ VJP exact |
-| **`Reactant.@trace while` region** | ✅ exact | ❌ *MLIR pass pipeline "all" failed* |
+| `@trace` loop, **static** trip count (`for _ in 1:20`) | ✅ exact | ✅ **exact (rel 0.0)** — corrected 2026-08-12 |
+| `@trace` loop, trip count a runtime argument | ✅ exact | ❌ `stablehlo.dynamic_pad` untranslatable / no induction variable |
+| `@trace while`, **data-dependent** condition | ✅ exact | ❌ *no known iteration count for cache removal* ([Enzyme-JAX #2565](https://github.com/EnzymeAD/Enzyme-JAX/issues/2565), open) |
 | host-unrolled fixed step count (no while region) | ✅ | ✅ exact |
+
+> **Correction, 2026-08-12.** Rows 3–5 replace a single row that read
+> **`Reactant.@trace while` region — reverse ❌**, and §2 below drew from it the conclusion
+> that reverse mode cannot cross a `stablehlo.while` at all. It can: with a static trip
+> count the gradient is exact, and `stablehlo.while` is still present in the *differentiated*
+> module, so it is genuinely being crossed rather than unrolled away. The discriminator is a
+> **compile-time-constant trip count**, not the presence of the region — Enzyme-MLIR's
+> `AutoDiffWhileRev` tapes the trajectory as a dense `[N, state…]` tensor, and a non-static
+> `N` makes that `tensor<?x…>`, which XLA cannot translate. The bad row came from probe
+> `whilegrad.jl` K1, labelled "FIXED trip count" but actually passing
+> `RX.ConcreteRNumber(Float64(NSTEP))` as a runtime *argument* (line 55) — fixed in the Julia
+> source, statically unknown in MLIR. Checkpointing does not change any of this; see
+> HELPERS.md §4 item 3 for the retraction in full and for two `Binomial` hazards.
 
 Also measured, and load-bearing:
 
@@ -47,9 +64,22 @@ Two pieces of existing design are what make any of this possible, and must not b
 
 ## 2. The constraint that sets the architecture
 
-**Reverse mode cannot cross a `stablehlo.while`, and a macro step *is* two of them**
-(the SSPRK43 and ROS23 adaptive loops in `rx_traced_integrator.jl`). Since even a
-*fixed*-trip while loop fails, the blocker is the while region itself, not adaptivity.
+**Reverse mode needs a statically known trip count, and a macro step has two loops that
+lack one** (the SSPRK43 and ROS23 adaptive loops in `rx_traced_integrator.jl`, whose
+condition is set by the step-size controller). The `while` region is not itself the
+blocker — the *data-dependent trip count* is.
+
+*(Superseded 2026-08-12. This section previously read "Reverse mode cannot cross a
+`stablehlo.while` … since even a fixed-trip while loop fails, the blocker is the while
+region itself, not adaptivity." The fixed-trip measurement behind that was mislabelled;
+see the correction under §1. The practical conclusion for the loops **as written today**
+is unchanged — they are data-dependent, so reverse still cannot cross them — but the
+remedy is no longer forced to be "remove the loop from the compiled program". Bounding
+the loop works too: recast as a `@trace for` over a compile-time attempt cap with
+termination as an `ifelse` on the carry, which `adaptive_solve`'s body already uses
+throughout. That would put the controller back on the device, and with it would go both
+the 3.1e-6 host-vs-device discrepancy in §5 and the whole `(t,dt)`-recording replay
+apparatus. Measured on toys, not yet at ReSEACT state sizes.)*
 
 This kills the obvious design — "call `Enzyme.gradient` on the compiled macro step" —
 and it matters because reverse is the only affordable mode at this parameter count:
@@ -60,8 +90,11 @@ and it matters because reverse is the only affordable mode at this parameter cou
 | forward sensitivity, ≤ 5 parameters | ~8 h — **usable today** |
 | reverse adjoint | ~4–5 h, independent of n_params |
 
-So the plan buys the cheap forward result immediately, and separately removes the while
-regions from the gradient path to unlock reverse.
+So the plan buys the cheap forward result immediately, and separately gets the gradient
+path a statically known trip count to unlock reverse. Phases 3–4 below did that by
+lifting the loop to the host, which works and is what shipped; per the correction above,
+**bounding** the loop in place is the alternative that was wrongly ruled out, and it is
+the better end state if it holds at ReSEACT state sizes.
 
 ## 3. Phases
 

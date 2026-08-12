@@ -477,20 +477,54 @@ looks plausible.
    and refuses to fold it — so the work is to make the split explicit at the
    `prepare`/`simulate` seam and let the numeric half arrive as a vector at solve time.
 
-3. **REVERSE MODE CANNOT CROSS A `stablehlo.while`, and a macro step IS two of them.**
-   The rows above all differentiate the RHS, which is straight-line traced code. The
-   adaptive loops in `rx_traced_integrator.jl` are `Reactant.@trace while` regions, and
-   reverse mode through one fails outright (*MLIR pass pipeline "all" failed*) — for a
-   FIXED trip count as well as a data-dependent one, so it is the while region and not
-   adaptivity. Forward mode crosses the same loop exactly.
+3. **REVERSE MODE NEEDS A *STATICALLY KNOWN* TRIP COUNT — the `while` region itself is
+   fine.** *(Corrected 2026-08-12. This item previously read "REVERSE MODE CANNOT CROSS A
+   `stablehlo.while`". That was wrong; the retraction is at the end of this item.)*
 
-   That rules out the obvious design (`Enzyme.gradient` on the compiled macro step) and
-   it matters, because reverse is the only affordable mode at this parameter count:
-   forward costs ∝ n_params, so ~88 h for a 24 h run over 56 parameters against ~4–5 h
-   for an adjoint. The route is a hand-written discrete adjoint of the stage algebra,
-   so each step's VJP is straight-line; then chain them across the time loop with
-   checkpointing (cheap: 681 KB/step ⇒ 196 MB for 24 h). **See DIFFERENTIABILITY_PLAN.md**
-   for the phased plan and the measured capability matrix behind it.
+   The rows above all differentiate the RHS, which is straight-line traced code. For the
+   time loop, what reverse mode actually requires is that the **trip count be a
+   compile-time constant**, because Enzyme-MLIR's `AutoDiffWhileRev` tapes the trajectory
+   into a dense `[N, state…]` tensor: if `N` is not static the tape is `tensor<?x…>`,
+   which XLA cannot translate. Measured on Reactant 0.2.274 — the same version as before:
+
+   | loop shape | reverse mode |
+   |---|---|
+   | `@trace for _ in 1:20`, literal bound | ✅ exact (rel 0.0), and `stablehlo.while` is **still present in the differentiated module** — not unrolled away |
+   | trip count passed as a `ConcreteRNumber` argument | ❌ `'stablehlo.dynamic_pad' op can't be translated to XLA HLO` (Int counter) / `WhileOp does not have induction variable for cache removal` (Float64 counter) |
+   | data-dependent condition (`while s < thresh`) | ❌ `WhileOp does not have known iteration count for cache removal` — [Enzyme-JAX #2565](https://github.com/EnzymeAD/Enzyme-JAX/issues/2565), open |
+
+   Checkpointing (`checkpointing=Periodic(n)`/`Binomial(n)`, `mincut=true`) does **not**
+   rescue the data-dependent case. Two hazards found while establishing this: `Binomial(n)`
+   on a traced-bound loop **compiles and returns a silently wrong gradient** (exact at
+   n=2,4; 1.0e-3 rel at n=5; 2.8e-3 at n=10 — cf. Reactant.jl #1895), and `Binomial`
+   segfaults in `BinomialProgressConstProp` on a static-bound loop. `stablehlo.case` has no
+   reverse rule at all — keep it out of differentiated code.
+
+   **Retraction, and the lesson.** The old claim rested on probe `whilegrad.jl` K1, labelled
+   "FIXED trip count". It was not fixed: line 55 passes
+   `nr = RX.ConcreteRNumber(Float64(NSTEP))` as a runtime **argument** into
+   `RX.@trace while i < nlim`. Fixed in the Julia source, statically *unknown* in MLIR — so
+   K1 was a second dynamic-trip-count measurement, not the control it was read as. That one
+   mislabelled row carried the inference "it fails for fixed counts too, therefore it is the
+   region and not adaptivity", and that inference set the entire host-loop architecture.
+   **A probe's label is not its semantics: check what the compiler sees, not what the
+   source says.**
+
+   Reverse is still the only affordable mode at this parameter count — forward costs
+   ∝ n_params, ~88 h for a 24 h run over 56 parameters against ~4–5 h for an adjoint — so
+   Phase 3b's per-step VJP remains correct and is unaffected. What changes is that the host
+   loop may not be *necessary*: an adaptive loop needs a *bound*, not a `while` region.
+   Rewritten as a `@trace for` over a compile-time attempt cap with termination as an
+   `ifelse` on the carry, a full accept/reject PI-controller stepper differentiates exactly —
+   and `adaptive_solve`'s body is **already written that way**, every update already an
+   `ifelse(accept, …)`; only the loop condition has to move. Priced: at cap == actual trips
+   the masked form is 0.83× the while's wall time, overshoot linear (2× cap → 1.49×, 8× →
+   5.39×); a two-phase scheme — cheap forward `while` to learn the count, round up to a
+   power of two, differentiate the masked loop at that bucket — holds overshoot to 1.28×.
+   Untried at ReSEACT state sizes; the tape is dense `[cap, state]`, so large state × large
+   cap is the thing to check before committing. Probes: `EarthSciAST/bench/whilegrad{3,4}.jl`,
+   `maskedloop.jl`, `maskedcost.jl`. **See DIFFERENTIABILITY_PLAN.md** for the phased plan
+   and the capability matrix.
 
 4. **The traced arm's block Jacobian is FINITE DIFFERENCE.** `ros23_step` builds it by
    FD. Differentiating through an adaptive implicit step whose linearization is
