@@ -534,10 +534,40 @@ looks plausible.
    arm has no equivalent. Worth closing before trusting a gradient quantitatively.
 
 5. **Enzyme on the CPU needs `Enzyme.API.strictAliasing!(false)`**, because the walk
-   loads fields from `_VecNode`, which is heterogeneous by design (`payload::Any`).
-   With the flag, reverse mode matches ForwardDiff to ~1e-16. The durable fix is a
-   payload-free, concretely-typed lowered IR — and per `oop.jl` that is the same
-   lowering a device backend wants anyway, so the two motivations converge.
+   **loads** a `payload::Any` field, which is heterogeneous by design. With the flag,
+   reverse mode matches ForwardDiff to ~1e-16. *(Corrected 2026-08-12 — the conclusion
+   holds, three details did not.)*
+
+   * **The struct is `_Node`, not `_VecNode`.** `_VecNode` no longer exists anywhere in
+     `EarthSciAST/src` except in comments — zero non-comment uses; the only definition is
+     `struct _Node` at `tree_walk/compile.jl:69`. Reproduced on Enzyme 0.13.199 in under a
+     minute: `IllegalTypeAnalysisException` in `_oop_eval` from a `getproperty` load of
+     `_Node.payload::Any`.
+   * **It is not an `:oop` problem.** The in-place `f!` fails identically at `_eval_node`.
+   * **The tree need not contain the offending node kind.** A 0-D model with no loop-var
+     node still fails on the loop-var arm, because Enzyme analyses the whole statically
+     reachable method, not the values actually walked.
+
+   **The flag is a wart, not a hazard** — worth knowing before anyone "hardens" it away.
+   `EnzymeStrictAliasing` is read in exactly one upstream file, `TypeAnalysis.cpp`, and at
+   5 of 7 sites turning it off makes analysis *decline to learn* facts (it skips upward
+   propagation through phis/selects). The flag that fabricates unproven types and can
+   yield wrong derivatives is `looseTypeAnalysis!` — a **different** global, read by
+   different code (`AdjointGenerator.h` et al.). No issue-tracker report of wrong
+   gradients from strict-aliasing-off; Rust's Enzyme frontend ships with it off by
+   default. The real cost is blast radius: it is process-global with no scoped
+   alternative.
+
+   **"Payload-free lowering fixes it" is over-claimed.** A micro-harness reproducing the
+   exact production failure shows it is the **load**, not the field: a struct still
+   declaring `payload::Any` but never loading it differentiates fine, and `@noinline` /
+   `EnzymeRules.inactive` barriers work too. A small closed `Union` does **not** help.
+   Walking the real code with barriers cleared two blockers before hitting one no barrier
+   can fix — `_oop_fn`'s boxed `Vector{Any}` of **active** values handed to a
+   `String`-dispatched registry. And the convergence claim (`codegen_kernel.jl` already
+   lowers array kernels to Julia source at build time) is real but half-built: with that
+   tier on, Enzyme fails with an internal `UndefVarError: codegen_ft`, so the lowering is
+   not by itself a route to Enzyme support.
 
 6. **Discrete closed functions contribute no derivative, by contract** —
    `interp.searchsorted` and the calendar `datetime.*` accept a `Dual` and return zero

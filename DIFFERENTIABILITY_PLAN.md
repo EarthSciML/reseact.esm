@@ -247,6 +247,46 @@ fixed **the exact Jacobian is a forward-solve win only** — the adjoint still
 carries the FD contamination of §4 item 4. Worth filing upstream next to the
 reverse-over-`while` report.
 
+> **Re-established on a much smaller reproducer, 2026-08-12 — and note the evidence
+> behind the paragraph above was bad even though its conclusion was right.**
+> `tools/rx_adjoint_check.jl:294` `ros_vjp` omitted the `jac` kwarg while
+> `ros23_step_vjp` defaults `jac::Symbol=:fd`, so the row printed as
+> `"ROS23 (chemistry, jac=:ad)"` ran the **FD** VJP — byte-identical modules after
+> renaming. That row never exercised `:ad`. Re-run properly, the segfault reproduces,
+> and in far less code than a Rosenbrock step: reverse over the coloured forward-mode
+> Jacobian **alone** is sufficient —
+> ```julia
+> Jb = ad_block_jac(uu -> gC(uu, th, t), u, Val(13), NC)   # 13 coloured JVPs
+> sum(sum(Jb[r,s]) for r in 1:13, s in 1:13)               # reverse-differentiated
+> ```
+> SIGSEGV at NS=13, NC=288, N=3744 after a 601.9 s build, with **no Rosenbrock stages,
+> no `blocksolve`, no linear algebra** — and on the **default pass pipeline**, no
+> `excluded_passes`, so the separate `concat_broadcast_slice` miscompile (below) did
+> not contaminate it. Stack matches the predicted mechanism frame for frame:
+> `DifferentiatePass::runOnOperation → lowerEnzymeCalls → MEnzymeLogic::CreateReverseDiff
+> → differentiate → visitChild → ReverseAutoDiffOpInterface::createReverseModeAdjoint
+> → AutoDiffCallRev::createReverseModeAdjoint → func::CallOp::create → func::CallOp::build
+> → mlir::Operation::getAttr` ← fault. `func::CallOp::build` calls `callee.getNameAttr()`
+> on `callReverseHandler`'s **unchecked** `revFn`, so `CreateReverseDiff` returned failure
+> for some callee, silently, with no diagnostic first. *Which* callee is not
+> determinable from outside the process — the jll has no debug symbols and nothing
+> prints before the fault. That is precisely the argument for the one-line null check
+> upstream: with an `emitError()` there, the callee would name itself.
+>
+> Separately, a **second and independent** upstream bug found on the way, reproducible
+> with no Enzyme and no autodiff at all — the `concat_broadcast_slice` HLO pattern
+> miscompiles: `rowstack(x) = vcat([reshape(x[(k*5+1):(k*5+5)],1,5) for k in 0:12]...)`
+> fails the verifier by default and passes with
+> `excluded_passes=["concat_broadcast_slice"]`. Root cause: `mergeConcatSlicedElems`
+> (Enzyme-JAX `src/enzyme_ad/jax/Utils.cpp`) takes a `concatDim` parameter and never
+> uses it, so it merges adjacent slice operands without checking the slice axis is the
+> concat axis. This is what breaks reverse-mode compiles at NS ≥ 5.
+>
+> Also retracted: an earlier `EXIT=137` on `ros_ad` was read as evidence about the AD
+> JVP. It was a memcg OOM-kill from running five ReSEACT builds in one 40 GiB cgroup,
+> compounded by reading node-wide `/sys/fs/cgroup/memory.stat` instead of the step
+> cgroup. Not a signal.
+
 Also measured, and it changes an expectation: at 6×6×8 over one 300 s macro step
 the exact Jacobian is compile-neutral (89.3 s vs 87.3 s) and **step-count
 neutral** (120 accepts / 4 rejects vs 116 / 3; a second run gave 116 / 3 for
