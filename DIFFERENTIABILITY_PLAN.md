@@ -309,16 +309,59 @@ Declared type is therefore NOT the discriminator; where the value is CONSUMED is
 automatic partition must classify by consumption, and must distinguish folded
 arithmetic from folded data — they want different error messages.
 
-**Acceptance on `reseact.esm`** (the runtime `p` is 49 scalars, measured):
+### Phase 5 — **DONE** ✅, and it corrected this list twice more
+
+`parameter_classes(prep | insp) -> Dict{String,Symbol}`. The partition is recorded, not
+declared: a dynamically scoped sink is installed around the build-time consumers and
+read at the **three places a name is actually resolved to a build-time value**
+(`_compile(::VarExpr)`, `_geo_compile(::VarExpr)`, `_vi_param`). Recording at the
+resolution site rather than at the parameter dict is load-bearing — every consumer
+materializes the WHOLE parameter scope into a NamedTuple before compiling, so a
+read-recording dict would have reported every parameter structural. Only the compiler
+knows which names an expression mentions.
+
+**FOUR classes, not three.** `:forcing` was added for live GEOS-FP buffers that a
+discrete provider rewrites in place. Calling one "const-folded" would be false in
+exactly the way this section warns against, and the two want different remedies —
+a const-folded field needs the regrid made runtime, a forcing buffer just needs
+`prep.param_buffers[…]` written.
+
+**Measured on `reseact.esm`** (6×6×8, |p| = 49): **35 `:numeric` + 14 `:structural` =
+49 = |p| exactly**, plus 9 `:const_folded` and 15 `:forcing`, with no `p` slot
+unclassified. A solve-time numeric override produces a `du` **bit-identical** (max |Δ|
+exactly 0.0) to a second full build with the value baked in, while differing from
+baseline in 159/3744 slots.
+
+**The list below was wrong twice, and the second reason is the instructive one.**
+* Written from the `.esm`, it put `F_NO`…`F_FORM` under "numeric" because they are
+  declared `"type": "parameter"`. Phase 2 corrected that: they are const-folded data.
+* Phase 5 corrected it again: **`NEIRegrid.F_NO`…`F_FORM` and `NEIRegrid.lev` are not
+  variables of the built model at all.** `variable_map` couplings with
+  `transform: "param_to_var"` replace them at flatten time —
+  `NEI2016Emis.NEI2016.{NO,NO2,CO,ISOP,FORM} → NEIRegrid.F_*`, and
+  `Transport3D.levc → NEIRegrid.lev`. So the emission fields survive under their
+  LOADER names (which do classify `:const_folded` — the physical claim was right, only
+  the spelling was pre-coupling), and `lev` becomes a runtime observed, so it is not
+  structural and not a parameter.
+
+The general lesson, having now been wrong three times in three different ways: **an
+acceptance list written by reading `.esm` names is not evidence.** Declared type does
+not determine class, and the name you read may not survive coupling. Classify by
+building the model and asking it.
+
+**Acceptance on `reseact.esm`, as measured:**
 * **numeric**: `NEIRegrid.scale`, `NEIRegrid.g0`, `Transport3D.tau_pblmix`, `Rd_air`,
-  `g_acc` — the first three confirmed by an actual measured sensitivity in Phase 2.
-* **structural**: `lon0_deg`, `lat0_deg`, `dlon_deg`, `dlat_deg`, `src_x0/y0/dx/dy`,
-  `lcc_lat_1/2/0`, `lcc_lon_0`, `lcc_R`, `atol`, `lev`.
-* **const-folded data**: `NEIRegrid.F_NO`, `F_NO2`, `F_CO`, `F_ISOP`, `F_FORM` — the
-  whole NEI2016 12US1 source-grid emission fields, collapsed by the conservative regrid
-  at build. Making these differentiable is separate, larger work: the regrid would have
-  to become a runtime operation. Until then, per-species emissions sensitivity is only
-  reachable through the scalars multiplying the folded field (`scale`, `g0`).
+  `g_acc` (and `Transport3D.lon0_deg`/`lat0_deg` — the per-name split the three-category
+  note predicts, since the NEIRegrid copies are structural and the Transport3D ones are
+  read at runtime by the solar chain).
+* **structural**: the `NEIRegrid.*` geometry — `lon0_deg`, `lat0_deg`, `dlon_deg`,
+  `dlat_deg`, `src_x0/y0/dx/dy`, `lcc_lat_1/2/0`, `lcc_lon_0`, `lcc_R`, `atol`.
+* **const-folded data**: `NEI2016Emis.NEI2016.{NO,NO2,CO,ISOP,FORM}` — the whole NEI2016
+  12US1 source-grid emission fields, collapsed by the conservative regrid at build.
+  Making these differentiable is separate, larger work: the regrid would have to become
+  a runtime operation. Until then per-species emissions sensitivity is reachable only
+  through the scalars multiplying the folded field (`scale`, `g0`).
+* **forcing**: the live GEOS-FP buffers, e.g. `GEOSFP.GEOSFP_I3.PS`.
 
 ## 4. Cross-cutting caveats
 
