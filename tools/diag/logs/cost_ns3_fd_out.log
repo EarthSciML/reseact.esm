@@ -1,0 +1,4 @@
+=== rof_repro: NS=3 NC=64 theta=vec extra=none asm=vcat jac=fd mode=out patch=1 ===
+  [hb] fast=59 helpers=0 rss=1.3GB top_helpers=Pair{String, Int64}[] fast_hits=["multiply" => 40, "add" => 9, "subtract" => 7, "abs" => 1, "maximum" => 1, "divide" => 1]
+OK out  compile 28.9 s  ||unew||=1.490257e+01
+DONE NS=3 NC=64 theta=vec extra=none asm=vcat jac=fd mode=out patch=1

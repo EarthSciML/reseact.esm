@@ -1,0 +1,5 @@
+=== rof_repro: NS=13 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=1 ===
+  excluded_passes = ["add_pad_pad_to_concat", "add_reduce_slice_fusion", "and_reduce_slice_fusion", "binop_pad_to_concat_add", "binop_pad_to_concat_mul", "concat_broadcast_slice", "concat_concat_axis_swap", "concat_concat_to_dus", "concat_const_prop", "concat_elementwise", "concat_fuse", "concat_insert_dim_convolution", "concat_insert_dim_dot_general", "concat_insert_dim_elementwise", "concat_insert_dim_gather", "concat_insert_dim_iota", "concat_insert_dim_reduce", "concat_insert_dim_reduce_window", "concat_insert_dim_sort", "concat_multipad", "concat_pad", "concat_push_binop_add"]
+  [hb] fast=212 helpers=1 rss=1.3GB top_helpers=["EnzymeCore.Const{Main.RxTracedIntegrator.var\"#13#14\"{Main.RxTracedIntegrator.var\"#_ros23_ldotu##0#_ros23_ldotu##1\"{typeof(grhs), Reactant.TracedRArray{Float64, 1}}, Reactant.TracedRNumber{Float64}}}_autodiff" => 1] fast_hits=["multiply" => 158, "add" => 28, "subtract" => 26]
+OK vjp  compile 60.2 s  ||lam_in||=7.253309e+00
+DONE NS=13 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=1

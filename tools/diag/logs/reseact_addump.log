@@ -1,0 +1,16 @@
+=== rx_adjoint_check: grid 6x6x8 T0=5400 ===
+    (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 602.81 s   nstates=3744  nparams=49
+  NS=13 species, NC=288 cells, N=3744 states
+  stages: addump
+
+---- addump: pre-pipeline modules ----
+  [hb] fast=1 helpers=0 rss=3.1GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
+  [hb] fast=9450 helpers=745 rss=3.1GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 439, "reduce_fnadd_sum" => 196, "log10_broadcast_scalar" => 54, "update_computation" => 19] fast_hits=["multiply" => 3500, "add" => 1983, "divide" => 1348, "select" => 458, "power" => 369, "subtract" => 355]
+  ad      146.7 s    34764311 bytes  /tmp/claude-1111265/wt-rofdiag/tools/diag/reseact_ros_vjp_ad.mlir
+  fd       27.3 s    34764314 bytes  /tmp/claude-1111265/wt-rofdiag/tools/diag/reseact_ros_vjp_fd.mlir
+  rhs       5.6 s     8070871 bytes  /tmp/claude-1111265/wt-rofdiag/tools/diag/reseact_ros_vjp_rhs.mlir
+
+DONE
+┌ Warning: Assignment to `p` in soft scope is ambiguous because a global variable by the same name exists: `p` will be treated as a new local. Disambiguate by using `local p` to suppress this warning or `global p` to assign to the existing global variable.
+└ @ /tmp/claude-1111265/wt-rofdiag/tools/rx_adjoint_check.jl:463

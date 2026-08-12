@@ -1,0 +1,4 @@
+=== rof_repro: NS=3 NC=5 theta=vec extra=cast+floor+gather+log10+pow+scatter+select+sumreduce asm=vcat jac=ad mode=vjp patch=1 ===
+  [hb] fast=32 helpers=3 rss=1.3GB top_helpers=["reduce_fnadd_sum" => 1, "floor_broadcast_scalar" => 1, "log10_broadcast_scalar" => 1] fast_hits=["multiply" => 21, "add" => 6, "subtract" => 3, "identity" => 1, "divide" => 1]
+OK vjp  compile 46.4 s  ||lam_in||=3.631994e+00
+DONE NS=3 NC=5 theta=vec extra=cast+floor+gather+log10+pow+scatter+select+sumreduce asm=vcat jac=ad mode=vjp patch=1

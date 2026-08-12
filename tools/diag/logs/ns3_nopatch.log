@@ -1,0 +1,3 @@
+=== rof_repro: NS=3 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=0 ===
+OK vjp  compile 41.0 s  ||lam_in||=3.631840e+00
+DONE NS=3 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=0

@@ -1,0 +1,5 @@
+=== concat repro: 13 blocks x 5  (N=65) ===
+┌ Error: Compilation failed, MLIR module written to /tmp/reactant_cqSpts/module_000_nxc9_post_all_pm.mlir
+└ @ Reactant.MLIR.IR /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/IR/Pass.jl:146
+  default                    FAIL error: type of return operand 0 ('tensor<65x1xf64>') doesn't match function result type ('tensor<5x13xf64>') in function @rowstack
+  no concat_broadcast_slice  OK   (values correct)

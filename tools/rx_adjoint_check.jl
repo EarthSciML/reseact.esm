@@ -247,6 +247,9 @@ end
 #      RESEACT_ADJ_STAGES=ros_fd             (chemistry VJP, FD Jacobian)
 #      RESEACT_ADJ_STAGES=ros_ad             (chemistry VJP, exact Jacobian)
 #      RESEACT_ADJ_STAGES=ros_adfwd          (exact-Jacobian step, FORWARD only)
+#      RESEACT_ADJ_STAGES=addump             (write the pre-pipeline modules to
+#                                             $RESEACT_ADJ_HLO; no reverse pass,
+#                                             so it survives the segfault)
 # --------------------------------------------------------------------------- #
 const STAGES = Set(split(get(ENV, "RESEACT_ADJ_STAGES",
                              "census,jac,ssprk,ros_fd,ros_ad,solve"), ","))
@@ -260,6 +263,48 @@ function jac_fd_f(u, th, t)
     f0b = [RTI._blk(f0, r, NC) for r in 1:NS]
     _flatJ(RTI.fd_block_jac_unrolled(uu -> gC(uu, th, t), u, f0b, NS, NC, MASKS))
 end
+# Stage `jacrev`: REVERSE-OVER-FORWARD WITH THE STAGE ALGEBRA REMOVED. The
+# reverse pass here crosses nothing but the coloured-JVP Jacobian itself -- no
+# blocksolve, no ROS23 stages, no `sum(lambda .* unew)`. If `ros_ad` segfaults
+# and this does too, the ROS23 step is irrelevant to the crash and the minimal
+# statement is "reverse mode over NCOL nested enzyme.fwddiff calls of the
+# emitted chemistry RHS". RESEACT_ADJ_NCOL sweeps the colour count (1..NS),
+# which is the one axis the model-free bisection in tools/diag/rof_repro.jl
+# cannot reach. `jacrev_fd` is the control: same objective, FD Jacobian, so
+# reverse-over-nothing.
+const NCOL = parse(Int, get(ENV, "RESEACT_ADJ_NCOL", string(NS)))
+function _jdot_ad(g, u, th, t, ::Val{K}) where {K}
+    Jb = RTI.ad_block_jac(uu -> g(uu, th, t), u, Val(K), NC)
+    acc = nothing
+    for r in 1:K, s in 1:K
+        p = sum(Jb[r, s])
+        acc = acc === nothing ? p : acc + p
+    end
+    return acc
+end
+function _jdot_fd(g, u, th, t, ::Val{K}) where {K}
+    f0 = g(u, th, t)
+    f0b = [RTI._blk(f0, r, NC) for r in 1:NS]
+    Jb = RTI.fd_block_jac_unrolled(uu -> g(uu, th, t), u, f0b, NS, NC, MASKS)
+    acc = nothing
+    for r in 1:K, s in 1:K
+        p = sum(Jb[r, s])
+        acc = acc === nothing ? p : acc + p
+    end
+    return acc
+end
+for (stg, fn) in (("jacrev", _jdot_ad), ("jacrev_fd", _jdot_fd))
+    want(stg) || continue
+    say("\n---- $stg : reverse over the block Jacobian ALONE, NCOL=$NCOL ----")
+    # `t` rides as an ARGUMENT, not a capture: a captured ConcreteRNumber inside
+    # a traced function is "Cannot trace existing trace type".
+    grad(u, th, t) = EZ.gradient(EZ.Reverse, fn, EZ.Const(gC), u, th,
+                                 EZ.Const(t), EZ.Const(Val(NCOL)))
+    t0 = time(); cg = @compile grad(UR, THC, TR); tc = time() - t0
+    r = cg(UR, THC, TR)
+    @printf("  compile %.1f s   ||dJ/du||=%.6e\n", tc, norm(Array(r[2])))
+end
+
 if want("jac")
     say("\n---- CHECK 1: AD block Jacobian vs FD block Jacobian (chemistry) ----")
     t0 = time(); cja = @compile jac_ad_f(UR, THC, TR); tca = time() - t0
@@ -291,7 +336,12 @@ end
 # --------------------------------------------------------------------------- #
 ros_out(u, th, t, dt; jac=:ad) = RTI.ros23_step_out(gC, u, th, t, dt, NS, NC, MASKS, ATOL_C, RTOL; jac=jac)
 ros_out_fd(u, th, t, dt) = RTI.ros23_step_out(gC, u, th, t, dt, NS, NC, MASKS, ATOL_C, RTOL; jac=:fd)
-ros_vjp(u, th, lam, t, dt) = RTI.ros23_step_vjp(gC, u, th, t, dt, lam, NS, NC, MASKS, ATOL_C, RTOL)
+# jac=:ad MUST be explicit here. `ros23_step_vjp`'s own default was flipped to
+# :fd when the reverse-over-forward segfault was found, and this call site --
+# the one the "jac=:ad" stage uses -- silently inherited it, so the AD VJP has
+# not actually been exercised since. Measured: with the kwarg omitted the module
+# this produces is byte-identical to `ros_vjp_fd`'s.
+ros_vjp(u, th, lam, t, dt) = RTI.ros23_step_vjp(gC, u, th, t, dt, lam, NS, NC, MASKS, ATOL_C, RTOL; jac=:ad)
 ros_jvp(u, du, th, dth, t, dt) = RTI.ros23_step_jvp(gC, u, du, th, dth, t, dt, NS, NC, MASKS, ATOL_C, RTOL)
 ros_vjp_fd(u, th, lam, t, dt) = RTI.ros23_step_vjp(gC, u, th, t, dt, lam, NS, NC, MASKS, ATOL_C, RTOL; jac=:fd)
 ros_jvp_fd(u, du, th, dth, t, dt) = RTI.ros23_step_jvp(gC, u, du, th, dth, t, dt, NS, NC, MASKS, ATOL_C, RTOL; jac=:fd)
@@ -441,6 +491,48 @@ if want("census")
     T1R = RX.ConcreteRNumber(T0 + MACRO_DT)
     hlo_ctl = @code_hlo optimize=false adap_T(UR, THT, TR, T1R, DTT)
     census("adaptive_solve (CONTROL)", sprint(show, hlo_ctl))
+end
+
+# Stage `addump`: write the jac=:ad chemistry VJP module EXACTLY AS ENZYME IS
+# HANDED IT. `optimize=false` stops before the pass pipeline, so this runs no
+# DifferentiatePass and SURVIVES the segfault that stage `ros_ad` dies of --
+# which is the only way to get the crashing module off this machine. The files
+# are the attachment for tools/diag/UPSTREAM_reverse_over_forward.md.
+if want("addump")
+    dest = get(ENV, "RESEACT_ADJ_HLO",
+               joinpath(REPO, "tools", "diag", "reseact_ros_vjp.mlir"))
+    mkpath(dirname(dest))
+    DTC_ = RX.ConcreteRNumber(0.5)
+    say("\n---- addump: pre-pipeline modules ----")
+    for (nm, f) in (("ad", () -> @code_hlo optimize=false ros_vjp(UR, THC, LAM, TR, DTC_)),
+                    ("fd", () -> @code_hlo optimize=false ros_vjp_fd(UR, THC, LAM, TR, DTC_)),
+                    ("rhs", () -> @code_hlo optimize=false gC(UR, THC, TR)))
+        p = replace(dest, ".mlir" => "_$nm.mlir")
+        t0 = time(); s = sprint(show, f())
+        open(p, "w") do io; write(io, s); end
+        @printf("  %-4s %8.1f s  %10d bytes  %s\n", nm, time() - t0, filesize(p), p)
+        flush(stdout)
+    end
+end
+
+# Stage `ros_advjp`: ONLY the jac=:ad REVERSE pass, nothing else. `ros_ad`
+# compiles the primal and then the JVP before it gets to the VJP, and the
+# jac=:ad JVP is the one with the compile-cost problem -- so `ros_ad` can burn
+# an hour before it reaches the question this stage exists to answer.
+# RESEACT_ADJ_EXCL is a comma-separated `CompileOptions(; excluded_passes=...)`,
+# which is how to get past the `concat_broadcast_slice` miscompile if it fires
+# here (see tools/diag/UPSTREAM_reverse_over_forward.md, bug B). A verdict taken
+# with a pass excluded is a DIFFERENT verdict; the banner prints which.
+if want("ros_advjp")
+    excl = filter(!isempty, String.(split(get(ENV, "RESEACT_ADJ_EXCL", ""), ",")))
+    copts = isempty(excl) ? RX.CompileOptions() : RX.CompileOptions(; excluded_passes = excl)
+    say("\n---- ros_advjp : jac=:ad REVERSE only, excluded_passes=$excl ----")
+    DTCV = RX.ConcreteRNumber(0.5)
+    t0 = time(); cv = @compile compile_options = copts ros_vjp(UR, THC, LAM, TR, DTCV)
+    say(@sprintf("  VJP compiled in %.1f s", time() - t0))
+    g = cv(UR, THC, LAM, TR, DTCV)
+    @printf("  ||lambda_in||=%.6e  ||grad_theta.bufs[1]||=%.6e\n",
+            norm(Array(g[1])), norm(Array(first(values(g[2].bufs)))))
 end
 
 want("ssprk")  && run_checks("SSPRK43 (transport)", THT, dTHT, th_host_T, dTHT_h, 15.0,

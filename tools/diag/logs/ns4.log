@@ -1,0 +1,4 @@
+=== rof_repro: NS=4 NC=5 theta=vec extra=none jac=ad mode=vjp patch=1 ===
+  [hb] fast=33 helpers=0 rss=1.1GB top_helpers=Pair{String, Int64}[] fast_hits=["multiply" => 25, "add" => 4, "subtract" => 4]
+OK vjp  compile 43.1 s  ||lam_in||=4.730430e+00
+DONE NS=4 NC=5 theta=vec extra=none jac=ad mode=vjp patch=1

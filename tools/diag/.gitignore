@@ -1,0 +1,3 @@
+# Bisection artefacts: regenerate with tools/diag/rof_sweep.sh / stage `addump`.
+# The ReSEACT MLIR dumps are ~35 MB each and are deliberately NOT committed.
+*.mlir

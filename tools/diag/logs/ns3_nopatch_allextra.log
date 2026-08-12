@@ -1,0 +1,3 @@
+=== rof_repro: NS=3 NC=5 theta=nt extra=cast+dyngather+floor+gather+log10+pow+scatter+select+sumreduce+traceif asm=vcat jac=ad mode=vjp patch=0 ===
+OK vjp  compile 62.8 s  ||lam_in||=3.632110e+00
+DONE NS=3 NC=5 theta=nt extra=cast+dyngather+floor+gather+log10+pow+scatter+select+sumreduce+traceif asm=vcat jac=ad mode=vjp patch=0

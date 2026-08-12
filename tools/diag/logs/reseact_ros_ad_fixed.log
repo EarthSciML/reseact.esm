@@ -1,0 +1,10 @@
+=== rx_adjoint_check: grid 6x6x8 T0=5400 ===
+    (1 manifold scalar-field diagnostic(s) exempted; see validate_reseact)
+BUILD 688.46 s   nstates=3744  nparams=49
+  NS=13 species, NC=288 cells, N=3744 states
+  stages: ros_ad
+
+---- ROS23 (chemistry, jac=:ad) : one step, dt=0.5 ----
+  [hb] fast=1 helpers=0 rss=3.0GB top_helpers=Pair{String, Int64}[] fast_hits=["subtract" => 1]
+  [hb] fast=3047 helpers=239 rss=3.0GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 138, "reduce_fnadd_sum" => 64, "log10_broadcast_scalar" => 18, "update_computation" => 6] fast_hits=["multiply" => 1148, "add" => 646, "divide" => 424, "select" => 148, "power" => 122, "exponential" => 106]
+  [hb] fast=30118 helpers=1932 rss=3.1GB top_helpers=["Reactant.TracedUtils.TypeCast{Float64}()_broadcast_scalar" => 1104, "reduce_fnadd_sum" => 525, "log10_broadcast_scalar" => 144, "update_computation" => 48] fast_hits=["multiply" => 12085, "add" => 5209, "divide" => 3483, "subtract" => 3385, "select" => 1184, "power" => 976]

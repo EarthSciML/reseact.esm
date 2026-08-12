@@ -1,0 +1,110 @@
+=== rof_repro: NS=3 NC=5 theta=vec extra=dyngather asm=vcat jac=ad mode=vjp patch=1 ===
+  [hb] fast=25 helpers=0 rss=1.4GB top_helpers=Pair{String, Int64}[] fast_hits=["multiply" => 19, "add" => 3, "subtract" => 3]
+ERROR: LoadError: Scalar indexing is disallowed.
+Invocation of getindex(::TracedRArray, ::Vararg{Int, N}) resulted in scalar indexing of a GPU array.
+This is typically caused by calling an iterating implementation of a method.
+Such implementations *do not* execute on the GPU, but very slowly on the CPU,
+and therefore should be avoided.
+
+If you want to allow scalar iteration, use `allowscalar` or `@allowscalar`
+to enable scalar iteration globally or for the operations in question.
+Stacktrace:
+  [1] call_with_reactant
+    @ ./none:-1 [inlined]
+  [2] call_with_reactant(::Reactant.EnsureReturnType{Union{}}, ::typeof(error), ::String)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+  [3] errorscalar
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/GPUArraysCore/aNaXo/src/GPUArraysCore.jl:151
+  [4] call_with_reactant
+    @ ./none:-1 [inlined]
+  [5] call_with_reactant(::Reactant.EnsureReturnType{Union{}}, ::typeof(GPUArraysCore.errorscalar), ::String)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+--- the above 2 lines are repeated 1 more time ---
+  [8] assertscalar
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/GPUArraysCore/aNaXo/src/GPUArraysCore.jl:112
+  [9] call_with_reactant
+    @ ./none:-1 [inlined]
+ [10] call_with_reactant(::Reactant.EnsureReturnType{Any}, ::typeof(GPUArraysCore.assertscalar), ::String)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+ [11] getindex
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/Indexing.jl:28
+ [12] call_with_reactant
+    @ ./none:-1 [inlined]
+ [13] call_with_reactant(::Reactant.EnsureReturnType{Reactant.TracedRNumber{Float64}}, ::typeof(getindex), ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Int64})
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+ [14] extra_term
+    @ /tmp/claude-1111265/wt-rofdiag/tools/diag/rof_repro.jl:121
+ [15] call_with_reactant
+    @ ./none:-1 [inlined]
+ [16] call_with_reactant(::Reactant.EnsureReturnType{Any}, ::typeof(extra_term), ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Float64})
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+ [17] grhs
+    @ /tmp/claude-1111265/wt-rofdiag/tools/diag/rof_repro.jl:161
+ [18] call_with_reactant
+    @ ./none:-1 [inlined]
+ [19] call_with_reactant(::Reactant.EnsureReturnType{Any}, ::typeof(grhs), ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Float64})
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+--- the above 2 lines are repeated 1 more time ---
+ [22] #ros23_step#5
+    @ /tmp/claude-1111265/wt-rofdiag/tools/reactant_handoff/rx_traced_integrator.jl:264
+ [23] call_with_reactant
+    @ ./none:-1 [inlined]
+ [24] call_with_reactant(::Reactant.EnsureReturnType{Tuple{Any, Any}}, ::Main.RxTracedIntegrator.var"##ros23_step#5", ::Bool, ::Symbol, ::typeof(Main.RxTracedIntegrator.ros23_step), ::Main.RxTracedIntegrator.var"#_ros23_ldotu##0#_ros23_ldotu##1"{typeof(grhs), Reactant.TracedRArray{Float64, 1}}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Float64}, ::Reactant.TracedRNumber{Float64}, ::Int64, ::Int64, ::Vector{Vector{Float64}}, ::Float64, ::Float64)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+--- the above 2 lines are repeated 1 more time ---
+ [27] _ros23_ldotu
+    @ /tmp/claude-1111265/wt-rofdiag/tools/reactant_handoff/rx_traced_integrator.jl:538
+ [28] call_with_reactant
+    @ ./none:-1 [inlined]
+ [29] call_with_reactant(::typeof(Main.RxTracedIntegrator._ros23_ldotu), ::typeof(grhs), ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Float64}, ::Reactant.TracedRNumber{Float64}, ::Int64, ::Int64, ::Vector{Vector{Float64}}, ::Float64, ::Float64, ::Symbol)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+ [30] make_mlir_fn(f::typeof(Main.RxTracedIntegrator._ros23_ldotu), args::Tuple{typeof(grhs), Reactant.TracedRArray{Float64, 1}, Reactant.TracedRArray{Float64, 1}, Reactant.TracedRArray{Float64, 1}, Reactant.TracedRNumber{Float64}, Reactant.TracedRNumber{Float64}, Int64, Int64, Vector{Vector{Float64}}, Float64, Float64, Symbol}, kwargs::Tuple{}, name::String, concretein::Bool; toscalar::Bool, return_dialect::Symbol, args_in_result::Symbol, construct_function_without_args::Bool, do_transpose::Bool, within_autodiff::Bool, input_shardings::Nothing, output_shardings::Nothing, runtime::Nothing, verify_arg_names::Nothing, argprefix::Symbol, resprefix::Symbol, resargprefix::Symbol, num_replicas::Int64, optimize_then_pad::Bool)
+    @ Reactant.TracedUtils /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/TracedUtils.jl:376
+ [31] make_mlir_fn
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/TracedUtils.jl:299 [inlined]
+ [32] overload_autodiff
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/Enzyme.jl:336
+ [33] call_with_reactant
+    @ ./none:-1 [inlined]
+ [34] call_with_reactant(::Reactant.EnsureReturnType{Tuple{Tuple}}, ::typeof(Reactant.overload_autodiff), ::EnzymeCore.ReverseMode{false, false, false, EnzymeCore.FFIABI, false, true}, ::EnzymeCore.Const{typeof(Main.RxTracedIntegrator._ros23_ldotu)}, ::Type{EnzymeCore.Active}, ::EnzymeCore.Const{typeof(grhs)}, ::EnzymeCore.Duplicated{Reactant.TracedRArray{Float64, 1}}, ::EnzymeCore.Duplicated{Reactant.TracedRArray{Float64, 1}}, ::EnzymeCore.Const{Reactant.TracedRArray{Float64, 1}}, ::EnzymeCore.Const{Reactant.TracedRNumber{Float64}}, ::EnzymeCore.Const{Reactant.TracedRNumber{Float64}}, ::EnzymeCore.Const{Int64}, ::EnzymeCore.Const{Int64}, ::EnzymeCore.Const{Vector{Vector{Float64}}}, ::EnzymeCore.Const{Float64}, ::EnzymeCore.Const{Float64}, ::EnzymeCore.Const{Symbol})
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+ [35] autodiff
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/Overlay.jl:74
+ [36] autodiff
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Enzyme/15yPJ/src/Enzyme.jl:560 [inlined]
+ [37] macro expansion
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Enzyme/15yPJ/src/sugar.jl:287 [inlined]
+ [38] gradient
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Enzyme/15yPJ/src/sugar.jl:274 [inlined]
+ [39] #ros23_step_vjp#45
+    @ /tmp/claude-1111265/wt-rofdiag/tools/reactant_handoff/rx_traced_integrator.jl:581
+ [40] call_with_reactant
+    @ ./none:-1 [inlined]
+ [41] call_with_reactant(::Reactant.EnsureReturnType{Tuple{Reactant.TracedRArray{Float64, 1}, Reactant.TracedRArray{Float64, 1}}}, ::Main.RxTracedIntegrator.var"##ros23_step_vjp#45", ::Symbol, ::typeof(Main.RxTracedIntegrator.ros23_step_vjp), ::typeof(grhs), ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRArray{Float64, 1}, ::Reactant.TracedRNumber{Float64}, ::Reactant.TracedRNumber{Float64}, ::Reactant.TracedRArray{Float64, 1}, ::Int64, ::Int64, ::Vector{Vector{Float64}}, ::Float64, ::Float64)
+    @ Reactant /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/utils.jl:0
+--- the above 2 lines are repeated 2 more times ---
+ [46] make_mlir_fn(f::typeof(rvjp), args::Tuple{ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTNumber{Float64, 1}, ConcretePJRTNumber{Float64, 1}}, kwargs::@NamedTuple{}, name::String, concretein::Bool; toscalar::Bool, return_dialect::Symbol, args_in_result::Symbol, construct_function_without_args::Bool, do_transpose::Bool, within_autodiff::Bool, input_shardings::Nothing, output_shardings::Nothing, runtime::Val{:PJRT}, verify_arg_names::Nothing, argprefix::Symbol, resprefix::Symbol, resargprefix::Symbol, num_replicas::Int64, optimize_then_pad::Bool)
+    @ Reactant.TracedUtils /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/TracedUtils.jl:376
+ [47] make_mlir_fn
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/TracedUtils.jl:299 [inlined]
+ [48] compile_mlir!(mod::Reactant.MLIR.IR.Module, f::typeof(rvjp), args::Tuple{ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTNumber{Float64, 1}, ConcretePJRTNumber{Float64, 1}}, compile_options::CompileOptions, debugcache::Vector{@NamedTuple{f_name::String, file::String, line::Int64}}, callcache::Dict{Vector, @NamedTuple{f_name::String, mlir_result_types::Vector{Reactant.MLIR.IR.Type}, traced_result, mutated_args::Vector{Int64}, linear_results::Vector{Union{ReactantCore.MissingTracedValue, Reactant.TracedRArray, Reactant.TracedRNumber}}, fnwrapped::Bool, argprefix::Symbol, resprefix::Symbol, resargprefix::Symbol}}, sdycache::Dict{Tuple{AbstractVector{Int64}, NTuple{var"#s677", Symbol} where var"#s677", NTuple{N, Int64} where N}, @NamedTuple{sym_name::Reactant.MLIR.IR.Attribute, mesh_attr::Reactant.MLIR.IR.Attribute, mesh_op::Reactant.MLIR.IR.Operation, mesh::Reactant.Sharding.Mesh}}, sdygroupidcache::Tuple{Reactant.Compiler.SdyGroupIDCounter{Int64}, IdDict{Union{Reactant.TracedRArray, Reactant.TracedRNumber}, Int64}}; fn_kwargs::@NamedTuple{}, backend::String, runtime::Val{:PJRT}, legalize_stablehlo_to_mhlo::Bool, client::Reactant.XLA.PJRT.Client, kwargs::@Kwargs{})
+    @ Reactant.Compiler /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Compiler.jl:279
+ [49] compile_xla(ctx::Reactant.MLIR.IR.Context, f::Function, args::Tuple{ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTNumber{Float64, 1}, ConcretePJRTNumber{Float64, 1}}; before_xla_optimizations::Bool, client::Nothing, serializable::Bool, kwargs::@Kwargs{compile_options::CompileOptions, fn_kwargs::@NamedTuple{}})
+    @ Reactant.Compiler /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1331
+ [50] compile_xla
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1306 [inlined]
+ [51] compile(ctx::Reactant.MLIR.IR.Context, f::Function, args::Tuple{ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTArray{Float64, 1, 1}, ConcretePJRTNumber{Float64, 1}, ConcretePJRTNumber{Float64, 1}}; kwargs::@Kwargs{fn_kwargs::@NamedTuple{}, client::Nothing, reshape_propagate::Symbol, raise_first::Bool, assert_nonallocating::Bool, serializable::Bool, legalize_chlo_to_stablehlo::Bool, transpose_propagate::Symbol, strip_llvm_debuginfo::Bool, donated_args::Symbol, optimize_then_pad::Bool, cudnn_hlo_optimize::Bool, compile_options::CompileOptions, sync::Bool, no_nan::Bool, raise::Bool, shardy_passes::Symbol, optimize::Bool, optimize_communications::Bool})
+    @ Reactant.Compiler /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Compiler.jl:1423
+ [52] top-level scope
+    @ /tmp/claude-1111265/wt-rofdiag/tools/diag/rof_repro.jl:219
+ [53] macro expansion
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Macros.jl:255 [inlined]
+ [54] macro expansion
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/LLVM/zkwaZ/src/base.jl:113 [inlined]
+ [55] macro expansion
+    @ /projects/illinois/eng/cee/ctessum/ctessum/.julia/packages/Reactant/PMrNV/src/compiler/Macros.jl:256 [inlined]
+ [56] include(mod::Module, _path::String)
+    @ Base ./Base.jl:306
+ [57] exec_options(opts::Base.JLOptions)
+    @ Base ./client.jl:317
+in expression starting at /tmp/claude-1111265/wt-rofdiag/tools/diag/rof_repro.jl:218

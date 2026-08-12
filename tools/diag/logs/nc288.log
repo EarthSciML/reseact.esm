@@ -1,0 +1,4 @@
+=== rof_repro: NS=3 NC=288 theta=vec extra=none jac=ad mode=vjp patch=1 ===
+  [hb] fast=52 helpers=1 rss=1.3GB top_helpers=["EnzymeCore.Const{Main.RxTracedIntegrator.var\"#13#14\"{Main.RxTracedIntegrator.var\"#_ros23_ldotu##0#_ros23_ldotu##1\"{typeof(grhs), Reactant.TracedRArray{Float64, 1}}, Reactant.TracedRNumber{Float64}}}_autodiff" => 1] fast_hits=["multiply" => 38, "add" => 8, "subtract" => 6]
+OK vjp  compile 35.2 s  ||lam_in||=2.830034e+01
+DONE NS=3 NC=288 theta=vec extra=none jac=ad mode=vjp patch=1

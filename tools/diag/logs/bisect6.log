@@ -1,0 +1,5 @@
+=== rof_repro: NS=13 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=1 ===
+  excluded_passes = ["concat_broadcast_slice"]
+  [hb] fast=105 helpers=0 rss=1.3GB top_helpers=Pair{String, Int64}[] fast_hits=["multiply" => 79, "add" => 13, "subtract" => 13]
+OK vjp  compile 96.3 s  ||lam_in||=7.253309e+00
+DONE NS=13 NC=5 theta=vec extra=none asm=vcat jac=ad mode=vjp patch=1

@@ -1,0 +1,39 @@
+serial   compile   15.1 s  ||cols||=5.7033128774e+00  enzyme.fwddiff ops=4
+┌ Error: Compilation failed, MLIR module written to /tmp/reactant_7eNZ9X/module_000_reactant_cols_ba..._post_xla_compile.mlir
+└ @ Reactant.MLIR.IR /tmp/claude-1111265/depot/packages/Reactant/PMrNV/src/mlir/IR/Pass.jl:146
+batched  FAILED (5946 chars); tail:
+enate %21, %22, dim = 0 : (tensor<9xf64>, tensor<3xf64>) -> tensor<12xf64>
+    %24 = enzyme.extract %8[2] : (tensor<4x9xf64>) -> tensor<9xf64>
+    %25 = enzyme.extract %17[2] : (tensor<4x3xf64>) -> tensor<3xf64>
+    %26 = stablehlo.concatenate %24, %25, dim = 0 : (tensor<9xf64>, tensor<3xf64>) -> tensor<12xf64>
+    %27 = enzyme.extract %8[3] : (tensor<4x9xf64>) -> tensor<9xf64>
+    %28 = enzyme.extract %17[3] : (tensor<4x3xf64>) -> tensor<3xf64>
+    %29 = stablehlo.concatenate %27, %28, dim = 0 : (tensor<9xf64>, tensor<3xf64>) -> tensor<12xf64>
+    %30 = enzyme.concat(%20, %23, %26, %29) : (tensor<12xf64>, tensor<12xf64>, tensor<12xf64>, tensor<12xf64>) -> tensor<4x12xf64>
+    %31 = stablehlo.slice %arg0 [3:12] : (tensor<12xf64>) -> tensor<9xf64>
+    %32 = stablehlo.slice %arg0 [0:3] : (tensor<12xf64>) -> tensor<3xf64>
+    %33 = stablehlo.concatenate %31, %32, dim = 0 : (tensor<9xf64>, tensor<3xf64>) -> tensor<12xf64>
+    %34 = stablehlo.subtract %30, %cst : tensor<4x12xf64>
+    %35 = stablehlo.transpose %34, dims = [1, 0] : (tensor<4x12xf64>) -> tensor<12x4xf64>
+    %36 = stablehlo.subtract %33, %arg0 : tensor<12xf64>
+    %37 = stablehlo.broadcast_in_dim %36, dims = [0] : (tensor<12xf64>) -> tensor<12x4xf64>
+    %38 = stablehlo.multiply %37, %cst_0 : tensor<12x4xf64>
+    %39 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<12xf64>) -> tensor<12x4xf64>
+    %40 = stablehlo.multiply %35, %39 : tensor<12x4xf64>
+    %41 = stablehlo.add %38, %40 : tensor<12x4xf64>
+    %42 = stablehlo.slice %41 [0:12, 0:1] : (tensor<12x4xf64>) -> tensor<12x1xf64>
+    %43 = stablehlo.reshape %42 : (tensor<12x1xf64>) -> tensor<12xf64>
+    %44 = stablehlo.slice %41 [0:12, 1:2] : (tensor<12x4xf64>) -> tensor<12x1xf64>
+    %45 = stablehlo.reshape %44 : (tensor<12x1xf64>) -> tensor<12xf64>
+    %46 = stablehlo.slice %41 [0:12, 2:3] : (tensor<12x4xf64>) -> tensor<12x1xf64>
+    %47 = stablehlo.reshape %46 : (tensor<12x1xf64>) -> tensor<12xf64>
+    %48 = stablehlo.slice %41 [0:12, 3:4] : (tensor<12x4xf64>) -> tensor<12x1xf64>
+    %49 = stablehlo.reshape %48 : (tensor<12x1xf64>) -> tensor<12xf64>
+    %50 = stablehlo.concatenate %43, %45, %47, %49, dim = 0 : (tensor<12xf64>, tensor<12xf64>, tensor<12xf64>, tensor<12xf64>) -> tensor<48xf64>
+    return %50 : tensor<48xf64>
+  }
+}
+UNKNOWN: <unknown>:0: error: 'enzyme.extract' op unsupported op for export to XLA
+<unknown>:0: note: see current operation: %2 = "enzyme.extract"(%0) <{index = 0 : i64}> : (tensor<4x12xf64>) -> tensor<12xf64>
+
+
