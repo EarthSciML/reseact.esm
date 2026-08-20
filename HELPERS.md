@@ -16,6 +16,17 @@ Measured on this machine, CONUS 13×7×72:
 | `run_reseact.jl`, 1 week, `julia -t 8` | 683 s | — | 15,227 s | ~40× realtime; 2,016 macro steps, 4 bisections, continuity rms ~5e-13 all week |
 | `run_reseact.jl`, 24 h | — | — | 2,143 s | the reference the traced arm is compared against |
 | `run_reseact_reactant.jl`, 24 h | 718 s | 557 s | 5,923 s | 288 macro steps ⇒ **~2.8× slower than native**; the compile is paid once for the whole run |
+| `run_reseact_reactant.jl`, 24 h, **`RESEACT_RXFIX=1`** | 701 s | 635 s | 6,301 s | same window, XLA:CPU race workaround ON (now the default): solve **+6.4%**, compile **+14%**, `nT=939/2` `nC=12913/1422` |
+
+The race workaround is **not** a speed win on a real trajectory. It was worth
+3.14× on `adjoint_gradient.jl`'s forward pass, but that was measured at its
+**jittered** base point (`u .*= 1 + 0.1*randn`, needed for FD validity), where the
+solve is pathological — ~189 chemistry attempts per macro step against ~50 here,
+median dt 1.31 s — so a single spurious NaN cascades through the PI controller.
+On the real trajectory it costs ~6%, and the residual 9.9% chemistry rejection
+rate is genuine stiffness. It is on by default for **correctness**: unfixed, the
+race shifts the answer by 4.0e-5 relative by integrating a different trajectory.
+Do not project race cost, or any other cost, from the jittered point.
 
 The traced arm's step cost is strongly **diurnal** — ~9.6 s/step pre-dawn against
 ~35 s/step at midday, 20.6 s/step averaged over the day — because photochemistry is

@@ -291,8 +291,26 @@ say("  @compile of ONE macro step (t0/t1/dt are runtime args, so this compile " 
 # CONUS (slurm 10015169): rejections 24.5% -> 2.9%, accepted steps 428 -> 170,
 # forward pass 247.12 s -> 78.61 s (3.14x), objective shifted 4.0e-5 relative.
 #
-# So the 5,923 s / 24 h figure in the header above was measured WITH the race
-# active and is expected to fall. Set RESEACT_RXFIX=0 to reproduce the old number.
+# THAT 3.14x DOES NOT CARRY OVER TO THIS RUNNER -- MEASURED, NOT ASSUMED.
+# The hypothesis was that the 5,923 s / 24 h figure in the header above, measured
+# with the race active, was itself ~3x too high. It is not. Re-running exactly
+# that window with the workaround ON (slurm 10017939, 2026-08-19) gave:
+#
+#   build 700.6 s (was 718) | @compile 635.3 s (was 557, +14%) | solve 6,301.7 s
+#   (was 5,923, +6.4% SLOWER) | nT=939/2  nC=12913/1422
+#
+# So the workaround COSTS ~6% here rather than saving anything, and the 24 h / week
+# baselines stand (a week forward is ~12.2 h, marginally worse than 11.5 h).
+#
+# WHY THE DIFFERENCE. The 3.14x was measured at adjoint_gradient.jl's JITTERED base
+# point (u .*= 1 + 0.1*randn, needed for FD validity), where the trajectory is
+# pathological: ~189 chemistry attempts per macro step against ~50 here, median dt
+# 1.31 s, and a controller already at its limits, so one NaN cascades. On a real
+# trajectory the solve is robust and the residual 9.9% chemistry rejection rate is
+# GENUINE STIFFNESS, not the race. Do not project race cost from the jittered point.
+#
+# The workaround stays ON BY DEFAULT anyway: ~6% of wall clock is a cheap premium
+# for not silently integrating a different trajectory. RESEACT_RXFIX=0 to disable.
 #
 # `compile_options` REPLACES every other compile option (Reactant Macros.jl:7),
 # so `sync = true` has to be set inside it rather than alongside it.

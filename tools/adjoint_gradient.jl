@@ -375,8 +375,12 @@ end
 #    NaNs `EEst`, `host_adaptive!` maps that to a rejection, and each spurious
 #    rejection ALSO shrinks dt -- so the controller then grinds out many more,
 #    smaller accepted steps. Rejections 24.5% -> 2.9%, accepted 428 -> 170.
-#    Corollary worth chasing: every traced-runner benchmark taken BEFORE this fix
-#    (incl. the 5,923 s / 24 h forward the week projections rest on) is suspect.
+#    Corollary CHASED AND REFUTED (slurm 10017939): this does NOT carry over to
+#    the traced runner's real trajectory. Re-running its 24 h CONUS window with
+#    the workaround on gave solve 6,301.7 s against 5,923 s -- 6.4% SLOWER, not
+#    3x faster. The 3.14x is a property of the JITTERED base point below (~189
+#    chemistry attempts/macro step vs ~50 on a real trajectory, median dt 1.31 s,
+#    controller at its limits, so one NaN cascades). The week baselines stand.
 #
 #  * "up to 1.6e-6 relative ... a new floor" -- UNDERSTATED, and the wrong model.
 #    J moved 4.0e-5 relative (39.6115434688274 -> 39.6131238549521), 25x that
