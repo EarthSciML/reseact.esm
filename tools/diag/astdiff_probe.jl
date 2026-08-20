@@ -72,10 +72,11 @@ say("=== astdiff probe: grid=$(GRID_MP["NLON"])x$(GRID_MP["NLAT"])x$NLEV_EFF ===
 fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); merged_const = Dict{String,Any}()
-ov = Dict{String,Float64}(); docs = nothing; ff = nothing
+ov = Dict{String,Float64}(); docs = nothing; ff = nothing; parts = nothing
+file = nothing; flat = nothing
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
-    global fo, dms, u0, p, var_map, merged_param, merged_const, ov, docs, ff
+    global fo, dms, u0, p, var_map, merged_param, merged_const, ov, docs, ff, parts, file, flat
     file = EA.load(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
@@ -104,72 +105,121 @@ end
 foreach(d -> d.materialize!(), dms)
 say(@sprintf("BUILD %.2f s   nstates=%d", time() - tb, length(u0)))
 
-# Chemistry is part 2 (the pointwise half); it is the one with the block
-# Jacobian the Rosenbrock step needs.
-const CHEM_DOC = docs[2]
-gC = EA.rhs_with_buffers(fo[2])
-bufsC = EA.forcing_buffers(fo[2])
+
+
+# Chemistry is part 2 (the pointwise half) -- the one whose block Jacobian the
+# Rosenbrock step needs. The RHS for the correctness check is built LATER, from
+# whichever source prepare_jacobian actually accepted, so the JVP compares the
+# Jacobian against the same tree it was differentiated from.
 u = copy(u0)
 
 # --- 1/2/3. prepare the symbolic Jacobian --------------------------------- #
+# `prepare_jacobian` dispatches on EsmFile / FlattenedSystem, NOT on the raw
+# document Dict that ReSEACT threads through build_evaluator. Try both routes in
+# ONE run -- the build above costs ~10 min, so guessing wrong is expensive.
+#
+#   EsmFile   -- reparsed from docs[2], i.e. the document the runner actually
+#                compiles, INCLUDING index_promoted_refs_by_loop!. Preferred:
+#                the derivative is then taken on the same tree as the RHS.
+#   Flattened -- parts[2] straight from split_system, BEFORE the esm conversion
+#                and the promoted-ref indexing. Acceptable for feasibility, but
+#                a slightly different tree, so say so if this is the one that
+#                works.
 say("\n---- prepare_jacobian on the CHEMISTRY half, build_kwargs form=:oop ----")
 bk = (; form = :oop, parameter_overrides = ov, const_arrays = merged_const,
         param_arrays = merged_param)
-jac = nothing
-tp = time()
-try
-    global jac = ED.prepare_jacobian(CHEM_DOC; wrt = :states, build_kwargs = bk)
-    say(@sprintf("  prepare_jacobian OK in %.2f s", time() - tp))
-catch e
-    say("  prepare_jacobian FAILED after $(round(time()-tp, digits=2)) s:")
-    say("    " * first(sprint(showerror, e), 1500))
-    exit(1)
+
+# WHY THESE THREE. sysview(::EsmFile) runs `expanded_model` (system.jl:32);
+# sysview(::FlattenedSystem) does NOT (line 38). ReSEACT's chemistry half only
+# exists as a split FlattenedSystem / generated doc, so it reaches the path
+# WITHOUT template expansion -- and NEIRegrid.E_NO is an
+# `apply_expression_template`. Run all three and report each, rather than
+# stopping at the first success: knowing WHICH rungs fail is the whole point.
+candidates = Any[]
+push!(candidates, ("EsmFile: full model (EA.load)", file))
+push!(candidates, ("Flattened: whole system, pre-split", flat))
+push!(candidates, ("Flattened: chemistry half parts[2]", parts[2]))
+
+jac = nothing; used = ""; src_used = nothing
+for (nm, src) in candidates
+    tp = time()
+    try
+        j = ED.prepare_jacobian(src; wrt = :states, build_kwargs = bk)
+        say(@sprintf("  %-36s OK in %.2f s", nm, time() - tp))
+        if jac === nothing
+            global jac = j; global used = nm; global src_used = src
+        end
+    catch e
+        say(@sprintf("  %-36s FAILED after %.2f s:", nm, time() - tp))
+        say("      " * first(replace(sprint(showerror, e), "\n" => " "), 240))
+    end
 end
+jac === nothing && (say("\nALL CANDIDATE INPUTS FAILED"); exit(1))
+say("  using: $used")
 
 J = copy(ED.jac_prototype(jac))
 say(@sprintf("  structure = %s   size = %d x %d   nnz = %d  (%.4f%% dense)",
              jac.structure, size(J, 1), size(J, 2), nnz(J),
              100 * nnz(J) / (size(J, 1) * size(J, 2))))
-NS = length(var_map) == 0 ? 0 : 0   # reported below from the block shape instead
 say("  NOTE: :block_diagonal is what rx_traced_integrator.jl's blocksolve wants;")
 say("        anything else means the per-cell 13x13 assumption does not hold.")
+
+# The reference RHS must come from the SAME source the Jacobian was taken on,
+# or the JVP check compares two different trees and a mismatch is meaningless.
+say("\n---- building the matching RHS for the correctness check ----")
+tb2 = time()
+fref = nothing
+try
+    global fref = EA.build_evaluator(src_used; bk...)[1]
+    say(@sprintf("  matching RHS built in %.2f s", time() - tb2))
+catch e
+    say("  could not build a matching RHS: " * first(sprint(showerror, e), 400))
+end
+gC = fref === nothing ? nothing : EA.rhs_with_buffers(fref)
+bufsC = fref === nothing ? nothing : EA.forcing_buffers(fref)
 
 # --- 4. cost: fill vs one RHS evaluation ---------------------------------- #
 say("\n---- cost ----")
 jac(J, u, p, T0)                                  # warm
 t1 = time(); for _ in 1:5; jac(J, u, p, T0); end
 tj = (time() - t1) / 5
-gC(u, p, T0, bufsC)                               # warm
-t2 = time(); for _ in 1:5; gC(u, p, T0, bufsC); end
-tr = (time() - t2) / 5
 say(@sprintf("  symbolic jac! fill      %8.3f ms", 1000 * tj))
-say(@sprintf("  one chemistry RHS eval  %8.3f ms", 1000 * tr))
-say(@sprintf("  jac / RHS = %.2f x   (the FD block Jacobian costs ~13 colour evals;", tj / tr))
-say( "                        under ~13x here means the analytic route wins)")
+if gC !== nothing
+    gC(u, p, T0, bufsC)
+    t2 = time(); for _ in 1:5; gC(u, p, T0, bufsC); end
+    tr = (time() - t2) / 5
+    say(@sprintf("  one chemistry RHS eval  %8.3f ms", 1000 * tr))
+    say(@sprintf("  jac / RHS = %.2f x   (the FD block Jacobian costs ~13 colour", tj / tr))
+    say( "                        evals; under ~13x means the analytic route wins)")
+end
 
 # --- 5. correctness: J*v vs a ForwardDiff JVP through the SAME RHS --------- #
 say("\n---- correctness: J*v vs ForwardDiff JVP ----")
-try
-    v = randn(length(u))
-    ud = ForwardDiff.Dual{:jvp}.(u, v)
-    dud = gC(ud, p, T0, bufsC)
-    ref = ForwardDiff.partials.(dud, 1)
-    got = J * v
-    num = norm(got .- ref); den = max(norm(ref), 1e-300)
-    say(@sprintf("  ||Jv - ref|| / ||ref|| = %.3e   %s",
-                 num / den, num / den <= 1e-10 ? "PASS" : "FAIL"))
-    k = argmax(abs.(got .- ref))
-    say(@sprintf("  worst component %d: sym=%.12e ref=%.12e", k, got[k], ref[k]))
-catch e
-    say("  ForwardDiff JVP unavailable through the :oop RHS:")
-    say("    " * first(sprint(showerror, e), 600))
-    say("  (falling back to a central finite difference)")
-    v = randn(length(u)); h = 1e-7
-    ref = (gC(u .+ h .* v, p, T0, bufsC) .- gC(u .- h .* v, p, T0, bufsC)) ./ (2h)
-    got = J * v
-    num = norm(got .- ref); den = max(norm(ref), 1e-300)
-    say(@sprintf("  ||Jv - ref|| / ||ref|| = %.3e  (FD ref, ~1e-7 floor)  %s",
-                 num / den, num / den <= 1e-5 ? "PASS" : "FAIL"))
+if gC === nothing
+    say("  SKIPPED -- no matching RHS")
+else
+    try
+        v = randn(length(u))
+        ud = ForwardDiff.Dual{:jvp}.(u, v)
+        dud = gC(ud, p, T0, bufsC)
+        ref = ForwardDiff.partials.(dud, 1)
+        got = J * v
+        num = norm(got .- ref); den = max(norm(ref), 1e-300)
+        say(@sprintf("  ||Jv - ref|| / ||ref|| = %.3e   %s",
+                     num / den, num / den <= 1e-10 ? "PASS" : "FAIL"))
+        k = argmax(abs.(got .- ref))
+        say(@sprintf("  worst component %d: sym=%.12e ref=%.12e", k, got[k], ref[k]))
+    catch e
+        say("  ForwardDiff JVP unavailable through the :oop RHS:")
+        say("    " * first(sprint(showerror, e), 500))
+        say("  (falling back to a central finite difference)")
+        v = randn(length(u)); h = 1e-7
+        ref = (gC(u .+ h .* v, p, T0, bufsC) .- gC(u .- h .* v, p, T0, bufsC)) ./ (2h)
+        got = J * v
+        num = norm(got .- ref); den = max(norm(ref), 1e-300)
+        say(@sprintf("  ||Jv - ref|| / ||ref|| = %.3e  (FD ref, ~1e-7 floor)  %s",
+                     num / den, num / den <= 1e-5 ? "PASS" : "FAIL"))
+    end
 end
 
 say("\nPROBE_DONE")
