@@ -56,11 +56,28 @@
 # 3-macro-step sanity window sits in the dark AND carries the first-step warm-up,
 # and gets the right answer for the wrong reasons.
 #
-# Agreement with the native arm over 24 h (289 aligned records): max relative
-# difference 6.3e-5 on O3_mean, 1.6e-3 on O3_min, 1.1e-3 on OH_max, 5.2e-12 on
-# air mass, and cos_sza EXACTLY 0. That divergence is adaptive-solver path (two
-# independent implementations of the same scheme, different Jacobians), not a
-# defect, and it is well inside the 5e-2 validation tolerance.
+# Agreement with the native arm over 24 h (289 aligned records), RE-MEASURED
+# 2026-08-20 with the XLA:CPU race workaround ON (both sides pinned to the same
+# pre-rename EarthSciAST; tools/diag/compare_traced_native.py):
+#
+#   column     race active      race fixed     change
+#   O3_mean       6.3e-5        1.199e-7       525x BETTER
+#   O3_min        1.6e-3        2.116e-4       7.6x better
+#   OH_max        1.1e-3        1.072e-3       unchanged
+#   air mass      5.2e-12       4.914e-12      unchanged
+#   cos_sza       exactly 0     exactly 0
+#
+# THE RACE WAS THE DOMINANT ERROR SOURCE ON O3_mean, by two and a half orders of
+# magnitude. The old 6.3e-5 was NOT "adaptive-solver path divergence" as this
+# comment used to claim -- it was mostly the race, and with the race fixed the
+# two independent implementations agree to 1.2e-7. That is the justification for
+# defaulting RESEACT_RXFIX on: it costs ~6% of wall clock and buys 525x on the
+# headline species.
+#
+# OH_max is the honest exception -- unchanged at ~1.1e-3, so THAT one really is
+# solver-path divergence (OH is a fast radical and this is a max over cells, the
+# most path-sensitive diagnostic here). Still far inside the 5e-2 validation
+# tolerance.
 #
 # Env: the same as run_reseact.jl (RESEACT_MODEL / LABEL / LON0 / LAT0 / NLON /
 # NLAT / NLEV / T0 / SOLVE_SECS / MACRO_DT / CSV / ZARR / OUT_EVERY /

@@ -24,9 +24,25 @@ The race workaround is **not** a speed win on a real trajectory. It was worth
 solve is pathological — ~189 chemistry attempts per macro step against ~50 here,
 median dt 1.31 s — so a single spurious NaN cascades through the PI controller.
 On the real trajectory it costs ~6%, and the residual 9.9% chemistry rejection
-rate is genuine stiffness. It is on by default for **correctness**: unfixed, the
-race shifts the answer by 4.0e-5 relative by integrating a different trajectory.
-Do not project race cost, or any other cost, from the jittered point.
+rate is genuine stiffness. Do not project race cost, or any other cost, from the
+jittered point.
+
+**It is on by default because it buys ACCURACY, and the amount is now measured.**
+Traced vs native over the same 24 h window, both pinned to the same EarthSciAST
+(`tools/diag/compare_traced_native.py`, 289 aligned records):
+
+| column | race active | race fixed | |
+|---|---:|---:|---|
+| O3_mean | 6.3e-5 | **1.199e-7** | **525× better** |
+| O3_min | 1.6e-3 | 2.116e-4 | 7.6× better |
+| OH_max | 1.1e-3 | 1.072e-3 | unchanged |
+| air mass | 5.2e-12 | 4.914e-12 | unchanged |
+
+The old 6.3e-5 was **not** "adaptive-solver path divergence" as the traced
+runner's header used to claim — it was mostly the race. With it fixed, two
+independent implementations of the same scheme agree on O3_mean to 1.2e-7. ~6% of
+wall clock for 525× on the headline species. `OH_max` is the honest exception and
+*is* solver-path divergence: a fast radical, taken as a max over cells.
 
 The traced arm's step cost is strongly **diurnal** — ~9.6 s/step pre-dawn against
 ~35 s/step at midday, 20.6 s/step averaged over the day — because photochemistry is
