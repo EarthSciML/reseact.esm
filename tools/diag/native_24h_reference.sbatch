@@ -67,6 +67,30 @@ export RESEACT_SOLVE_SECS=86400      # 24 h -- identical to logs/rx24-racefix.cs
 export RESEACT_LABEL=reseact-nat24
 export RESEACT_CSV=logs/native24.csv
 
-"$JULIA" --project=run-model-jl -t 8 --heap-size-hint=24G run_reseact.jl
+# ENV PIN. reseact.esm does NOT load against EarthSciAST main as of 2026-08-19
+# 21:16: EarthSciAST PR #167 renamed the inline `examples` construct to
+# `analyses` (commit 6b8d5a6c5) and regenerated the schema, but EarthSciModels
+# (HEAD 2026-08-05, in sync with its own origin) still writes `examples` in 282
+# .esm files. Loading reseact.esm now dies with 9 SchemaValidationErrors on
+# exactly the three refs that carry an examples block -- FastJX, WetDeposition,
+# SuperFast. That is a cross-repo migration someone else owns; do not patch
+# EarthSciModels from here.
+#
+# Pin past it by pointing RESEACT_RUN_ENV at an env whose EarthSciAST path-dep
+# is a worktree at 98e6f1b6e (the last pre-rebase commit). Submit with:
+#
+#   sbatch --export=ALL,RESEACT_RUN_ENV=/path/to/pinned-env \
+#          tools/diag/native_24h_reference.sbatch
+#
+# The pin is NOT merely a workaround -- it is required for VALIDITY. The traced
+# CSV this is compared against (logs/rx24-racefix.csv, slurm 10017939) was
+# produced with pre-rebase EarthSciAST, because the rebase landed at 21:16:07,
+# minutes after that job's solve finished. Comparing it against a native run on
+# post-rename EarthSciAST would confound the race question with a schema change.
+RUN_ENV="${RESEACT_RUN_ENV:-run-model-jl}"
+echo "run env: $RUN_ENV"
+export RESEACT_RUN_ENV="$RUN_ENV"
+
+"$JULIA" --project="$RUN_ENV" -t 8 --heap-size-hint=24G run_reseact.jl
 
 echo "finished $(date -Is)"
