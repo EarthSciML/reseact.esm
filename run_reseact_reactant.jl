@@ -67,6 +67,7 @@
 # FLUSH_EVERY), plus
 #   RESEACT_DT0T / RESEACT_DT0C  initial transport/chemistry dt (15.0 / 0.5)
 #   RESEACT_RXENV                Julia env WITH Reactant (default run-model-jl)
+#   RESEACT_RXFIX                XLA:CPU race workaround (1 = default, on)
 #   RESEACT_RXJAC                chem block Jacobian: fd (default) or ad (exact,
 #                                coloured forward-mode JVPs) -- see below
 #
@@ -276,8 +277,34 @@ PRd = _dev(p)
 UR = RX.ConcreteRArray(copy(u0))
 say("  @compile of ONE macro step (t0/t1/dt are runtime args, so this compile " *
     "serves every step of the run)...")
+# XLA:CPU RACE WORKAROUND -- on by default, because the race is a CORRECTNESS
+# problem here, not just a speed one. XLA:CPU has a data race in its intra-op
+# parallel execution that intermittently returns non-finite values from the
+# chemistry program (~1% of calls at 4 threads; 0 of 400,000 at one thread).
+# `xla_cpu_prefer_vector_width=128` is the measured fix (0 of 20,000 against a
+# baseline of 4 and 4); see tools/diag/README-nondet.md to reproduce the fault.
+#
+# Why it matters to a runner that has no adjoint in it: a faulting call NaNs
+# `EEst`, the PI controller reads that as a rejection, and each spurious rejection
+# ALSO shrinks dt -- so the solve grinds out many more, smaller accepted steps and
+# integrates a measurably DIFFERENT trajectory. Measured on the adjoint driver at
+# CONUS (slurm 10015169): rejections 24.5% -> 2.9%, accepted steps 428 -> 170,
+# forward pass 247.12 s -> 78.61 s (3.14x), objective shifted 4.0e-5 relative.
+#
+# So the 5,923 s / 24 h figure in the header above was measured WITH the race
+# active and is expected to fall. Set RESEACT_RXFIX=0 to reproduce the old number.
+#
+# `compile_options` REPLACES every other compile option (Reactant Macros.jl:7),
+# so `sync = true` has to be set inside it rather than alongside it.
+const RXFIX = get(ENV, "RESEACT_RXFIX", "1") == "1"
+const COPTS = RXFIX ?
+    RX.CompileOptions(; sync = true,
+                      xla_debug_options = (; xla_cpu_prefer_vector_width = 128)) :
+    RX.CompileOptions(; sync = true)
+say("  XLA:CPU race workaround: " *
+    (RXFIX ? "ON  xla_cpu_prefer_vector_width=128" : "OFF -- expect intermittent NaN"))
 tc = time()
-xadv = RX.@compile sync=true adv(UR, PRd, RX.ConcreteRNumber(T0),
+xadv = RX.@compile compile_options=COPTS adv(UR, PRd, RX.ConcreteRNumber(T0),
                                  RX.ConcreteRNumber(T0 + MACRO_DT),
                                  RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C),
                                  dev_bufs[1], dev_bufs[2])
