@@ -358,13 +358,51 @@ function timed_compile(nm::AbstractString, thunk)
     t0 = time(); c = thunk(); say(@sprintf("  @compile %-12s %8.1f s", nm, time() - t0))
     return c
 end
+# BLOCKER 4 WORKAROUND -- wired in 2026-08-19, and it is not optional at CONUS.
+# XLA:CPU has a data race in its intra-op parallel execution that intermittently
+# returns non-finite values from the chemistry program (~1% of calls at 4 threads;
+# 0 of 400,000 at one thread). It killed the FIRST CONUS backward sweep outright:
+# the fixed-sequence replay of macro step 3 came back NaN and the driver aborted.
+# `xla_cpu_prefer_vector_width=128` is the measured fix (0 of 20,000 against a
+# baseline of 4 and 4).
+#
+# TWO CLAIMS THAT WERE IN THIS COMMENT ARE REFUTED by the first completed CONUS
+# adjoint (slurm 10015169, 2026-08-19); do not restore them:
+#
+#  * "at no wall-time cost" -- WRONG, it is worth **3.14x on the forward pass**
+#    (247.12 s -> 78.61 s on the identical configuration). Per-attempt cost is
+#    unchanged (0.436 -> 0.449 s); what vanishes is SPURIOUS WORK. A faulting call
+#    NaNs `EEst`, `host_adaptive!` maps that to a rejection, and each spurious
+#    rejection ALSO shrinks dt -- so the controller then grinds out many more,
+#    smaller accepted steps. Rejections 24.5% -> 2.9%, accepted 428 -> 170.
+#    Corollary worth chasing: every traced-runner benchmark taken BEFORE this fix
+#    (incl. the 5,923 s / 24 h forward the week projections rest on) is suspect.
+#
+#  * "up to 1.6e-6 relative ... a new floor" -- UNDERSTATED, and the wrong model.
+#    J moved 4.0e-5 relative (39.6115434688274 -> 39.6131238549521), 25x that
+#    figure. It is not a rounding shift: the racy run integrated a DIFFERENT
+#    TRAJECTORY, via those spurious rejections. The race was BIASING results, not
+#    merely NaN-ing them occasionally.
+#
+# Reproduce the fault: tools/diag/README-nondet.md.
+#
+# `compile_options` REPLACES every other compile option (Reactant Macros.jl:7),
+# so `sync = true` has to be set inside it rather than alongside it.
+const XLAFIX = get(ENV, "RESEACT_ADJ_XLAFIX", "1") == "1"
+const COPTS = XLAFIX ?
+    RX.CompileOptions(; sync = true,
+                      xla_debug_options = (; xla_cpu_prefer_vector_width = 128)) :
+    RX.CompileOptions(; sync = true)
+
 say("\n---- compiling single-step programs (no while region in any of them) ----")
-CSSP = timed_compile("ssp_step", () -> RX.@compile sync=true ssp_step(U_R, THT, T_R, DTT_R))
-CROS = timed_compile("ros_step", () -> RX.@compile sync=true ros_step(U_R, THC, T_R, DTC_R))
+say("     XLA:CPU race workaround (blocker 4): " *
+    (XLAFIX ? "ON  xla_cpu_prefer_vector_width=128" : "OFF -- expect intermittent NaN"))
+CSSP = timed_compile("ssp_step", () -> RX.@compile compile_options=COPTS ssp_step(U_R, THT, T_R, DTT_R))
+CROS = timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R))
 CSSPV = want("adj") ?
-    timed_compile("ssp_vjp", () -> RX.@compile sync=true ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R)) : nothing
+    timed_compile("ssp_vjp", () -> RX.@compile compile_options=COPTS ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R)) : nothing
 CROSV = want("adj") ?
-    timed_compile("ros_vjp", () -> RX.@compile sync=true ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
+    timed_compile("ros_vjp", () -> RX.@compile compile_options=COPTS ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
 
 # --------------------------------------------------------------------------- #
 # 5. The host adaptive loop -- a line-by-line transcription of
@@ -841,8 +879,8 @@ if want("ctl")
         u, t0_, t1_, d0, RTI.pictrl_ros23(), th; clamp_nonneg = true)
     T1R = RX.ConcreteRNumber(T0 + MACRO_DT)
     refresh_forcing(T0)
-    cT = timed_compile("adaptiveT", () -> RX.@compile sync=true adapT(U_R, THT, T_R, T1R, DTT_R))
-    cC = timed_compile("adaptiveC", () -> RX.@compile sync=true adapC(U_R, THC, T_R, T1R, DTC_R))
+    cT = timed_compile("adaptiveT", () -> RX.@compile compile_options=COPTS adapT(U_R, THT, T_R, T1R, DTT_R))
+    cC = timed_compile("adaptiveC", () -> RX.@compile compile_options=COPTS adapC(U_R, THC, T_R, T1R, DTC_R))
     for (nm, c, TH, dt0, ctrl, cstep) in ((:transport, cT, THT, DT0T, RTI.pictrl_ssprk43(), CSSP),
                                           (:chemistry, cC, THC, DT0C, RTI.pictrl_ros23(), CROS))
         r = c(U_R, TH, T_R, T1R, RX.ConcreteRNumber(dt0))
@@ -882,8 +920,8 @@ _todev(x::Tuple) = map(_todev, x)
 
 if want("ref") && want("adj")
     say("\n---- REF: forward-mode JVP chained over the SAME frozen tape ----")
-    CSSPJ = timed_compile("ssp_jvp", () -> RX.@compile sync=true ssp_jvp(U_R, U_R, THT, THT, T_R, DTT_R))
-    CROSJ = timed_compile("ros_jvp", () -> RX.@compile sync=true ros_jvp(U_R, U_R, THC, THC, T_R, DTC_R))
+    CSSPJ = timed_compile("ssp_jvp", () -> RX.@compile compile_options=COPTS ssp_jvp(U_R, U_R, THT, THT, T_R, DTT_R))
+    CROSJ = timed_compile("ros_jvp", () -> RX.@compile compile_options=COPTS ros_jvp(U_R, U_R, THC, THC, T_R, DTC_R))
 
     zh_T = _zero_like((p = p, bufs = host_bufs[1]))
     zh_C = _zero_like((p = p, bufs = host_bufs[2]))
@@ -1069,8 +1107,11 @@ if want("fdtape") && want("adj")
         # const-folded-parameter trap, where a wrong zero and a wrong check agree
         # silently. Report what actually happened instead of printing sentinels.
         if !isfinite(best[1])
-            @printf("  %-30s NO FINITE FD at any step -- every central difference was non-finite. " *
-                    "adjoint=%.12e is UNCHECKED here, not refuted.\n", nm, gacc[k])
+            # NB: ONE string literal. `@printf` validates its format at MACRO EXPANSION
+            # time, so a concatenated `"..." * "..."` format is a LoadError that fires
+            # when this file is included -- not when this branch runs. It made the whole
+            # driver unloadable on Julia 1.12 regardless of which stages were selected.
+            @printf("  %-30s NO FINITE FD at any step -- every central difference was non-finite. adjoint=%.12e is UNCHECKED here, not refuted.\n", nm, gacc[k])
         else
             @printf("  %-30s BEST h=%.3e  fd=%.12e  adjoint=%.12e  rel=%.3e  %s\n",
                     nm, best[2], best[3], gacc[k], best[1], best[1] <= 1e-6 ? "PASS" : "FAIL")

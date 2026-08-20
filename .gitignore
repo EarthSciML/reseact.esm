@@ -33,3 +33,8 @@ _scaling_snapshot.esm
 # the model; `git show <rev>:reseact.esm > _origin_before.esm` puts that revision
 # where its relative $refs still resolve.
 _origin_before.esm
+
+# Slurm job output. tools/diag/adjoint_conus.sbatch writes logs/%x-%j.out; the
+# runs are long enough that the .out is a real artefact worth keeping on disk,
+# but it is machine- and job-id-specific, not repo state.
+logs/
