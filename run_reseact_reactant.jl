@@ -84,13 +84,13 @@
 # FLUSH_EVERY), plus
 #   RESEACT_DT0T / RESEACT_DT0C  initial transport/chemistry dt (15.0 / 0.5)
 #   RESEACT_RXENV                Julia env WITH Reactant (default run-model-jl)
-#   RESEACT_RXJAC                fd (default) | ad | sym -- the chemistry block
-#                                Jacobian. sym is EarthSciASTDiff's analytic one
-#                                and needs EarthSciASTDiff in the project (use
-#                                /u/ctessum/reseact-esast-pin/env-sym); see 1b.
+#   RESEACT_RXJAC                sym (default) | fd | ad -- the chemistry block
+#                                Jacobian. sym is EarthSciASTDiff's analytic one,
+#                                resolved by run-model-jl since the esm 1.0.0
+#                                migration; fd is the sqrt(eps) difference this
+#                                runner defaulted to before 2026-08-21; ad is
+#                                exact coloured forward-mode JVPs. See 1b.
 #   RESEACT_RXFIX                XLA:CPU race workaround (1 = default, on)
-#   RESEACT_RXJAC                chem block Jacobian: fd (default) or ad (exact,
-#                                coloured forward-mode JVPs) -- see below
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/{split_common,blockdiag_local,block_jac}.jl
@@ -255,7 +255,7 @@ masks = RxTracedIntegrator.species_masks(var_map, NS, NC)
 # --------------------------------------------------------------------------- #
 const CTRL_T = RxTracedIntegrator.pictrl_ssprk43()
 const CTRL_C = RxTracedIntegrator.pictrl_ros23()
-const JACMODE = Symbol(get(ENV, "RESEACT_RXJAC", "fd"))
+const JACMODE = Symbol(get(ENV, "RESEACT_RXJAC", "sym"))
 JACMODE in (:fd, :ad, :sym) || error("RESEACT_RXJAC must be fd, ad or sym, got $JACMODE")
 const SYMJAC = JACMODE === :sym
 
@@ -275,8 +275,14 @@ const SYMJAC = JACMODE === :sym
 # 323k for both :fd and :ad on the adjoint driver's single step), which matters
 # rather more inside a `@trace while` body than it does standalone.
 #
-# Needs EarthSciASTDiff in the active project -- run-model-jl cannot resolve it;
-# use /u/ctessum/reseact-esast-pin/env-sym.
+# WHY IT IS THE DEFAULT AS OF 2026-08-21. It won on every axis measured in the
+# esm-1.0.0 gate (slurm 10054295), at 6x6x8 with an otherwise identical config:
+# same accepted-step counts (nT=5/1, nC=208/5), same O3_mean to the last printed
+# digit, 4% cheaper to compile and 1.33x faster to solve (6.4 s vs 8.5 s). The
+# only thing that had ever kept it off by default was packaging -- EarthSciASTDiff
+# needed an EarthSciAST run-model-jl could not resolve -- and the esm 1.0.0
+# migration closed that: run-model-jl develops all four packages at their release
+# versions, so `sym` needs no special environment and no pinned corpus.
 PLAN = gjbJ = host_bufsJ = dev_bufsJ = jacE = nothing
 if SYMJAC
     @eval using EarthSciASTDiff

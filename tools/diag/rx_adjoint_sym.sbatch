@@ -51,21 +51,18 @@
 
 set -u
 REPO=/projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm
-# env-sym == env-pin-seam with EarthSciASTDiff re-dev'd onto the MERGED main
-# (the band-calculus scaling fix), keeping the EarthSciAST pin + the
-# expand_flattened_refs seam and Reactant that env-pin-seam exists to provide.
-export RESEACT_RXENV=${RESEACT_RXENV:-/u/ctessum/reseact-esast-pin/env-sym}
-# CORPUS PIN -- see astdiff_traced_probe.sbatch for the full story: both sibling
-# corpora migrated to esm 1.0.0 on 2026-08-20 and the pinned EarthSciAST rejects
-# the migrated form with 754 SchemaValidationErrors.
-export RESEACT_MODEL=${RESEACT_MODEL:-/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm}
+# run-model-jl, plain. This job used to need env-sym (a hand-built environment
+# with EarthSciASTDiff pinned against an older EarthSciAST) and a corpus-pin copy
+# of the model, because the sibling corpora went esm 1.0.0 on 2026-08-20 and the
+# pinned EarthSciAST rejected the migrated form with 754 SchemaValidationErrors.
+# The 2026-08-21 migration moved this repo to 1.0.0 too, so both pins are retired.
+export RESEACT_RXENV=${RESEACT_RXENV:-$REPO/run-model-jl}
 export RESEACT_ADJ_STAGES=${RESEACT_ADJ_STAGES:-census,jac,ros_sym}
 export RESEACT_ADJ_UJITTER=${RESEACT_ADJ_UJITTER:-0}
 export RESEACT_NLON=${RESEACT_NLON:-6}
 export RESEACT_NLAT=${RESEACT_NLAT:-6}
 export RESEACT_NLEV=${RESEACT_NLEV:-8}
 export RESEACT_RXFIX=${RESEACT_RXFIX:-1}
-[ -f "$RESEACT_MODEL" ] || { echo "FATAL: model $RESEACT_MODEL missing"; exit 1; }
 [ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV does not exist."; \
   echo "Pkg.activate would SILENTLY CREATE an empty one and fail seconds later."; exit 1; }
 export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK:-16}

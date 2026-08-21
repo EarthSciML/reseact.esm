@@ -55,14 +55,13 @@
 set -euo pipefail
 cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm
 
-# The symbolic Jacobian needs EarthSciASTDiff, which run-model-jl cannot resolve
-# (its EarthSciAST checkout is on the 0.1.x line; EarthSciASTDiff wants 0.9.x).
-# env-sym is run-model-jl's dependency set plus EarthSciASTDiff, pinned, and the
-# corpus-pinned model is the one that env can load.
-export RESEACT_RXENV=${RESEACT_RXENV:-/u/ctessum/reseact-esast-pin/env-sym}
-export RESEACT_MODEL=${RESEACT_MODEL:-/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm}
+# run-model-jl resolves EarthSciASTDiff on its own since the esm 1.0.0 migration
+# (2026-08-21): it develops all four packages at their release versions, so the
+# symbolic Jacobian needs neither the hand-built env-sym nor the corpus-pin copy
+# of the model that every symbolic run before that date went through. The model
+# is this repo's own working copy. Override RESEACT_RXENV/RESEACT_MODEL to revisit.
+export RESEACT_RXENV=${RESEACT_RXENV:-/projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm/run-model-jl}
 [ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV missing"; exit 1; }
-[ -f "$RESEACT_MODEL" ] || { echo "FATAL: model $RESEACT_MODEL missing"; exit 1; }
 
 export RESEACT_NLON=${RESEACT_NLON:-6}
 export RESEACT_NLAT=${RESEACT_NLAT:-6}

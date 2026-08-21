@@ -336,17 +336,23 @@
 # ---------------------------------------------------------------------------
 # WHICH JULIA ENVIRONMENT
 # ---------------------------------------------------------------------------
-# The default `jac=:sym` needs EarthSciASTDiff, and `run-model-jl` CANNOT resolve
-# it: run-model-jl develops the live EarthSciAST checkout (0.1.x line) while
-# EarthSciASTDiff requires 0.9.x, and the two also disagree about EarthSciIO.
-# That is a packaging fact, not something this script can paper over. So either
+# `run-model-jl`, with no overrides. The default `jac=:sym` needs EarthSciASTDiff,
+# and until 2026-08-21 run-model-jl could not resolve it -- it develops the live
+# EarthSciAST checkout, which was on the 0.1.x line while EarthSciASTDiff required
+# 0.9.x, and the two also disagreed about EarthSciIO. Every symbolic-Jacobian
+# result before that date was therefore produced out of a hand-built env-sym
+# against a corpus-pin copy of the model.
 #
-#   julia --project=/u/ctessum/reseact-esast-pin/env-sym run_reseact_adjoint.jl
-#     with RESEACT_MODEL=/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm
+# The esm 1.0.0 migration closed that. run-model-jl now develops all four packages
+# at their release versions (EarthSciAST 0.1.1, EarthSciASTDiff 0.1.0,
+# EarthSciASTSplitter 0.1.0, EarthSciIO 0.1.2), so
 #
-# (what tools/diag/adjoint_conus.sbatch and adjoint_clamp_retest.sbatch do), or
-# run with RESEACT_ADJ_JAC=fd, which needs nothing beyond run-model-jl and is
-# what every result before 2026-08-20 was produced with.
+#   julia --project=run-model-jl run_reseact_adjoint.jl
+#
+# is the whole story and RESEACT_RXENV / RESEACT_MODEL no longer need setting.
+# Beware the version spaces: the esm SCHEMA is 1.0.0 while the EarthSciAST
+# PACKAGE was re-versioned DOWN for release (0.9.1 -> 1.0.0 -> 0.1.0 -> 0.1.1),
+# so 0.1.1 is NEWER than 0.9.1 and the pin above reads as an upgrade when it is not.
 # ===========================================================================
 
 const REPO = @__DIR__

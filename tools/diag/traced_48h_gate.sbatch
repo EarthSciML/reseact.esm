@@ -57,12 +57,13 @@ echo "host=$(hostname)  julia=$JULIA  cpus=${SLURM_CPUS_PER_TASK:-?}  mem=${SLUR
 echo "started $(date -Is)"
 
 # Same env and same model as the adjoint runs, so this actually gates THEM.
-# run-model-jl (what the 24 h baseline used, pre-migration) can no longer resolve
-# the corpus: the sibling corpora went esm 1.0.0 on 2026-08-20.
-export RESEACT_RXENV=${RESEACT_RXENV:-/u/ctessum/reseact-esast-pin/env-sym}
-export RESEACT_MODEL=${RESEACT_MODEL:-/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm}
+# run-model-jl resolves EarthSciASTDiff on its own since the esm 1.0.0 migration
+# (2026-08-21): it develops all four packages at their release versions, so the
+# symbolic Jacobian needs neither the hand-built env-sym nor the corpus-pin copy
+# of the model that every symbolic run before that date went through. The model
+# is this repo's own working copy. Override RESEACT_RXENV/RESEACT_MODEL to revisit.
+export RESEACT_RXENV=${RESEACT_RXENV:-/projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm/run-model-jl}
 [ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV missing"; exit 1; }
-[ -f "$RESEACT_MODEL" ] || { echo "FATAL: model $RESEACT_MODEL missing"; exit 1; }
 
 export RESEACT_SOLVE_SECS=${RESEACT_SOLVE_SECS:-172800}   # 48 h
 export RESEACT_RXFIX=${RESEACT_RXFIX:-1}
