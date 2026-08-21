@@ -51,8 +51,24 @@ const EA = EarthSciAST
 # references one as transport. Aggregates list their array operands in `args`, so
 # the shipped `references` walk (args-only) sees the dependency edges. The result
 # reduces to `stencil_vs_pointwise` on a system whose observeds are all pointwise.
+# esm 1.0.0 removed `ModelVariable.expression`: an observed unknown's definition
+# now lives in the system's `equations`, as the equation whose LHS is the bare
+# variable (esm-spec 6.3.1, EarthSciAST.observed_definitions). This is the same
+# lookup for a FlattenedSystem, which has no `Model` to hand to that API.
+function _obs_defs(flat)
+    defs = Dict{String,Any}()
+    for eq in flat.equations
+        eq.lhs isa EA.VarExpr || continue
+        n = String(eq.lhs.name)
+        haskey(flat.observed_variables, n) || continue
+        haskey(defs, n) || (defs[n] = eq.rhs)
+    end
+    return defs
+end
+
 function stencil_following_rule(flat)
     obs = flat.observed_variables
+    obsdefs = _obs_defs(flat)
     # Names an expression reads, collected once per observed (the same args-only
     # walk `references` does, inverted so the dependency scan is O(E) not O(E*V)).
     function readnames!(acc::Set{String}, e)
@@ -90,7 +106,7 @@ function stencil_following_rule(flat)
                (e.expr_body !== nothing && contracts_space(e.expr_body))
     end
     for (n, v) in obs
-        e = v.expression
+        e = get(obsdefs, String(n), nothing)
         direct[n] = e !== nothing && (contains_op(e, "makearray") || contracts_space(e))
         deps[n] = e === nothing ? Set{String}() : readnames!(Set{String}(), e)
     end
@@ -252,17 +268,17 @@ function reseact_forcing(dir; ndays::Integer = 1,
         cache, t -> url(coll, t), [phase + dt * k for k in 0:(n * ndays - 1)];
         format = "netcdf", variables = [var], time_dim = "time", records_per_sample = 2)
     providers = Dict(
-        "GEOSFP.GEOSFP_I3.PS"       => mk("I3", "PS", 0.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A3dyn.U"     => mk("A3dyn", "U", 5400.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A3dyn.V"     => mk("A3dyn", "V", 5400.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A3dyn.OMEGA" => mk("A3dyn", "OMEGA", 5400.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A1.PBLH"     => mk("A1", "PBLH", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_I3.T"        => mk("I3", "T", 0.0, 10800.0, 8),
+        "GEOSFP.PS"       => mk("I3", "PS", 0.0, 10800.0, 8),
+        "GEOSFP.U"     => mk("A3dyn", "U", 5400.0, 10800.0, 8),
+        "GEOSFP.V"     => mk("A3dyn", "V", 5400.0, 10800.0, 8),
+        "GEOSFP.OMEGA" => mk("A3dyn", "OMEGA", 5400.0, 10800.0, 8),
+        "GEOSFP.PBLH"     => mk("A1", "PBLH", 1800.0, 3600.0, 24),
+        "GEOSFP.T"        => mk("I3", "T", 0.0, 10800.0, 8),
         # Relative humidity, A3dyn collection/cadence (NOT I3 -- so it blends with
         # w_A3). Feeds Transport3D.H2Oc -> FastJX.H2O and SuperFast.H2O. RH is what
         # the reference uses: GasChem.jl ext/EarthSciDataExt.jl derives H2O from
         # `water_concentration_ppb(g.A3dyn_RH, g.P, g.I3_T)` for BOTH systems.
-        "GEOSFP.GEOSFP_A3dyn.RH"    => mk("A3dyn", "RH", 5400.0, 10800.0, 8),
+        "GEOSFP.RH"    => mk("A3dyn", "RH", 5400.0, 10800.0, 8),
         # --- deposition drivers -------------------------------------------------
         # Wesley (1989) dry deposition + EMEP wet deposition, wired as
         # AtmosphericDeposition.jl ext/EarthSciDataExt.jl does:
@@ -270,14 +286,14 @@ function reseact_forcing(dir; ndays::Integer = 1,
         #        L<-MoninObhukov(rho,TS,USTAR,A1.HFLUX), rho_A<-P/(R T) MW_air,
         #        del_P<-first_level_pressure_thickness(PS), z<-Z_agl
         #   wet: cloudFrac<-A3cld.CLOUD, qrain<-(A3mstE.PFLCU+PFLLSAN)/Vdr/rho_air
-        "GEOSFP.GEOSFP_A1.TS"       => mk("A1", "TS", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_A1.Z0M"      => mk("A1", "Z0M", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_A1.USTAR"    => mk("A1", "USTAR", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_A1.SWGDN"    => mk("A1", "SWGDN", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_A1.HFLUX"    => mk("A1", "HFLUX", 1800.0, 3600.0, 24),
-        "GEOSFP.GEOSFP_A3cld.CLOUD" => mk("A3cld", "CLOUD", 5400.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A3mstE.PFLCU"   => mk("A3mstE", "PFLCU", 5400.0, 10800.0, 8),
-        "GEOSFP.GEOSFP_A3mstE.PFLLSAN" => mk("A3mstE", "PFLLSAN", 5400.0, 10800.0, 8))
+        "GEOSFP.TS"       => mk("A1", "TS", 1800.0, 3600.0, 24),
+        "GEOSFP.Z0M"      => mk("A1", "Z0M", 1800.0, 3600.0, 24),
+        "GEOSFP.USTAR"    => mk("A1", "USTAR", 1800.0, 3600.0, 24),
+        "GEOSFP.SWGDN"    => mk("A1", "SWGDN", 1800.0, 3600.0, 24),
+        "GEOSFP.HFLUX"    => mk("A1", "HFLUX", 1800.0, 3600.0, 24),
+        "GEOSFP.CLOUD" => mk("A3cld", "CLOUD", 5400.0, 10800.0, 8),
+        "GEOSFP.PFLCU"   => mk("A3mstE", "PFLCU", 5400.0, 10800.0, 8),
+        "GEOSFP.PFLLSAN" => mk("A3mstE", "PFLLSAN", 5400.0, 10800.0, 8))
     params = Dict(
         "GEOSFP.t_interp_ref_I3" => 0.0, "GEOSFP.dt_interp_I3" => 10800.0,
         "GEOSFP.t_interp_ref_A3" => 5400.0, "GEOSFP.dt_interp_A3" => 10800.0,
@@ -311,7 +327,7 @@ function reseact_forcing(dir; ndays::Integer = 1,
     # NEI species -> the SuperFast counterpart is resolved in the .esm; here we
     # only name the five the coupling needs. FORM feeds SuperFast.CH2O.
     for sp in ("NO", "NO2", "CO", "ISOP", "FORM")
-        providers["NEI2016Emis.NEI2016.$sp"] = EarthSciIO.const_provider(
+        providers["NEI2016Emis.flux_$sp"] = EarthSciIO.const_provider(
             cache, nei_url; format = "netcdf", variables = [sp])
     end
 
@@ -458,7 +474,7 @@ end
 function hydrostatic_dp(merged_param::AbstractDict, const_arrays::AbstractDict, t::Real;
                         slice = native_slice())
     lon0, lat0 = slice.lon0, slice.lat0
-    F  = merged_param["GEOSFP.GEOSFP_I3.PS"]
+    F  = merged_param["GEOSFP.PS"]
     dA = Float64.(const_arrays["Transport3D.dA"])
     dB = Float64.(const_arrays["Transport3D.dB"])
     w  = (t - 10800.0 * floor(t / 10800.0)) / 10800.0     # I3: 3-hourly, anchored 00:00Z

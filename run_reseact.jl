@@ -294,7 +294,7 @@ sink_put!(t, ucm) = sink === nothing ? nothing :
 # different defect from an interior continuity bias, and one a pressure fixer
 # would NOT correct. Which of the two moved is what decides where to look.
 # --------------------------------------------------------------------------- #
-const _PSk = "GEOSFP.GEOSFP_I3.PS"
+const _PSk = "GEOSFP.PS"
 const _dA = Float64.(ff.const_arrays["Transport3D.dA"])
 const _dB = Float64.(ff.const_arrays["Transport3D.dB"])
 const NLON_ = maximum(c[1] for c in P.cells); const NLAT_ = maximum(c[2] for c in P.cells)

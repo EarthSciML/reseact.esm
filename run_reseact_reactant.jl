@@ -467,7 +467,7 @@ const _dA = Float64.(ff.const_arrays["Transport3D.dA"])
 const _dB = Float64.(ff.const_arrays["Transport3D.dB"])
 w_I3(t) = (t - 10800.0 * floor(t / 10800.0)) / 10800.0
 function continuity_drift(u, t)
-    F = merged_param["GEOSFP.GEOSFP_I3.PS"]; w = w_I3(t)
+    F = merged_param["GEOSFP.PS"]; w = w_I3(t)
     isw(c) = c[1] == 1 || c[1] == NLON_ || c[2] == 1 || c[2] == NLAT_
     s2i = 0.0; ni = 0; s2w = 0.0; nw = 0; worsti = 0.0; wci = (0, 0, 0)
     for (c, idx) in MCELL

@@ -2308,35 +2308,35 @@
   "coupling": [
     {
       "type": "variable_map",
-      "from": "GEOSFP.GEOSFP_I3.PS",
+      "from": "GEOSFP.PS",
       "to": "Transport3D.F_PS",
       "transform": "param_to_var",
       "description": "GEOS-FP I3 surface pressure (hPa in file) -> the native-slice PS. Note the subsystem key is GEOSFP_I3, not I3."
     },
     {
       "type": "variable_map",
-      "from": "GEOSFP.GEOSFP_A3dyn.U",
+      "from": "GEOSFP.U",
       "to": "Transport3D.F_U",
       "transform": "param_to_var",
       "description": "GEOS-FP A3dyn eastward wind -> the zonal face flux Mx."
     },
     {
       "type": "variable_map",
-      "from": "GEOSFP.GEOSFP_A3dyn.V",
+      "from": "GEOSFP.V",
       "to": "Transport3D.F_V",
       "transform": "param_to_var",
       "description": "GEOS-FP A3dyn northward wind -> the meridional face flux My."
     },
     {
       "type": "variable_map",
-      "from": "GEOSFP.GEOSFP_A3dyn.OMEGA",
+      "from": "GEOSFP.OMEGA",
       "to": "Transport3D.F_OM",
       "transform": "param_to_var",
       "description": "GEOS-FP A3dyn OMEGA -> the vertical face flux Mz = -OMEGA."
     },
     {
       "type": "variable_map",
-      "from": "GEOSFP.GEOSFP_A1.PBLH",
+      "from": "GEOSFP.PBLH",
       "to": "Transport3D.F_PBLH",
       "transform": "param_to_var",
       "description": "GEOS-FP A1 boundary-layer height -> carried for Kzz."

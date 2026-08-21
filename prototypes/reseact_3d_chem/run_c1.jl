@@ -49,12 +49,12 @@ mk(coll, var, phase, dt, n) = EarthSciIO.discrete_provider(
         format="netcdf", variables=[var], time_dim="time", records_per_sample=2)
 
 providers = Dict(
-    "GEOSFP.GEOSFP_I3.PS"      => mk("I3",    "PS",       0.0, 10800.0, 8),
-    "GEOSFP.GEOSFP_A3dyn.U"    => mk("A3dyn", "U",     5400.0, 10800.0, 8),
-    "GEOSFP.GEOSFP_A3dyn.V"    => mk("A3dyn", "V",     5400.0, 10800.0, 8),
-    "GEOSFP.GEOSFP_A3dyn.OMEGA"=> mk("A3dyn", "OMEGA", 5400.0, 10800.0, 8),
-    "GEOSFP.GEOSFP_A1.PBLH"    => mk("A1",    "PBLH",  1800.0,  3600.0, 24),
-    "GEOSFP.GEOSFP_I3.T"       => mk("I3",    "T",        0.0, 10800.0, 8))
+    "GEOSFP.PS"      => mk("I3",    "PS",       0.0, 10800.0, 8),
+    "GEOSFP.U"    => mk("A3dyn", "U",     5400.0, 10800.0, 8),
+    "GEOSFP.V"    => mk("A3dyn", "V",     5400.0, 10800.0, 8),
+    "GEOSFP.OMEGA"=> mk("A3dyn", "OMEGA", 5400.0, 10800.0, 8),
+    "GEOSFP.PBLH"    => mk("A1",    "PBLH",  1800.0,  3600.0, 24),
+    "GEOSFP.T"       => mk("I3",    "T",        0.0, 10800.0, 8))
 
 # The three cadence phases must match the providers above, or the blend weight
 # would ramp out of phase with the records the provider actually loaded.
