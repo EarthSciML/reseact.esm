@@ -42,10 +42,14 @@
 # cells, so its Jacobian is block-diagonal per cell; batched over cells, every
 # operation on a "block matrix entry" is elementwise over length-NC vectors.
 #
-# The block Jacobian comes in two flavours. `fd_block_jac` is finite difference;
-# `ad_block_jac` is EXACT, by coloured forward-mode JVPs at the same RHS call
-# count, and it is straight-line (no `@trace for`), which is what lets a reverse
-# pass cross the step at all.
+# The block Jacobian comes in three flavours. `fd_block_jac` is finite
+# difference; `ad_block_jac` is EXACT, by coloured forward-mode JVPs at the same
+# RHS call count, and it is straight-line (no `@trace for`), which is what lets a
+# reverse pass cross the step at all; `jac = :sym` takes an EXACT Jacobian from
+# the caller (`symjac`), built by symbolic differentiation of the RHS rather than
+# by evaluating it -- see tools/reactant_handoff/rx_sym_block_jac.jl. This module
+# never learns where that one comes from: it is a callable returning the same
+# NS x NS `Matrix{Any}` of length-NC vectors as the other two.
 #
 # `:fd` REMAINS THE DEFAULT, for measured reasons rather than taste:
 #   * on the FORWARD solve the exact Jacobian has not been shown to pay for
@@ -57,7 +61,14 @@
 #     (`AutoDiffCallRev::createReverseModeAdjoint`, upstream) while being exact
 #     on a toy carrying the same constructs.
 # So reach for `:ad` when you want an exact Jacobian in a FORWARD solve, and
-# expect to stay on `:fd` under a reverse sweep until that upstream bug clears.
+# expect to stay on `:fd` under a reverse sweep until that upstream bug clears --
+# UNLESS you can supply `:sym`, which sidesteps the bug by construction rather
+# than waiting for it. `:ad` crashes because it emits an inner `enzyme.fwddiff`
+# and reverse-over-forward is what breaks; the symbolic Jacobian contains no
+# nested AD at all, only a gather and arithmetic, so a reverse pass crosses it
+# like any other expression. That makes it the only EXACT Jacobian currently
+# available under a reverse sweep. Whether it is also FASTER is a separate
+# question and is not asserted here.
 #
 # The last section of this file is the DISCRETE ADJOINT: `ros23_step_vjp` and
 # `ssprk43_step_vjp` give one step's (du_out/du_in)^T lam and (du_out/dtheta)^T
@@ -258,12 +269,23 @@ const ROS23_c32 = 6 + sqrt(2)
 #   :ad  exact, coloured forward-mode JVPs (`ad_block_jac`). Always host-
 #        unrolled, so it is straight-line -- which is what lets a reverse pass
 #        cross the whole step. `unrolled` is ignored.
+#   :sym exact, from a SYMBOLICALLY DIFFERENTIATED band model supplied by the
+#        caller as `symjac(u, t) -> Jb`. This module deliberately knows nothing
+#        about where that comes from: it is a plain callable returning the same
+#        NS x NS `Matrix{Any}` the other two build, so the step needs no
+#        dependency on EarthSciASTDiff (see rx_sym_block_jac.jl for the
+#        producer). Straight-line and free of nested AD, so unlike `:ad` a
+#        reverse pass crosses it. `unrolled` is ignored.
 function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64;
-        unrolled::Bool=false, jac::Symbol=:fd)
+        unrolled::Bool=false, jac::Symbol=:fd, symjac=nothing)
     N = NS * NC
     f0 = f(u, t)
     f0b = [_blk(f0, r, NC) for r in 1:NS]
-    J = jac === :ad ? ad_block_jac(uu -> f(uu, t), u, Val(NS), NC) :
+    if jac === :sym && symjac === nothing
+        error("ros23_step: jac=:sym needs `symjac`, a callable (u, t) -> Jb")
+    end
+    J = jac === :sym ? symjac(u, t) :
+        jac === :ad ? ad_block_jac(uu -> f(uu, t), u, Val(NS), NC) :
         unrolled ? fd_block_jac_unrolled(uu -> f(uu, t), u, f0b, NS, NC, masks) :
         fd_block_jac(uu -> f(uu, t), u, f0, NS, NC)
     dtgamma = dt * ROS23_d
@@ -534,9 +556,15 @@ end
 # active return is the shape Reactant's Enzyme integration handles best (an
 # array-returning reverse would need a Duplicated out-argument, i.e. mutation of
 # a traced array).
-function _ros23_ldotu(g, u, theta, lambda, t, dt, NS, NC, masks, abstol, reltol, jac)
+# `gj(u, theta, t) -> Jb` is the symbolic block Jacobian, and it takes `theta`
+# APART for the same reason `g` does: J depends on the parameters, so a closure
+# that captured them would hide dJ/dtheta from Enzyme and the parameter gradient
+# would come back missing a term -- silently, and only for `jac=:sym`. Passing
+# it as `Const` while `theta` stays active is what keeps that term.
+function _ros23_ldotu(g, u, theta, lambda, t, dt, NS, NC, masks, abstol, reltol, jac, gj)
+    sj = gj === nothing ? nothing : (uu, tt) -> gj(uu, theta, tt)
     unew, _ = ros23_step((uu, tt) -> g(uu, theta, tt), u, t, dt, NS, NC, masks,
-                         abstol, reltol; unrolled=true, jac=jac)
+                         abstol, reltol; unrolled=true, jac=jac, symjac=sj)
     return sum(lambda .* unew)
 end
 function _ssprk43_ldotu(g, u, theta, lambda, t, dt, abstol, reltol)
@@ -545,9 +573,11 @@ function _ssprk43_ldotu(g, u, theta, lambda, t, dt, abstol, reltol)
 end
 
 # unew alone, for the primal and for forward-mode cross-checks.
-function ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol; jac::Symbol=:ad)
+function ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol;
+                       jac::Symbol=:ad, gj=nothing)
+    sj = gj === nothing ? nothing : (uu, tt) -> gj(uu, theta, tt)
     unew, _ = ros23_step((uu, tt) -> g(uu, theta, tt), u, t, dt, NS, NC, masks,
-                         abstol, reltol; unrolled=true, jac=jac)
+                         abstol, reltol; unrolled=true, jac=jac, symjac=sj)
     return unew
 end
 function ssprk43_step_out(g, u, theta, t, dt, abstol, reltol)
@@ -561,7 +591,8 @@ end
 # not a closure, so Enzyme never has to decide what to do with captured traced
 # values.
 # jac=:fd is the DEFAULT here, and deliberately so, even though :ad is the right
-# default for the forward solve. MEASURED on ReSEACT 6x6x8 (13 species, 288
+# default for the forward solve, and `:sym` -- when the caller can supply it --
+# is better than either (exact, and reverse-safe: pass `gj`). MEASURED on ReSEACT 6x6x8 (13 species, 288
 # cells): jac=:fd reverse-differentiates fine, and jac=:ad SEGFAULTS inside
 # Enzyme-MLIR --
 #   AutoDiffCallRev::createReverseModeAdjoint -> func::CallOp::build ->
@@ -577,11 +608,11 @@ end
 # in u, and the dot-product identity degrades from 1.8e-16 to 6.2e-14 on the toy
 # and to 1.1e-6 on ReSEACT. See plan section 4 item 4.
 function ros23_step_vjp(g, u, theta, t, dt, lambda, NS::Int, NC::Int, masks,
-                        abstol::Float64, reltol::Float64; jac::Symbol=:fd)
+                        abstol::Float64, reltol::Float64; jac::Symbol=:fd, gj=nothing)
     r = EZ.gradient(EZ.Reverse, _ros23_ldotu, EZ.Const(g), u, theta,
                     EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
                     EZ.Const(NS), EZ.Const(NC), EZ.Const(masks),
-                    EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac))
+                    EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac), EZ.Const(gj))
     return r[2], r[3]
 end
 function ssprk43_step_vjp(g, u, theta, t, dt, lambda, abstol::Float64, reltol::Float64)
@@ -595,11 +626,12 @@ end
 # That identity is the strongest cheap check there is: it is exact arithmetic,
 # needs no step size, and fails loudly on any transposition or index error.
 function ros23_step_jvp(g, u, du, theta, dtheta, t, dt, NS::Int, NC::Int, masks,
-                        abstol::Float64, reltol::Float64; jac::Symbol=:ad)
+                        abstol::Float64, reltol::Float64; jac::Symbol=:ad, gj=nothing)
     r = EZ.autodiff(EZ.Forward, _ros23_out_c, EZ.Duplicated, EZ.Const(g),
                     EZ.Duplicated(u, du), EZ.Duplicated(theta, dtheta),
                     EZ.Const(t), EZ.Const(dt), EZ.Const(NS), EZ.Const(NC),
-                    EZ.Const(masks), EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac))
+                    EZ.Const(masks), EZ.Const(abstol), EZ.Const(reltol),
+                    EZ.Const(jac), EZ.Const(gj))
     return r[1]
 end
 function ssprk43_step_jvp(g, u, du, theta, dtheta, t, dt, abstol::Float64, reltol::Float64)
@@ -610,8 +642,8 @@ function ssprk43_step_jvp(g, u, du, theta, dtheta, t, dt, abstol::Float64, relto
 end
 # positional-only twins of the *_step_out entry points (Enzyme.autodiff cannot
 # forward keyword arguments to the differentiated callee)
-_ros23_out_c(g, u, theta, t, dt, NS, NC, masks, abstol, reltol, jac) =
-    ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol; jac=jac)
+_ros23_out_c(g, u, theta, t, dt, NS, NC, masks, abstol, reltol, jac, gj) =
+    ros23_step_out(g, u, theta, t, dt, NS, NC, masks, abstol, reltol; jac=jac, gj=gj)
 _ssprk43_out_c(g, u, theta, t, dt, abstol, reltol) =
     ssprk43_step_out(g, u, theta, t, dt, abstol, reltol)
 
