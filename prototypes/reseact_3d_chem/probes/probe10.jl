@@ -14,7 +14,7 @@ co = JSON3.read(read("hybrid_coefs.json", String))
 ca = Dict{String,Any}("Transport3D.dA"=>Float64.(co.dA), "Transport3D.dB"=>Float64.(co.dB))
 t0 = time()
 sim = EA.simulate(EA.load("probe10.esm"), (T0, T0+1.0); alg=OrdinaryDiffEqTsit5.Tsit5(),
-        saveat=[T0, T0+1.0], providers=Dict("GEOSFP.GEOSFP_I3.PS"=>prov, "GEOSFP.GEOSFP_I3.T"=>provT),
+        saveat=[T0, T0+1.0], providers=Dict("GEOSFP.PS"=>prov, "GEOSFP.T"=>provT),
         parameters=Dict("GEOSFP.t_interp_ref_I3"=>0.0, "GEOSFP.dt_interp_I3"=>10800.0),
         const_arrays=ca)
 @printf("simulate: %.1f s  success=%s nstates=%d\n", time()-t0, sim.success, length(sim.u[1]))

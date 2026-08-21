@@ -1,5 +1,5 @@
 {
-  "esm": "0.8.0",
+  "esm": "1.0.0",
   "metadata": {
     "name": "g2_depsink_nodep",
     "description": "G2 baseline (no deposition): SuperFast reaction system inlined from EarthSciModels/components/gaschem/superfast.esm. 0-D, 1 s."
@@ -48,17 +48,17 @@
               }
             },
             {
-              "expected": 0.0000533748570740643,
+              "expected": 5.33748570740643e-05,
               "time": 60,
               "variable": "HO2"
             },
             {
-              "expected": 0.00005474526969852731,
+              "expected": 5.474526969852731e-05,
               "time": 180,
               "variable": "HO2"
             },
             {
-              "expected": 0.00005443235812673289,
+              "expected": 5.443235812673289e-05,
               "time": 360,
               "variable": "HO2"
             },
@@ -133,7 +133,7 @@
               "variable": "CO"
             },
             {
-              "expected": 1.3062470823893288E-19,
+              "expected": 1.3062470823893288e-19,
               "time": 360,
               "variable": "ISOP",
               "tolerance": {
@@ -235,12 +235,12 @@
               "variable": "O3"
             },
             {
-              "expected": 1.0314305852209193E-15,
+              "expected": 1.0314305852209193e-15,
               "time": 1800,
               "variable": "NO",
               "tolerance": {
                 "rel": 0.001,
-                "abs": 1E-12
+                "abs": 1e-12
               }
             },
             {
@@ -249,28 +249,28 @@
               "variable": "NO2"
             },
             {
-              "expected": 1.0534552593945216E-12,
+              "expected": 1.0534552593945216e-12,
               "time": 1800,
               "variable": "OH",
               "tolerance": {
                 "rel": 0.001,
-                "abs": 2E-12
+                "abs": 2e-12
               }
             },
             {
-              "expected": 1.748373575923495E-10,
+              "expected": 1.748373575923495e-10,
               "time": 1800,
               "variable": "HO2",
               "tolerance": {
                 "rel": 0.01,
-                "abs": 1E-12
+                "abs": 1e-12
               }
             }
           ],
           "description": "Overnight / dark chemistry: all photolysis rates (jO32OH, jH2O2, jNO2, jH2COa, jH2COb, jCH3OOH) forced to 0. Integrated 0..1800 s. Without photolysis, OH/HO2 should relax toward zero while O3 and NO2 decay slowly. This exercises the parameter-override path and guards against runaway radical production without a radical source.\n\nTolerance rationale (test-level rel=1e-4 / abs=1e-14): default rel band; abs=1e-14 floors per-species comparisons for the active radicals that decay to near-numerical-zero in the absence of photolytic radical sources. Per-assertion overrides for radicals operate where abs is the *operative* floor (expected values are at or near abs): NO @1800s uses rel=1e-3 / abs=1e-12 (NO ≈ 1e-15 ppb, abs floor 3 orders above expected); OH uses rel=1e-3 / abs=2e-12 (OH ≈ 1e-12 ppb, abs is operative); HO2 uses rel=1e-2 / abs=1e-12 (HO2 ≈ 1.7e-10 ppb, lowest-magnitude radical and most sensitive to step-size adaptation without photolytic radical source). Without abs, rel comparison alone diverges as the radical → 0.",
           "tolerance": {
             "rel": 0.0001,
-            "abs": 1E-14
+            "abs": 1e-14
           }
         },
         {
@@ -286,12 +286,12 @@
               "variable": "O3"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "OH"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "HO2"
             },
@@ -306,12 +306,12 @@
               "variable": "NO2"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "CH3O2"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "CH2O"
             },
@@ -321,30 +321,30 @@
               "variable": "CO"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "CH3OOH"
             },
             {
-              "expected": 1E-11,
+              "expected": 1e-11,
               "time": 0,
               "variable": "ISOP"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "H2O2"
             },
             {
-              "expected": 0.000004,
+              "expected": 4e-06,
               "time": 0,
               "variable": "HNO3"
             }
           ],
           "description": "At t=0, the solver must return the declared defaults for every active species.\n\nTolerance rationale (test-level rel=1e-10 / abs=1e-14): initial-condition assertion at t=0 — solver must return declared species defaults exact-to-roundoff; rel=1e-10 / abs=1e-14 covers only parser → MTK/lambdify float conversion and the first solver step's identity-evaluation of initial state. Tighter than every other test in this file because no integration drift has accumulated.",
           "tolerance": {
-            "rel": 1E-10,
-            "abs": 1E-14
+            "rel": 1e-10,
+            "abs": 1e-14
           }
         },
         {
@@ -363,7 +363,7 @@
               "variable": "O3"
             },
             {
-              "expected": 7.177659984147786E-13,
+              "expected": 7.177659984147786e-13,
               "time": 1800,
               "variable": "ISOP",
               "tolerance": {
@@ -427,12 +427,12 @@
         },
         "jH2O2": {
           "units": "1/s",
-          "default": 0.000010097,
+          "default": 1.0097e-05,
           "description": "Photolysis H2O2"
         },
         "jCH3OOH": {
           "units": "1/s",
-          "default": 0.0000089573,
+          "default": 8.9573e-06,
           "description": "Photolysis CH3OOH"
         },
         "jO32OH": {
@@ -441,155 +441,6 @@
           "description": "Photolysis O3 + hv -> 2 OH (simplified, incl O1D+H2O)"
         }
       },
-      "examples": [
-        {
-          "id": "jNO2_photolysis_sweep",
-          "description": "NO2-photolysis sensitivity. Sweeps the NO2 photolysis rate jNO2 from dark (0 s^-1) to bright-noon (~0.02 s^-1) at default T, P, and initial composition. Higher jNO2 drives faster NO/NO2/O3 photostationary cycling and feeds OH via the secondary O3+hv channel; the lower bound (jNO2=0) is the overnight limit where the photochemical OH source shuts down. Useful for inspecting the dark-to-noon transition without running a full diurnal cycle.",
-          "time_span": {
-            "start": 0,
-            "end": 1
-          },
-          "parameter_sweep": {
-            "type": "cartesian",
-            "dimensions": [
-              {
-                "parameter": "jNO2",
-                "values": [
-                  0.0,
-                  0.001,
-                  0.0025,
-                  0.005,
-                  0.0075,
-                  0.01,
-                  0.0149,
-                  0.02
-                ]
-              }
-            ]
-          },
-          "plots": [
-            {
-              "id": "O3_vs_jNO2",
-              "type": "line",
-              "description": "Steady-state O3 vs NO2 photolysis rate jNO2.",
-              "x": {
-                "variable": "jNO2",
-                "label": "jNO2 (1/s)"
-              },
-              "y": {
-                "variable": "O3",
-                "label": "O3 (ppb)"
-              }
-            }
-          ]
-        },
-        {
-          "id": "temperature_sweep",
-          "description": "Tropospheric-temperature sensitivity. Sweeps T from 240 K (cold upper troposphere) to 320 K (warm boundary layer) at default P=101325 Pa. The bimolecular Arrhenius rates (NO+O3, OH+CO, OH+CH4, ISOP+OH, ISOP+O3) and the termolecular falloff rates (NO2+OH+M, OH+CO+M) all carry strong T dependence — this sweep makes the net effect on tropospheric ozone visible in a single curve. Useful for sanity-checking the T-dependence of the inlined Arrhenius/falloff rate-law expressions.",
-          "time_span": {
-            "start": 0,
-            "end": 1
-          },
-          "parameter_sweep": {
-            "type": "cartesian",
-            "dimensions": [
-              {
-                "parameter": "T",
-                "values": [
-                  240,
-                  250,
-                  260,
-                  270,
-                  280,
-                  290,
-                  300,
-                  310,
-                  320
-                ]
-              }
-            ]
-          },
-          "plots": [
-            {
-              "id": "O3_vs_T",
-              "type": "line",
-              "description": "Steady-state O3 vs temperature T.",
-              "x": {
-                "variable": "T",
-                "label": "Temperature (K)"
-              },
-              "y": {
-                "variable": "O3",
-                "label": "O3 (ppb)"
-              }
-            }
-          ]
-        },
-        {
-          "id": "pressure_altitude_sweep",
-          "description": "Vertical (pressure) sensitivity. Sweeps P from 30000 Pa (~9 km, upper troposphere) to 101325 Pa (surface) at fixed T=280 K. All inlined rate-law expressions divide by 8.314e6 * T (the per-molecule conversion factor) and scale with P^1 (bimolecular) or P^2 (third-body falloff for NO2+OH+M, OH+CO+M). This sweep illustrates the pressure dependence of the third-body channels relative to the bimolecular channels, and how chemical regime shifts with altitude.",
-          "time_span": {
-            "start": 0,
-            "end": 1
-          },
-          "parameter_sweep": {
-            "type": "cartesian",
-            "dimensions": [
-              {
-                "parameter": "P",
-                "values": [
-                  30000,
-                  40000,
-                  50000,
-                  60000,
-                  70000,
-                  80000,
-                  90000,
-                  101325
-                ]
-              }
-            ]
-          },
-          "plots": [
-            {
-              "id": "O3_vs_P",
-              "type": "line",
-              "description": "Steady-state O3 vs ambient pressure P.",
-              "x": {
-                "variable": "P",
-                "label": "Pressure (Pa)"
-              },
-              "y": {
-                "variable": "O3",
-                "label": "O3 (ppb)"
-              }
-            }
-          ]
-        },
-        {
-          "id": "default_run_24h",
-          "description": "Illustrative 24-hour integration under default initial conditions and constant-day photolysis rates. Plots O3 vs. time. Initial conditions are the per-species reservoir defaults declared on the reaction system (O3=40 ppb, NO=NO2=0.4 ppt, etc.); photolysis-rate parameters (jNO2, jH2O2, ...) hold at their declared bright-noon values for the full integration window.",
-          "time_span": {
-            "start": 0,
-            "end": 86400
-          },
-          "plots": [
-            {
-              "id": "O3_vs_time",
-              "type": "line",
-              "description": "Ozone concentration over 24 h.",
-              "x": {
-                "variable": "t",
-                "label": "time (s)"
-              },
-              "y": {
-                "variable": "O3",
-                "label": "O3 (ppb)"
-              }
-            }
-          ]
-        }
-      ],
       "reference": {
         "doi": "10.5194/gmd-11-4155-2018",
         "citation": "Brown-Steiner, B., Selin, N. E., Prinn, R. G., Tilmes, S., Emmons, L., Lamarque, J.-F., and Cameron-Smith, P.: Evaluating simplified chemical mechanisms within present-day simulations of the Community Earth System Model version 1.2 with CAM4 (CESM1.2 CAM-chem): MOZART-4 vs. Reduced Hydrocarbon vs. Super-Fast chemistry, Geoscientific Model Development, 11, 4155-4174, 2018.",
@@ -789,7 +640,7 @@
                     "args": [
                       {
                         "args": [
-                          8.428E-7,
+                          8.428e-07,
                           "P",
                           {
                             "args": [
@@ -1343,7 +1194,7 @@
                                             "args": [
                                               {
                                                 "args": [
-                                                  4.5195402839999995E+32,
+                                                  4.5195402839999995e+32,
                                                   "P",
                                                   {
                                                     "args": [
@@ -1363,7 +1214,7 @@
                                               },
                                               {
                                                 "args": [
-                                                  8.738478586320001E+37,
+                                                  8.738478586320001e+37,
                                                   "T"
                                                 ],
                                                 "op": "*"
@@ -1401,7 +1252,7 @@
                             "args": [
                               {
                                 "args": [
-                                  4.5195402839999995E+32,
+                                  4.5195402839999995e+32,
                                   "P",
                                   {
                                     "args": [
@@ -1421,7 +1272,7 @@
                               },
                               {
                                 "args": [
-                                  8.738478586320001E+37,
+                                  8.738478586320001e+37,
                                   "T"
                                 ],
                                 "op": "*"
@@ -1664,7 +1515,7 @@
             "args": [
               {
                 "args": [
-                  2.408E-9,
+                  2.408e-09,
                   "P"
                 ],
                 "op": "*"
@@ -1946,12 +1797,12 @@
         },
         "ISOP": {
           "units": "ppb",
-          "default": 1E-11,
+          "default": 1e-11,
           "description": "Isoprene"
         },
         "HNO3": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Nitric acid"
         },
         "NO2": {
@@ -1961,17 +1812,17 @@
         },
         "HO2": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Hydroperoxyl radical"
         },
         "CH3OOH": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Methyl hydroperoxide"
         },
         "OH": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Hydroxyl radical"
         },
         "O3": {
@@ -1993,17 +1844,17 @@
         },
         "H2O2": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Hydrogen peroxide"
         },
         "CH3O2": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Methyl peroxy radical"
         },
         "CH2O": {
           "units": "ppb",
-          "default": 0.000004,
+          "default": 4e-06,
           "description": "Formaldehyde"
         }
       },
@@ -2045,7 +1896,156 @@
             ]
           }
         }
-      }
+      },
+      "analyses": [
+        {
+          "id": "jNO2_photolysis_sweep",
+          "description": "NO2-photolysis sensitivity. Sweeps the NO2 photolysis rate jNO2 from dark (0 s^-1) to bright-noon (~0.02 s^-1) at default T, P, and initial composition. Higher jNO2 drives faster NO/NO2/O3 photostationary cycling and feeds OH via the secondary O3+hv channel; the lower bound (jNO2=0) is the overnight limit where the photochemical OH source shuts down. Useful for inspecting the dark-to-noon transition without running a full diurnal cycle.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "parameter_sweep": {
+            "type": "cartesian",
+            "dimensions": [
+              {
+                "parameter": "jNO2",
+                "values": [
+                  0.0,
+                  0.001,
+                  0.0025,
+                  0.005,
+                  0.0075,
+                  0.01,
+                  0.0149,
+                  0.02
+                ]
+              }
+            ]
+          },
+          "plots": [
+            {
+              "id": "O3_vs_jNO2",
+              "type": "line",
+              "description": "Steady-state O3 vs NO2 photolysis rate jNO2.",
+              "x": {
+                "variable": "jNO2",
+                "label": "jNO2 (1/s)"
+              },
+              "y": {
+                "variable": "O3",
+                "label": "O3 (ppb)"
+              }
+            }
+          ]
+        },
+        {
+          "id": "temperature_sweep",
+          "description": "Tropospheric-temperature sensitivity. Sweeps T from 240 K (cold upper troposphere) to 320 K (warm boundary layer) at default P=101325 Pa. The bimolecular Arrhenius rates (NO+O3, OH+CO, OH+CH4, ISOP+OH, ISOP+O3) and the termolecular falloff rates (NO2+OH+M, OH+CO+M) all carry strong T dependence — this sweep makes the net effect on tropospheric ozone visible in a single curve. Useful for sanity-checking the T-dependence of the inlined Arrhenius/falloff rate-law expressions.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "parameter_sweep": {
+            "type": "cartesian",
+            "dimensions": [
+              {
+                "parameter": "T",
+                "values": [
+                  240,
+                  250,
+                  260,
+                  270,
+                  280,
+                  290,
+                  300,
+                  310,
+                  320
+                ]
+              }
+            ]
+          },
+          "plots": [
+            {
+              "id": "O3_vs_T",
+              "type": "line",
+              "description": "Steady-state O3 vs temperature T.",
+              "x": {
+                "variable": "T",
+                "label": "Temperature (K)"
+              },
+              "y": {
+                "variable": "O3",
+                "label": "O3 (ppb)"
+              }
+            }
+          ]
+        },
+        {
+          "id": "pressure_altitude_sweep",
+          "description": "Vertical (pressure) sensitivity. Sweeps P from 30000 Pa (~9 km, upper troposphere) to 101325 Pa (surface) at fixed T=280 K. All inlined rate-law expressions divide by 8.314e6 * T (the per-molecule conversion factor) and scale with P^1 (bimolecular) or P^2 (third-body falloff for NO2+OH+M, OH+CO+M). This sweep illustrates the pressure dependence of the third-body channels relative to the bimolecular channels, and how chemical regime shifts with altitude.",
+          "time_span": {
+            "start": 0,
+            "end": 1
+          },
+          "parameter_sweep": {
+            "type": "cartesian",
+            "dimensions": [
+              {
+                "parameter": "P",
+                "values": [
+                  30000,
+                  40000,
+                  50000,
+                  60000,
+                  70000,
+                  80000,
+                  90000,
+                  101325
+                ]
+              }
+            ]
+          },
+          "plots": [
+            {
+              "id": "O3_vs_P",
+              "type": "line",
+              "description": "Steady-state O3 vs ambient pressure P.",
+              "x": {
+                "variable": "P",
+                "label": "Pressure (Pa)"
+              },
+              "y": {
+                "variable": "O3",
+                "label": "O3 (ppb)"
+              }
+            }
+          ]
+        },
+        {
+          "id": "default_run_24h",
+          "description": "Illustrative 24-hour integration under default initial conditions and constant-day photolysis rates. Plots O3 vs. time. Initial conditions are the per-species reservoir defaults declared on the reaction system (O3=40 ppb, NO=NO2=0.4 ppt, etc.); photolysis-rate parameters (jNO2, jH2O2, ...) hold at their declared bright-noon values for the full integration window.",
+          "time_span": {
+            "start": 0,
+            "end": 86400
+          },
+          "plots": [
+            {
+              "id": "O3_vs_time",
+              "type": "line",
+              "description": "Ozone concentration over 24 h.",
+              "x": {
+                "variable": "t",
+                "label": "time (s)"
+              },
+              "y": {
+                "variable": "O3",
+                "label": "O3 (ppb)"
+              }
+            }
+          ]
+        }
+      ]
     }
   }
 }

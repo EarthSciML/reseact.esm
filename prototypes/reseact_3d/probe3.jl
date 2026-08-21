@@ -11,11 +11,11 @@ cache = EarthSciIO.Cache()
 mk(coll,var,phase,dt,n) = EarthSciIO.discrete_provider(cache, "$BASE.$coll.4x5.nc",
         [phase+dt*k for k in 0:(n-1)]; format="netcdf", variables=[var], time_dim="time", records_per_sample=2)
 providers = Dict(
-    "GEOSFP.GEOSFP_I3.PS"       => mk("I3","PS",0.0,10800.0,8),
-    "GEOSFP.GEOSFP_A3dyn.U"     => mk("A3dyn","U",5400.0,10800.0,8),
-    "GEOSFP.GEOSFP_A3dyn.V"     => mk("A3dyn","V",5400.0,10800.0,8),
-    "GEOSFP.GEOSFP_A3dyn.OMEGA" => mk("A3dyn","OMEGA",5400.0,10800.0,8),
-    "GEOSFP.GEOSFP_A1.PBLH"     => mk("A1","PBLH",1800.0,3600.0,24))
+    "GEOSFP.PS"       => mk("I3","PS",0.0,10800.0,8),
+    "GEOSFP.U"     => mk("A3dyn","U",5400.0,10800.0,8),
+    "GEOSFP.V"     => mk("A3dyn","V",5400.0,10800.0,8),
+    "GEOSFP.OMEGA" => mk("A3dyn","OMEGA",5400.0,10800.0,8),
+    "GEOSFP.PBLH"     => mk("A1","PBLH",1800.0,3600.0,24))
 params = Dict("GEOSFP.t_interp_ref_I3"=>0.0,"GEOSFP.dt_interp_I3"=>10800.0,
               "GEOSFP.t_interp_ref_A3"=>5400.0,"GEOSFP.dt_interp_A3"=>10800.0,
               "GEOSFP.t_interp_ref_A1"=>1800.0,"GEOSFP.dt_interp_A1"=>3600.0)

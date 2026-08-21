@@ -81,7 +81,7 @@ du = similar(u); ft!(du, u, run.p, T0)
 #     model reads it (record 2 minus record 1 of the bracketing I3 pair, hPa->Pa).
 const dA = Float64.(ff.const_arrays["Transport3D.dA"])
 const dB = Float64.(ff.const_arrays["Transport3D.dB"])
-F = run.merged_param["GEOSFP.GEOSFP_I3.PS"]
+F = run.merged_param["GEOSFP.PS"]
 # Native index base from the RUN's own slice, not literals: the origin is a
 # metaparameter now, and a diagnostic that reads a different column than the
 # model did would report the terrain difference as a continuity residual.

@@ -18,11 +18,27 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
+# * THE 48-HOUR CONUS GRADIENT (slurm 10044327, 2026-08-21, 8 h 18 m, MaxRSS
+#   55.2 GB). This is what the blockers section below used to say was out of
+#   reach, and it is now the headline result rather than a projection.
+#   13x7x72, 85,176 states, 576 macro steps, `clamp_nonneg` ON, un-jittered,
+#   jac=:sym, all 49 parameters in ONE backward sweep:
+#     J        = 30.1943301698541 ppb mean surface O3 over 48 h
+#     forward    7,774.93 s  (576 macro steps, 27,973 accepted inner steps)
+#     backward  19,273.16 s  (27,973 VJPs at 0.4612 s; replay 6,372.10 s = 33%)
+#     dJ/d(NEIRegrid.scale) = -2.114   d/d(DryDepositionGas.kappa) = -1.617
+#     dJ/d(Transport3D.g_acc) = +0.669  -- 19 of 49 components nonzero
+#   EVERY REFERENCE-FREE CHECK PASSED: the gather plan reproduces the host
+#   Jacobian at 0.000e+00, the fixed-sequence replay lands 0.000e+00 from all
+#   576 checkpoints, ZERO flaky-reverse retries over 27,973 VJP calls, and the
+#   structural identity scale*dJ/dscale == g0*dJ/dg0 holds to 8.611e-15.
+#   A week projects to ~27 h on these numbers.
 # * A DISCRETE ADJOINT over the Lie-Trotter macro-step loop. One backward sweep
 #   returns the gradient w.r.t. ALL 49 runtime scalars at once, at a cost that
-#   does NOT scale with the parameter count -- measured 5.1x one forward solve
-#   for the full 49-component vector, against forward mode's cost-proportional-
-#   to-n_params.
+#   does NOT scale with the parameter count -- measured 2.48x one forward solve
+#   at CONUS over 48 simulated hours, or 1.66x with the replay excluded, against
+#   forward mode's cost-proportional-to-n_params. The 5.1x quoted here until
+#   2026-08-21 was measured at DEMONSTRATION SCALE and does not hold at CONUS.
 # * FORWARD SENSITIVITY as the independent cross-check, for a handful of named
 #   parameters. On CONUS this gave d(surface O3)/d(NEIRegrid.scale) =
 #   -7.387e-2 ppb, agreeing with central differences to 5.5e-9. A +1% emissions
@@ -153,6 +169,13 @@
 #    agree to ~10 significant figures on every component (e.g. NEIRegrid.scale
 #    -8.008304991e-2 vs -8.008305251e-2) and the structural identity
 #    scale*dJ/dscale == g0*dJ/dg0 passes at 6.9e-16 and 3.5e-16 respectively.
+#
+#
+#    CONFIRMED AT SCALE, which is the part that matters: the 48 h CONUS run
+#    above had the clamp ON for all 576 macro steps, it fired 50,973 times over
+#    2.38e9 (state, accepted-step) pairs, and the sweep stayed finite with zero
+#    retries. The configuration that used to die at macro step 3 now survives
+#    576 of them.
 #
 #    So the adjoint now differentiates the map the production runner actually
 #    uses. RESEACT_ADJ_CLAMP still defaults to 0 in the preset below only to keep
