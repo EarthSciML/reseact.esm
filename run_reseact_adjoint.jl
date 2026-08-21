@@ -128,16 +128,36 @@
 # ---------------------------------------------------------------------------
 # BLOCKERS TO A WEEK OF CONUS -- in the order they will actually bite
 # ---------------------------------------------------------------------------
-# 1. THE CLAMP MAKES THE SWEEP GO NON-FINITE. This script sets
-#    RESEACT_ADJ_CLAMP=0 because with the production `clamp_nonneg` ON, lambda
-#    acquires non-finite entries partway back through the third macro step (312
-#    entries, 24 cells, all 13 state groups at once, at 6x6x8). It is NOT
-#    reproducible from the recorded inputs -- re-running that exact VJP with the
-#    same u, lambda, t, dt and theta gives a finite answer for four seeds. Turning
-#    the clamp off changes the primal objective by 6.7e-11 relative, so the
-#    unclamped gradient is a gradient of, for practical purposes, the same
-#    trajectory. UNEXPLAINED. This is the single biggest obstacle to trusting a
-#    long run, because a week is 2,016 macro steps and this fired at step 3.
+# 1. THE CLAMP MAKES THE SWEEP GO NON-FINITE. **CLOSED 2026-08-21.** It used to
+#    read: with the production `clamp_nonneg` ON, lambda acquires non-finite
+#    entries partway back through the third macro step (312 entries, 24 cells,
+#    all 13 state groups at once, at 6x6x8); not reproducible from the recorded
+#    inputs; unexplained; the single biggest obstacle to trusting a long run.
+#
+#    IT WAS A CONSEQUENCE OF BLOCKERS 2 AND 4, not a fact about the clamp, and
+#    the two were never independent suspects. `clamp_nonneg` writes EXACT ZEROS
+#    into the state. An FD Jacobian differences the chemistry RHS with step
+#    sqrt(eps)*|u|, which at u = 0 is not a step at all, so the clamp is
+#    precisely what MAKES the FD Jacobian degenerate; and the race (blocker 4)
+#    supplied the nondeterminism that made it irreproducible from the recorded
+#    inputs. The observation predates both fixes and had never been repeated with
+#    either.
+#
+#    Retested with both (slurm 10042578, tools/diag/adjoint_clamp_retest.sbatch):
+#    the identical configuration run twice, clamp off then clamp on, jac=:sym and
+#    the race workaround on in both. The CLAMPED sweep is finite throughout --
+#    0 non-finite entries, 0 flaky-reverse retries over 251 VJP calls, replay
+#    landing 0.000e+00 from every checkpoint -- with the clamp bit actually
+#    firing on 18 of 939,744 (state, accepted-step) pairs, so it is being
+#    exercised rather than sitting idle. The clamped and unclamped gradients
+#    agree to ~10 significant figures on every component (e.g. NEIRegrid.scale
+#    -8.008304991e-2 vs -8.008305251e-2) and the structural identity
+#    scale*dJ/dscale == g0*dJ/dg0 passes at 6.9e-16 and 3.5e-16 respectively.
+#
+#    So the adjoint now differentiates the map the production runner actually
+#    uses. RESEACT_ADJ_CLAMP still defaults to 0 in the preset below only to keep
+#    this demonstration comparable with the recorded output quoted above; the
+#    long runs (tools/diag/adjoint_conus_48h.sbatch) set it to 1.
 # 2. THE BLOCK JACOBIAN IS FINITE DIFFERENCE. **CLOSED 2026-08-20.** It used to
 #    read: `ros23_step` builds its linearization by FD, so the adjoint carries FD
 #    contamination on top of a step that `clamp_nonneg` and the controller
@@ -184,9 +204,21 @@
 #    ~24 h if a device-side fixed-step loop removes the replay. Against the
 #    stated budget that is the open question, which is why the current target is
 #    48 h of simulation rather than a week: ~1/3.5 of those figures.
-#    THE LARGEST CONUS GRADIENT EVER RUN IS STILL 3 MACRO STEPS (~15 simulated
-#    minutes), and the largest CONUS FORWARD run is 24 h. Everything above 24 h
-#    is projection until tools/diag/traced_48h_gate.sbatch says otherwise.
+#    jac=:sym MOVED THESE NUMBERS, measured at CONUS on the identical 3-macro-step
+#    configuration (slurm 10042579 against 10015169): forward 78.61 -> 46.16 s,
+#    backward 225.51 -> 124.91 s, 0.8954 -> 0.4955 s/VJP. That is 1.70x and 1.81x,
+#    for an EXACT Jacobian rather than at the cost of one -- and the objective is
+#    unchanged at 39.6131238549519 vs ...521, i.e. the same 170 accepted inner
+#    steps, so the speedup is per-VJP work and not a different trajectory.
+#    On those figures 48 h is ~2.5 h forward + ~6.7 h backward, and a week
+#    ~19 h all in, against the ~35 h projected from the FD numbers.
+#
+#    THE 48 h CONUS FORWARD RUN NOW COMPLETES (slurm 10042577): 576 macro steps,
+#    64 forcing refreshes, solve 10,358.8 s, nT=1859/4 nC=26113/2941, O3_min
+#    17.85 ppb at the end with mass-continuity residuals at 1e-13. So the 36.2 h
+#    death is gone -- note that run still used the FD Jacobian, so PBL mixing was
+#    the fix for it, not jac=:sym. 24 h -> 48 h costs 1.64x, sublinear, because
+#    the second day is less stiff than the spin-up.
 # 4. INTERMITTENT NON-FINITE RESULTS -- DIAGNOSED 2026-08-12: it is a DATA RACE
 #    IN XLA:CPU's intra-op parallel execution. With ONE XLA thread it does not
 #    happen at all (0 of 400,000 calls across ten compile variants); at 4 threads
@@ -239,9 +271,14 @@
 #    size sqrt(eps)*|u| = 0. So the clamped, FD-Jacobian configuration in which
 #    blocker 1 was recorded is degenerate by construction.
 #    tools/diag/adjoint_clamp_retest.sbatch runs exactly that comparison.
-# C. `jac=:sym` inside `adaptive_solve`'s traced `@trace while` -- the FORWARD
-#    runner still uses the FD block Jacobian, and the 36.2 h CONUS death was
-#    attributed to precisely that (FD failing on species at 1e-30).
+# C. `jac=:sym` inside `adaptive_solve`'s traced `@trace while`. DONE and
+#    measured (slurm 10042632, RESEACT_RXJAC=sym): the band model traces inside
+#    the loop region, compiles 4% faster (442.8 s vs 460.2 s), solves 1.49x
+#    faster (5.3 s vs 7.9 s) and takes the identical accept/reject path
+#    (nT=5/1, nC=208/5) to 1e-13 on O3. The forward runner's DEFAULT is still
+#    :fd, only because `run-model-jl` cannot resolve EarthSciASTDiff at all;
+#    that packaging problem is what stands between the measurement and the
+#    default.
 # D. Only then attempt a long window, and stage it: 48 h first, against a forward
 #    sensitivity for two or three parameters as an independent check.
 # E. File the `:ad` reverse-over-forward segfault upstream (write-up ready in
