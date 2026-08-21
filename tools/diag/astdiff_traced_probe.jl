@@ -326,6 +326,7 @@ say(@sprintf("  plan vs host sparse J: worst relative %.3e  (%s)", worst,
 # a GATHER, so invert it: gidx[k] = the u index feeding band-model slot k, 0
 # where nothing does. Padding u with a leading zero makes the 0 a legitimate
 # index, so the whole map is one gather with no branch.
+RAW_REL = NaN
 hdr("6. GATE -- compile the band model under Reactant")
 gidx = zeros(Int, NJ)
 for (i, s) in enumerate(jac.umap); gidx[s] = i; end
@@ -348,8 +349,9 @@ end
 if xjac !== nothing
     dujt = Array(xjac(RX.ConcreteRArray(ujh), dev_p(p), RX.ConcreteRNumber(T0), dbuf))
     d = norm(dujt .- dujh) / max(norm(dujh), 1e-300)
+    global RAW_REL = d
     say(@sprintf("  traced band vector vs host: relative %.3e  (%s)", d,
-                 d <= 1e-12 ? "PASS" : "FAIL"))
+                 d <= 1e-12 ? "PASS" : "expected -- the race; see stage 8"))
 end
 end
 
@@ -440,7 +442,7 @@ if isnan(FIXED_REL)
     say("  UNKNOWN -- the race-workaround arm did not run.")
 elseif FIXED_REL <= 1e-12
     say(@sprintf("  With the race workaround the band model matches the host to %.3e.", FIXED_REL))
-    say(@sprintf("  Without it, %.3e. The gap was ENTIRELY the XLA:CPU race --", 4.154e-7))
+    say(@sprintf("  Without it, %.3e. The gap was ENTIRELY the XLA:CPU race --", RAW_REL))
     say("  not arithmetic, and not a defect in the Jacobian.")
     isnan(CONTROL_REL) ||
         say(@sprintf("  Note the RHS control differed by %.3e with the race ACTIVE, i.e.", CONTROL_REL))
