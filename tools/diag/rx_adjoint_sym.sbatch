@@ -60,6 +60,7 @@ export RESEACT_RXENV=${RESEACT_RXENV:-/u/ctessum/reseact-esast-pin/env-sym}
 # the migrated form with 754 SchemaValidationErrors.
 export RESEACT_MODEL=${RESEACT_MODEL:-/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm}
 export RESEACT_ADJ_STAGES=${RESEACT_ADJ_STAGES:-census,jac,ros_sym}
+export RESEACT_ADJ_UJITTER=${RESEACT_ADJ_UJITTER:-0}
 export RESEACT_NLON=${RESEACT_NLON:-6}
 export RESEACT_NLAT=${RESEACT_NLAT:-6}
 export RESEACT_NLEV=${RESEACT_NLEV:-8}
