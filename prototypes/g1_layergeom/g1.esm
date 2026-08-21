@@ -1,11 +1,121 @@
 {
-    "esm": "0.8.0",
+    "esm": "1.0.0",
     "models": {
         "LayerGeometry": {
             "variables": {
                 "dz": {
                     "units": "m",
-                    "expression": {
+                    "type": "unknown",
+                    "description": "Hypsometric thickness (Rd/g)*T*ln(P_lo/P_hi)."
+                },
+                "T": {
+                    "units": "K",
+                    "default": 260,
+                    "type": "parameter",
+                    "description": "Layer (virtual) temperature."
+                },
+                "dP": {
+                    "units": "Pa",
+                    "type": "unknown",
+                    "description": "Layer pressure thickness P_lo-P_hi."
+                },
+                "col_P_lo": {
+                    "units": "Pa",
+                    "default": 0,
+                    "type": "unknown",
+                    "description": "accumulator: col_P_lo(1s)=P_lo"
+                },
+                "P_lo": {
+                    "units": "Pa",
+                    "type": "unknown",
+                    "description": "Edge pressure at lev: Ap(lev)+Bp(lev)*PS."
+                },
+                "Rd_over_g": {
+                    "units": "m/K",
+                    "default": 29.27083,
+                    "type": "parameter",
+                    "description": "Rd/g = 287.05/9.80665."
+                },
+                "col_dz": {
+                    "units": "m",
+                    "default": 0,
+                    "type": "unknown",
+                    "description": "accumulator: col_dz(1s)=dz"
+                },
+                "PS": {
+                    "units": "Pa",
+                    "default": 101325,
+                    "type": "parameter",
+                    "description": "Surface pressure."
+                },
+                "col_P_hi": {
+                    "units": "Pa",
+                    "default": 0,
+                    "type": "unknown",
+                    "description": "accumulator: col_P_hi(1s)=P_hi"
+                },
+                "lev": {
+                    "units": "1",
+                    "default": 1,
+                    "type": "parameter",
+                    "description": "1-based hybrid level index (edge lev=1 is the surface)."
+                },
+                "col_dP": {
+                    "units": "Pa",
+                    "default": 0,
+                    "type": "unknown",
+                    "description": "accumulator: col_dP(1s)=dP"
+                },
+                "P_hi": {
+                    "units": "Pa",
+                    "type": "unknown",
+                    "description": "Edge pressure at lev+1 (layer top) via OFFSET interp.linear query lev+1."
+                }
+            },
+            "equations": [
+                {
+                    "rhs": "P_lo",
+                    "lhs": {
+                        "args": [
+                            "col_P_lo"
+                        ],
+                        "op": "D",
+                        "wrt": "t"
+                    }
+                },
+                {
+                    "rhs": "P_hi",
+                    "lhs": {
+                        "args": [
+                            "col_P_hi"
+                        ],
+                        "op": "D",
+                        "wrt": "t"
+                    }
+                },
+                {
+                    "rhs": "dP",
+                    "lhs": {
+                        "args": [
+                            "col_dP"
+                        ],
+                        "op": "D",
+                        "wrt": "t"
+                    }
+                },
+                {
+                    "rhs": "dz",
+                    "lhs": {
+                        "args": [
+                            "col_dz"
+                        ],
+                        "op": "D",
+                        "wrt": "t"
+                    }
+                },
+                {
+                    "lhs": "dz",
+                    "rhs": {
                         "args": [
                             "Rd_over_g",
                             "T",
@@ -23,44 +133,27 @@
                             }
                         ],
                         "op": "*"
-                    },
-                    "type": "observed",
-                    "description": "Hypsometric thickness (Rd/g)*T*ln(P_lo/P_hi)."
+                    }
                 },
-                "T": {
-                    "units": "K",
-                    "default": 260,
-                    "type": "parameter",
-                    "description": "Layer (virtual) temperature."
-                },
-                "dP": {
-                    "units": "Pa",
-                    "expression": {
+                {
+                    "lhs": "dP",
+                    "rhs": {
                         "args": [
                             "P_lo",
                             "P_hi"
                         ],
                         "op": "-"
-                    },
-                    "type": "observed",
-                    "description": "Layer pressure thickness P_lo-P_hi."
+                    }
                 },
-                "col_P_lo": {
-                    "units": "Pa",
-                    "default": 0,
-                    "type": "state",
-                    "description": "accumulator: col_P_lo(1s)=P_lo"
-                },
-                "P_lo": {
-                    "units": "Pa",
-                    "expression": {
+                {
+                    "lhs": "P_lo",
+                    "rhs": {
                         "args": [
                             {
                                 "name": "interp.linear",
                                 "args": [
                                     {
-                                        "args": [
-                                        ],
+                                        "args": [],
                                         "value": [
                                             0,
                                             4.804826,
@@ -139,8 +232,7 @@
                                         "op": "const"
                                     },
                                     {
-                                        "args": [
-                                        ],
+                                        "args": [],
                                         "value": [
                                             1,
                                             2,
@@ -228,8 +320,7 @@
                                         "name": "interp.linear",
                                         "args": [
                                             {
-                                                "args": [
-                                                ],
+                                                "args": [],
                                                 "value": [
                                                     1,
                                                     0.984952,
@@ -262,7 +353,7 @@
                                                     0.06372006,
                                                     0.02801004,
                                                     0.006960025,
-                                                    8.175413e-9,
+                                                    8.175413e-09,
                                                     0,
                                                     0,
                                                     0,
@@ -308,8 +399,7 @@
                                                 "op": "const"
                                             },
                                             {
-                                                "args": [
-                                                ],
+                                                "args": [],
                                                 "value": [
                                                     1,
                                                     2,
@@ -397,56 +487,17 @@
                             }
                         ],
                         "op": "+"
-                    },
-                    "type": "observed",
-                    "description": "Edge pressure at lev: Ap(lev)+Bp(lev)*PS."
+                    }
                 },
-                "Rd_over_g": {
-                    "units": "m/K",
-                    "default": 29.27083,
-                    "type": "parameter",
-                    "description": "Rd/g = 287.05/9.80665."
-                },
-                "col_dz": {
-                    "units": "m",
-                    "default": 0,
-                    "type": "state",
-                    "description": "accumulator: col_dz(1s)=dz"
-                },
-                "PS": {
-                    "units": "Pa",
-                    "default": 101325,
-                    "type": "parameter",
-                    "description": "Surface pressure."
-                },
-                "col_P_hi": {
-                    "units": "Pa",
-                    "default": 0,
-                    "type": "state",
-                    "description": "accumulator: col_P_hi(1s)=P_hi"
-                },
-                "lev": {
-                    "units": "1",
-                    "default": 1,
-                    "type": "parameter",
-                    "description": "1-based hybrid level index (edge lev=1 is the surface)."
-                },
-                "col_dP": {
-                    "units": "Pa",
-                    "default": 0,
-                    "type": "state",
-                    "description": "accumulator: col_dP(1s)=dP"
-                },
-                "P_hi": {
-                    "units": "Pa",
-                    "expression": {
+                {
+                    "lhs": "P_hi",
+                    "rhs": {
                         "args": [
                             {
                                 "name": "interp.linear",
                                 "args": [
                                     {
-                                        "args": [
-                                        ],
+                                        "args": [],
                                         "value": [
                                             0,
                                             4.804826,
@@ -525,8 +576,7 @@
                                         "op": "const"
                                     },
                                     {
-                                        "args": [
-                                        ],
+                                        "args": [],
                                         "value": [
                                             1,
                                             2,
@@ -620,8 +670,7 @@
                                         "name": "interp.linear",
                                         "args": [
                                             {
-                                                "args": [
-                                                ],
+                                                "args": [],
                                                 "value": [
                                                     1,
                                                     0.984952,
@@ -654,7 +703,7 @@
                                                     0.06372006,
                                                     0.02801004,
                                                     0.006960025,
-                                                    8.175413e-9,
+                                                    8.175413e-09,
                                                     0,
                                                     0,
                                                     0,
@@ -700,8 +749,7 @@
                                                 "op": "const"
                                             },
                                             {
-                                                "args": [
-                                                ],
+                                                "args": [],
                                                 "value": [
                                                     1,
                                                     2,
@@ -795,50 +843,6 @@
                             }
                         ],
                         "op": "+"
-                    },
-                    "type": "observed",
-                    "description": "Edge pressure at lev+1 (layer top) via OFFSET interp.linear query lev+1."
-                }
-            },
-            "equations": [
-                {
-                    "rhs": "P_lo",
-                    "lhs": {
-                        "args": [
-                            "col_P_lo"
-                        ],
-                        "op": "D",
-                        "wrt": "t"
-                    }
-                },
-                {
-                    "rhs": "P_hi",
-                    "lhs": {
-                        "args": [
-                            "col_P_hi"
-                        ],
-                        "op": "D",
-                        "wrt": "t"
-                    }
-                },
-                {
-                    "rhs": "dP",
-                    "lhs": {
-                        "args": [
-                            "col_dP"
-                        ],
-                        "op": "D",
-                        "wrt": "t"
-                    }
-                },
-                {
-                    "rhs": "dz",
-                    "lhs": {
-                        "args": [
-                            "col_dz"
-                        ],
-                        "op": "D",
-                        "wrt": "t"
                     }
                 }
             ]

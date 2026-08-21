@@ -1,5 +1,5 @@
 {
- "esm": "0.8.0",
+ "esm": "1.0.0",
  "metadata": {
   "name": "ReSEACT_Transport3D",
   "description": "ReSEACT 3-D transport foundation: monotone PPM on the latlon3d grid over a 7x7x7 CONUS-centered NATIVE slice of GEOS-FP 4x5 (no regridding). Horizontal = regional open-wall inflow BCs (ppm_flux_D_{lon,lat}_mono_inflow_bc + face_flux_divergence_{lon,lat}_open_bc); vertical = hybrid sigma-pressure massform (ppm_flux_D_lev_mono_hybrid_noflux_bc + face_flux_divergence_lev_massform_noflux_bc). All six rules imported BY REFERENCE. Gate: CWC -- q=mq/m must stay EXACTLY 1 and dev EXACTLY 0.",
@@ -69,7 +69,7 @@
    ],
    "variables": {
     "m": {
-     "type": "state",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
@@ -79,7 +79,7 @@
      "description": "Air mass per cell (a pressure thickness). Strictly positive."
     },
     "mq": {
-     "type": "state",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
@@ -89,7 +89,7 @@
      "description": "Tracer mass per cell. Initialised bitwise equal to m, so q == 1."
     },
     "dev": {
-     "type": "state",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
@@ -111,478 +111,112 @@
      "description": "Southern-most lat POINT of the slice. GEOS-FP 4x5 lat points are -90+4*(j-1); 26 is native j=30, so points j=30..36 (26..50) map to lat_local 1..7 with NO interpolation."
     },
     "dlon_deg": {
-     "type": "observed",
+     "type": "unknown",
      "units": "deg",
-     "expression": 5.0,
      "description": "GEOS-FP 4x5 native zonal spacing. Open west/east walls (regional, not periodic)."
     },
     "dlat_deg": {
-     "type": "observed",
+     "type": "unknown",
      "units": "deg",
-     "expression": 4.0,
      "description": "GEOS-FP 4x5 native meridional spacing. Open south/north walls (regional, not polar)."
     },
     "phie": {
-     "type": "observed",
+     "type": "unknown",
      "units": "deg",
      "shape": [
       "lat_nodes"
      ],
-     "description": "Latitude cell EDGES from the grid's lat_edge template; the half-polar caps fall out of the clamp at +/-90.",
-     "expression": {
-      "op": "apply_expression_template",
-      "args": [],
-      "name": "lat_edge",
-      "bindings": {}
-     }
+     "description": "Latitude cell EDGES from the grid's lat_edge template; the half-polar caps fall out of the clamp at +/-90."
     },
     "coslat_e": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lat_nodes"
      ],
-     "description": "cos of the latitude edges. Zero-length face at each pole. Never read at faces 1 or NLAT+1 -- the pole terms are structurally omitted.",
-     "expression": {
-      "op": "apply_expression_template",
-      "args": [],
-      "name": "coslat_edge",
-      "bindings": {
-       "phie": "phie"
-      }
-     }
+     "description": "cos of the latitude edges. Zero-length face at each pole. Never read at faces 1 or NLAT+1 -- the pole terms are structurally omitted."
     },
     "dS_lat": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lat"
      ],
-     "description": "Exact spherical cell-area weight sin(phie[j+1]) - sin(phie[j]).",
-     "expression": {
-      "op": "apply_expression_template",
-      "args": [],
-      "name": "latcell_area",
-      "bindings": {
-       "phie": "phie"
-      }
-     }
+     "description": "Exact spherical cell-area weight sin(phie[j+1]) - sin(phie[j])."
     },
     "dphi_lat": {
-     "type": "observed",
+     "type": "unknown",
      "units": "rad",
      "shape": [
       "lat"
      ],
-     "description": "Meridional cell extent; HALF-width at the two polar caps.",
-     "expression": {
-      "op": "apply_expression_template",
-      "args": [],
-      "name": "latcell_dphi",
-      "bindings": {
-       "phie": "phie"
-      }
-     }
+     "description": "Meridional cell extent; HALF-width at the two polar caps."
     },
     "Mx": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon_nodes",
       "lat",
       "lev"
      ],
-     "description": "Zonal face-normal air-mass flux at the WEST edge of each cell. Element NLON+1 IS read here (open east wall). Positive throughout [0,60] deg lon, so the west wall is inflow and the east wall outflow.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "ci",
-       "cj",
-       "ck"
-      ],
-      "args": [
-       "phie"
-      ],
-      "ranges": {
-       "ci": {
-        "from": "lon_nodes"
-       },
-       "cj": {
-        "from": "lat"
-       },
-       "ck": {
-        "from": "lev"
-       }
-      },
-      "expr": {
-       "op": "*",
-       "args": [
-        0.7,
-        {
-         "op": "cos",
-         "args": [
-          {
-           "op": "*",
-           "args": [
-            0.017453292519943295,
-            {
-             "op": "+",
-             "args": [
-              "lon0_deg",
-              {
-               "op": "*",
-               "args": [
-                {
-                 "op": "-",
-                 "args": [
-                  "ci",
-                  1
-                 ]
-                },
-                "dlon_deg"
-               ]
-              }
-             ]
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "op": "+",
-         "args": [
-          1.0,
-          {
-           "op": "*",
-           "args": [
-            0.3,
-            {
-             "op": "sin",
-             "args": [
-              {
-               "op": "*",
-               "args": [
-                0.017453292519943295,
-                {
-                 "op": "*",
-                 "args": [
-                  0.5,
-                  {
-                   "op": "+",
-                   "args": [
-                    {
-                     "op": "index",
-                     "args": [
-                      "phie",
-                      "cj"
-                     ]
-                    },
-                    {
-                     "op": "index",
-                     "args": [
-                      "phie",
-                      {
-                       "op": "+",
-                       "args": [
-                        "cj",
-                        1
-                       ]
-                      }
-                     ]
-                    }
-                   ]
-                  }
-                 ]
-                }
-               ]
-              }
-             ]
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "op": "+",
-         "args": [
-          1.0,
-          {
-           "op": "*",
-           "args": [
-            0.05,
-            {
-             "op": "-",
-             "args": [
-              "ck",
-              1
-             ]
-            }
-           ]
-          }
-         ]
-        }
-       ]
-      }
-     }
+     "description": "Zonal face-normal air-mass flux at the WEST edge of each cell. Element NLON+1 IS read here (open east wall). Positive throughout [0,60] deg lon, so the west wall is inflow and the east wall outflow."
     },
     "My": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
       "lat_nodes",
       "lev"
      ],
-     "description": "Meridional face-normal air-mass flux at the SOUTH edge of each cell. Faces 1 and NLAT+1 are the open south/north walls (real face lengths, NOT poles). Positive across the patch, so the south wall is inflow and the north wall outflow.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "ci",
-       "cj",
-       "ck"
-      ],
-      "args": [
-       "phie"
-      ],
-      "ranges": {
-       "ci": {
-        "from": "lon"
-       },
-       "cj": {
-        "from": "lat_nodes"
-       },
-       "ck": {
-        "from": "lev"
-       }
-      },
-      "expr": {
-       "op": "*",
-       "args": [
-        0.5,
-        {
-         "op": "sin",
-         "args": [
-          {
-           "op": "*",
-           "args": [
-            2.0,
-            {
-             "op": "*",
-             "args": [
-              0.017453292519943295,
-              {
-               "op": "+",
-               "args": [
-                "lon0_deg",
-                {
-                 "op": "*",
-                 "args": [
-                  {
-                   "op": "-",
-                   "args": [
-                    "ci",
-                    0.5
-                   ]
-                  },
-                  "dlon_deg"
-                 ]
-                }
-               ]
-              }
-             ]
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "op": "cos",
-         "args": [
-          {
-           "op": "*",
-           "args": [
-            0.017453292519943295,
-            {
-             "op": "index",
-             "args": [
-              "phie",
-              "cj"
-             ]
-            }
-           ]
-          }
-         ]
-        },
-        {
-         "op": "+",
-         "args": [
-          1.0,
-          {
-           "op": "*",
-           "args": [
-            0.05,
-            {
-             "op": "-",
-             "args": [
-              "ck",
-              1
-             ]
-            }
-           ]
-          }
-         ]
-        }
-       ]
-      }
-     }
+     "description": "Meridional face-normal air-mass flux at the SOUTH edge of each cell. Faces 1 and NLAT+1 are the open south/north walls (real face lengths, NOT poles). Positive across the patch, so the south wall is inflow and the north wall outflow."
     },
     "q": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
       "lat",
       "lev"
      ],
-     "description": "Mixing ratio mq/m. The quantity under test: it must stay EXACTLY 1.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "iq",
-       "jq",
-       "kq"
-      ],
-      "args": [
-       "mq",
-       "m"
-      ],
-      "ranges": {
-       "iq": {
-        "from": "lon"
-       },
-       "jq": {
-        "from": "lat"
-       },
-       "kq": {
-        "from": "lev"
-       }
-      },
-      "expr": {
-       "op": "/",
-       "args": [
-        {
-         "op": "index",
-         "args": [
-          "mq",
-          "iq",
-          "jq",
-          "kq"
-         ]
-        },
-        {
-         "op": "index",
-         "args": [
-          "m",
-          "iq",
-          "jq",
-          "kq"
-         ]
-        }
-       ]
-      }
-     }
+     "description": "Mixing ratio mq/m. The quantity under test: it must stay EXACTLY 1."
     },
     "qbc_w": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lat",
       "lev"
      ],
-     "description": "Prescribed tracer concentration in the WEST halo (Dirichlet inflow data), == 1 so the incoming tracer matches the interior and q stays 1. The falsifier perturbs this.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gl",
-       "gl"
-      ],
-      "args": [],
-      "ranges": {
-       "gl": {
-        "from": "lev"
-       }
-      },
-      "expr": 1.0
-     }
+     "description": "Prescribed tracer concentration in the WEST halo (Dirichlet inflow data), == 1 so the incoming tracer matches the interior and q stays 1. The falsifier perturbs this."
     },
     "qbc_e": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lat",
       "lev"
      ],
-     "description": "Prescribed tracer concentration in the EAST halo, == 1.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gl",
-       "gl"
-      ],
-      "args": [],
-      "ranges": {
-       "gl": {
-        "from": "lev"
-       }
-      },
-      "expr": 1.0
-     }
+     "description": "Prescribed tracer concentration in the EAST halo, == 1."
     },
     "qbc_s": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
       "lev"
      ],
-     "description": "Prescribed tracer concentration in the SOUTH halo, == 1.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gl",
-       "gl"
-      ],
-      "args": [],
-      "ranges": {
-       "gl": {
-        "from": "lev"
-       }
-      },
-      "expr": 1.0
-     }
+     "description": "Prescribed tracer concentration in the SOUTH halo, == 1."
     },
     "qbc_n": {
-     "type": "observed",
+     "type": "unknown",
      "units": "1",
      "shape": [
       "lon",
       "lev"
      ],
-     "description": "Prescribed tracer concentration in the NORTH halo, == 1.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gl",
-       "gl"
-      ],
-      "args": [],
-      "ranges": {
-       "gl": {
-        "from": "lev"
-       }
-      },
-      "expr": 1.0
-     }
+     "description": "Prescribed tracer concentration in the NORTH halo, == 1."
     },
     "dA": {
      "type": "parameter",
@@ -603,195 +237,33 @@
      "description": "dB[k] = Bp[k]-Bp[k+1] from the native GEOS-FP hybrid table at integer edges k=1..8. Supplied via const_arrays."
     },
     "PS": {
-     "type": "observed",
+     "type": "unknown",
      "units": "Pa",
      "shape": [
       "lon",
       "lat"
      ],
-     "description": "Surface pressure. STAGE B: constant 101325 Pa. Stage A replaces this with the GEOS-FP I3.PS native slice (i=14+lon, j=29+lat).",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gi",
-       "gj"
-      ],
-      "ranges": {
-       "gi": {
-        "from": "lon"
-       },
-       "gj": {
-        "from": "lat"
-       }
-      },
-      "args": [],
-      "expr": 101325.0
-     }
+     "description": "Surface pressure. STAGE B: constant 101325 Pa. Stage A replaces this with the GEOS-FP I3.PS native slice (i=14+lon, j=29+lat)."
     },
     "dp": {
-     "type": "observed",
+     "type": "unknown",
      "units": "Pa",
      "shape": [
       "lon",
       "lat",
       "lev"
      ],
-     "description": "Physical pressure thickness dp = dA[k] + dB[k]*Ps(i,j,t) on the GEOS-FP hybrid sigma-pressure grid; the CW84 parabola is built on these (ppmflux_D_lev_hyb_*). dA/dB are differences of the native GEOS-FP Ap(Pa)/Bp tables at integer edges k=1..8 -- read directly, NOT via interp.linear, which keeps the transport RHS pure arithmetic and therefore autodiff-capable.",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "gi",
-       "gj",
-       "gk"
-      ],
-      "ranges": {
-       "gi": {
-        "from": "lon"
-       },
-       "gj": {
-        "from": "lat"
-       },
-       "gk": {
-        "from": "lev"
-       }
-      },
-      "args": [
-       "PS",
-       "dA",
-       "dB"
-      ],
-      "expr": {
-       "op": "+",
-       "args": [
-        {
-         "op": "index",
-         "args": [
-          "dA",
-          "gk"
-         ]
-        },
-        {
-         "op": "*",
-         "args": [
-          {
-           "op": "index",
-           "args": [
-            "dB",
-            "gk"
-           ]
-          },
-          {
-           "op": "index",
-           "args": [
-            "PS",
-            "gi",
-            "gj"
-           ]
-          }
-         ]
-        }
-       ]
-      }
-     }
+     "description": "Physical pressure thickness dp = dA[k] + dB[k]*Ps(i,j,t) on the GEOS-FP hybrid sigma-pressure grid; the CW84 parabola is built on these (ppmflux_D_lev_hyb_*). dA/dB are differences of the native GEOS-FP Ap(Pa)/Bp tables at integer edges k=1..8 -- read directly, NOT via interp.linear, which keeps the transport RHS pure arithmetic and therefore autodiff-capable."
     },
     "Mz": {
-     "type": "observed",
+     "type": "unknown",
      "units": "Pa/s",
      "shape": [
       "lon",
       "lat",
       "lev_nodes"
      ],
-     "description": "Vertical face-normal air-mass flux at the LOWER edge of each cell, positive UPWARD. Vanishes exactly at k=1 (surface) and k=NLEV+1 (lid), consistent with the no-flux hybrid BC. STAGE B: analytic. Stage A: Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD, and is already lev-interface staggered in GEOS-FP).",
-     "expression": {
-      "op": "aggregate",
-      "output_idx": [
-       "ci",
-       "cj",
-       "ck"
-      ],
-      "ranges": {
-       "ci": {
-        "from": "lon"
-       },
-       "cj": {
-        "from": "lat"
-       },
-       "ck": {
-        "from": "lev_nodes"
-       }
-      },
-      "args": [],
-      "expr": {
-       "op": "*",
-       "args": [
-        0.05,
-        {
-         "op": "*",
-         "args": [
-          4.0,
-          {
-           "op": "/",
-           "args": [
-            {
-             "op": "-",
-             "args": [
-              "ck",
-              1
-             ]
-            },
-            7.0
-           ]
-          },
-          {
-           "op": "-",
-           "args": [
-            1.0,
-            {
-             "op": "/",
-             "args": [
-              {
-               "op": "-",
-               "args": [
-                "ck",
-                1
-               ]
-              },
-              7.0
-             ]
-            }
-           ]
-          },
-          {
-           "op": "-",
-           "args": [
-            1.0,
-            {
-             "op": "*",
-             "args": [
-              2.0,
-              {
-               "op": "/",
-               "args": [
-                {
-                 "op": "-",
-                 "args": [
-                  "ck",
-                  1
-                 ]
-                },
-                7.0
-               ]
-              }
-             ]
-            }
-           ]
-          }
-         ]
-        }
-       ]
-      }
-     }
+     "description": "Vertical face-normal air-mass flux at the LOWER edge of each cell, positive UPWARD. Vanishes exactly at k=1 (surface) and k=NLEV+1 (lid), consistent with the no-flux hybrid BC. STAGE B: analytic. Stage A: Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD, and is already lev-interface staggered in GEOS-FP)."
     }
    },
    "tests": [
@@ -1289,6 +761,582 @@
         ]
        }
       ]
+     }
+    },
+    {
+     "lhs": "dlon_deg",
+     "rhs": 5.0
+    },
+    {
+     "lhs": "dlat_deg",
+     "rhs": 4.0
+    },
+    {
+     "lhs": "phie",
+     "rhs": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "lat_edge",
+      "bindings": {}
+     }
+    },
+    {
+     "lhs": "coslat_e",
+     "rhs": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "coslat_edge",
+      "bindings": {
+       "phie": "phie"
+      }
+     }
+    },
+    {
+     "lhs": "dS_lat",
+     "rhs": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "latcell_area",
+      "bindings": {
+       "phie": "phie"
+      }
+     }
+    },
+    {
+     "lhs": "dphi_lat",
+     "rhs": {
+      "op": "apply_expression_template",
+      "args": [],
+      "name": "latcell_dphi",
+      "bindings": {
+       "phie": "phie"
+      }
+     }
+    },
+    {
+     "lhs": "Mx",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "ci",
+       "cj",
+       "ck"
+      ],
+      "args": [
+       "phie"
+      ],
+      "ranges": {
+       "ci": {
+        "from": "lon_nodes"
+       },
+       "cj": {
+        "from": "lat"
+       },
+       "ck": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        0.7,
+        {
+         "op": "cos",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            0.017453292519943295,
+            {
+             "op": "+",
+             "args": [
+              "lon0_deg",
+              {
+               "op": "*",
+               "args": [
+                {
+                 "op": "-",
+                 "args": [
+                  "ci",
+                  1
+                 ]
+                },
+                "dlon_deg"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "+",
+         "args": [
+          1.0,
+          {
+           "op": "*",
+           "args": [
+            0.3,
+            {
+             "op": "sin",
+             "args": [
+              {
+               "op": "*",
+               "args": [
+                0.017453292519943295,
+                {
+                 "op": "*",
+                 "args": [
+                  0.5,
+                  {
+                   "op": "+",
+                   "args": [
+                    {
+                     "op": "index",
+                     "args": [
+                      "phie",
+                      "cj"
+                     ]
+                    },
+                    {
+                     "op": "index",
+                     "args": [
+                      "phie",
+                      {
+                       "op": "+",
+                       "args": [
+                        "cj",
+                        1
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "+",
+         "args": [
+          1.0,
+          {
+           "op": "*",
+           "args": [
+            0.05,
+            {
+             "op": "-",
+             "args": [
+              "ck",
+              1
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "My",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "ci",
+       "cj",
+       "ck"
+      ],
+      "args": [
+       "phie"
+      ],
+      "ranges": {
+       "ci": {
+        "from": "lon"
+       },
+       "cj": {
+        "from": "lat_nodes"
+       },
+       "ck": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        0.5,
+        {
+         "op": "sin",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            2.0,
+            {
+             "op": "*",
+             "args": [
+              0.017453292519943295,
+              {
+               "op": "+",
+               "args": [
+                "lon0_deg",
+                {
+                 "op": "*",
+                 "args": [
+                  {
+                   "op": "-",
+                   "args": [
+                    "ci",
+                    0.5
+                   ]
+                  },
+                  "dlon_deg"
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "cos",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            0.017453292519943295,
+            {
+             "op": "index",
+             "args": [
+              "phie",
+              "cj"
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "+",
+         "args": [
+          1.0,
+          {
+           "op": "*",
+           "args": [
+            0.05,
+            {
+             "op": "-",
+             "args": [
+              "ck",
+              1
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "q",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "iq",
+       "jq",
+       "kq"
+      ],
+      "args": [
+       "mq",
+       "m"
+      ],
+      "ranges": {
+       "iq": {
+        "from": "lon"
+       },
+       "jq": {
+        "from": "lat"
+       },
+       "kq": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "/",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "mq",
+          "iq",
+          "jq",
+          "kq"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "m",
+          "iq",
+          "jq",
+          "kq"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "qbc_w",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gl",
+       "gl"
+      ],
+      "args": [],
+      "ranges": {
+       "gl": {
+        "from": "lev"
+       }
+      },
+      "expr": 1.0
+     }
+    },
+    {
+     "lhs": "qbc_e",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gl",
+       "gl"
+      ],
+      "args": [],
+      "ranges": {
+       "gl": {
+        "from": "lev"
+       }
+      },
+      "expr": 1.0
+     }
+    },
+    {
+     "lhs": "qbc_s",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gl",
+       "gl"
+      ],
+      "args": [],
+      "ranges": {
+       "gl": {
+        "from": "lev"
+       }
+      },
+      "expr": 1.0
+     }
+    },
+    {
+     "lhs": "qbc_n",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gl",
+       "gl"
+      ],
+      "args": [],
+      "ranges": {
+       "gl": {
+        "from": "lev"
+       }
+      },
+      "expr": 1.0
+     }
+    },
+    {
+     "lhs": "PS",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gi",
+       "gj"
+      ],
+      "ranges": {
+       "gi": {
+        "from": "lon"
+       },
+       "gj": {
+        "from": "lat"
+       }
+      },
+      "args": [],
+      "expr": 101325.0
+     }
+    },
+    {
+     "lhs": "dp",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "gi",
+       "gj",
+       "gk"
+      ],
+      "ranges": {
+       "gi": {
+        "from": "lon"
+       },
+       "gj": {
+        "from": "lat"
+       },
+       "gk": {
+        "from": "lev"
+       }
+      },
+      "args": [
+       "PS",
+       "dA",
+       "dB"
+      ],
+      "expr": {
+       "op": "+",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "dA",
+          "gk"
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "dB",
+            "gk"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "PS",
+            "gi",
+            "gj"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "Mz",
+     "rhs": {
+      "op": "aggregate",
+      "output_idx": [
+       "ci",
+       "cj",
+       "ck"
+      ],
+      "ranges": {
+       "ci": {
+        "from": "lon"
+       },
+       "cj": {
+        "from": "lat"
+       },
+       "ck": {
+        "from": "lev_nodes"
+       }
+      },
+      "args": [],
+      "expr": {
+       "op": "*",
+       "args": [
+        0.05,
+        {
+         "op": "*",
+         "args": [
+          4.0,
+          {
+           "op": "/",
+           "args": [
+            {
+             "op": "-",
+             "args": [
+              "ck",
+              1
+             ]
+            },
+            7.0
+           ]
+          },
+          {
+           "op": "-",
+           "args": [
+            1.0,
+            {
+             "op": "/",
+             "args": [
+              {
+               "op": "-",
+               "args": [
+                "ck",
+                1
+               ]
+              },
+              7.0
+             ]
+            }
+           ]
+          },
+          {
+           "op": "-",
+           "args": [
+            1.0,
+            {
+             "op": "*",
+             "args": [
+              2.0,
+              {
+               "op": "/",
+               "args": [
+                {
+                 "op": "-",
+                 "args": [
+                  "ck",
+                  1
+                 ]
+                },
+                7.0
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
      }
     }
    ]

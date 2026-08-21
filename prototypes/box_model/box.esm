@@ -1,36 +1,93 @@
 {
-  "esm": "0.8.0",
+  "esm": "1.0.0",
   "metadata": {
     "name": "reseact_box",
     "description": "ReSEACT 0-D box model, stage 2: SuperFast gas chemistry (mounted BY REF, using the new reaction_systems ref import) + FastJX photolysis (by ref) + NEI2016 surface emissions (by ref), with dry/wet deposition. A Clock model advances FastJX's solar time with the integrator: FastJX's cos_sza uses the t_utc parameter (not the independent variable t), so on its own the j-rates are frozen; param_to_var drives FastJX.t_utc from Clock.t_now = t_utc0 + t, giving a real diurnal photolysis cycle over a multi-hour run. Met (T, P) and site (lat, lon) are prescribed parameters (a single well-mixed box).\n\nEmissions: NEI2016MonthlyEmis is a pure-I/O data-loader consumer — its 69 NEI2016.<SP> fields have NO defining equation and are injected at the RHS boundary through the provider seam, so `simulate` must be given a provider per field (see box_run.jl, which reads the real EPA 12US1 NetCDF at the box's grid cell). NEI's own t_ref and the Clock's t_utc0 are set to the SAME instant at runtime so the emission diurnal/day-of-week scaling and the solar zenith angle refer to one absolute clock."
   },
   "reaction_systems": {
-    "SuperFast": { "ref": "../../../EarthSciModels/components/gaschem/superfast.esm" }
+    "SuperFast": {
+      "ref": "../../../EarthSciModels/components/gaschem/superfast.esm"
+    }
   },
   "models": {
-    "FastJX": { "ref": "../../../EarthSciModels/components/gaschem/fastjx/fastjx_interp_troposphere.esm" },
-    "Solar": { "ref": "../../../EarthSciModels/lib/solar.esm" },
+    "FastJX": {
+      "ref": "../../../EarthSciModels/components/gaschem/fastjx/fastjx_interp_troposphere.esm"
+    },
+    "Solar": {
+      "ref": "../../../EarthSciModels/lib/solar.esm"
+    },
     "Clock": {
       "variables": {
-        "t_utc0": { "type": "parameter", "units": "s", "default": 1462345200.0, "description": "Sim start time (Unix s); solar time = t_utc0 + t." },
-        "t_now":  { "type": "observed",  "units": "s", "description": "Current UTC time advancing with the integrator.",
-                    "expression": { "op": "+", "args": ["t_utc0", "t"] } }
+        "t_utc0": {
+          "type": "parameter",
+          "units": "s",
+          "default": 1462345200.0,
+          "description": "Sim start time (Unix s); solar time = t_utc0 + t."
+        },
+        "t_now": {
+          "type": "unknown",
+          "units": "s",
+          "description": "Current UTC time advancing with the integrator."
+        }
       },
-      "equations": []
+      "equations": [
+        {
+          "lhs": "t_now",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "t_utc0",
+              "t"
+            ]
+          }
+        }
+      ]
     },
-    "SuperFastDepositionSink": { "ref": "../../../EarthSciModels/components/atmospheric_deposition/superfast_deposition_sink.esm" },
-    "NEI2016Emis": { "ref": "../../../EarthSciModels/components/earthsci_data/nei2016_monthly.esm" }
+    "SuperFastDepositionSink": {
+      "ref": "../../../EarthSciModels/components/atmospheric_deposition/superfast_deposition_sink.esm"
+    },
+    "NEI2016Emis": {
+      "ref": "../../../EarthSciModels/components/earthsci_data/nei2016_monthly.esm"
+    }
   },
   "coupling": [
-    { "type": "coupling_import", "ref": "../../../EarthSciModels/couplings/fastjx_superfast.esm",
-      "bind": { "Photolysis": "FastJX", "Chem": "SuperFast" } },
-    { "type": "coupling_import", "ref": "../../../EarthSciModels/couplings/nei2016_superfast.esm",
-      "bind": { "Emissions": "NEI2016Emis", "Chem": "SuperFast" } },
-    { "type": "variable_map", "from": "Clock.t_now", "to": "Solar.t_utc", "transform": "param_to_var",
-      "description": "Advance the solar clock with the integrator." },
-    { "type": "variable_map", "from": "Solar.cos_zenith", "to": "FastJX.cos_sza", "transform": "param_to_var",
-      "description": "Drive the photolysis rates from the solar zenith angle. fastjx_interp_troposphere takes cos_sza as an input (it carries no solar geometry of its own) and interpolates the 18-band TROPOSPHERIC actinic flux on (cos_sza, P) — unlike fastjx.esm, whose F_i are top-of-atmosphere flux x cos_sza, which overstates j_O31D by ~200x and collapses the ozone.\n\nNOTE (open EarthSciAST issue, not worked around here): cos_sza sits upstream of all 18 F_i bands and every j-rate sums all 18, and the tree-walk re-evaluates an observed at each reference site instead of caching it — so the Solar chain, which reaches cos_zenith through datetime.* (the boxed, allocating path), is walked ~250x per RHS call: ~3,260 datetime evaluations, 313 KB and 930 us per call. That makes the 24 h stiff solve very slow. The fix belongs in the tree-walk (cache observeds in topological order), not in this model." },
-    { "type": "operator_compose", "systems": ["SuperFast", "SuperFastDepositionSink"],
-      "description": "Merge the D(SuperFast.<X>) ~ -(k_dry+k_wet)*X deposition sink onto the chemistry ODEs. Dep-rate params k_* set at runtime (box: prescribed vdep/H)." }
+    {
+      "type": "coupling_import",
+      "ref": "../../../EarthSciModels/couplings/fastjx_superfast.esm",
+      "bind": {
+        "Photolysis": "FastJX",
+        "Chem": "SuperFast"
+      }
+    },
+    {
+      "type": "coupling_import",
+      "ref": "../../../EarthSciModels/couplings/nei2016_superfast.esm",
+      "bind": {
+        "Emissions": "NEI2016Emis",
+        "Chem": "SuperFast"
+      }
+    },
+    {
+      "type": "variable_map",
+      "from": "Clock.t_now",
+      "to": "Solar.t_utc",
+      "transform": "param_to_var",
+      "description": "Advance the solar clock with the integrator."
+    },
+    {
+      "type": "variable_map",
+      "from": "Solar.cos_zenith",
+      "to": "FastJX.cos_sza",
+      "transform": "param_to_var",
+      "description": "Drive the photolysis rates from the solar zenith angle. fastjx_interp_troposphere takes cos_sza as an input (it carries no solar geometry of its own) and interpolates the 18-band TROPOSPHERIC actinic flux on (cos_sza, P) — unlike fastjx.esm, whose F_i are top-of-atmosphere flux x cos_sza, which overstates j_O31D by ~200x and collapses the ozone.\n\nNOTE (open EarthSciAST issue, not worked around here): cos_sza sits upstream of all 18 F_i bands and every j-rate sums all 18, and the tree-walk re-evaluates an observed at each reference site instead of caching it — so the Solar chain, which reaches cos_zenith through datetime.* (the boxed, allocating path), is walked ~250x per RHS call: ~3,260 datetime evaluations, 313 KB and 930 us per call. That makes the 24 h stiff solve very slow. The fix belongs in the tree-walk (cache observeds in topological order), not in this model."
+    },
+    {
+      "type": "operator_compose",
+      "systems": [
+        "SuperFast",
+        "SuperFastDepositionSink"
+      ],
+      "description": "Merge the D(SuperFast.<X>) ~ -(k_dry+k_wet)*X deposition sink onto the chemistry ODEs. Dep-rate params k_* set at runtime (box: prescribed vdep/H)."
+    }
   ]
 }

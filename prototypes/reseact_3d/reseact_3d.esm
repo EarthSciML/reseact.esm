@@ -1,5 +1,5 @@
 {
-  "esm": "0.8.0",
+  "esm": "1.0.0",
   "metadata": {
     "name": "ReSEACT3D",
     "description": "ReSEACT 3-D transport on a 7x7x7 NATIVE slice of the GEOS-FP 4x5 grid centred over the central US, driven by real GEOS-FP meteorology. NO REGRIDDING: the local grid IS the native grid (lon cells 15..21 -> centres -110..-80; lat points 30..36 -> 26..50; levels 1..7, k=1 = surface), so the whole conservative-overlap chain collapses to an index shift.\n\nTransport is the monotone flux-form PPM stack imported BY REFERENCE from EarthSciDiscretizations: regional open-wall inflow BCs on lon/lat, and the HYBRID sigma-pressure massform vertical (dp = dA[k] + dB[k]*PS(i,j,t)) on lev. The horizontal and vertical rule stack is byte-identical to the verified prototypes/transport_3d/transport_3d.esm; only the FORCING differs — the analytic test winds and constant PS are replaced by GEOS-FP U/V/OMEGA/PS, each supplied by an EarthSciIO discrete_provider returning the TWO records bracketing the solver time and blended continuously in time (records_per_sample=2 + w_time, the era5 pattern).\n\nGEOS-FP's collections are not co-phased, so three independent weights are used: w_I3 (PS, 3-hourly instantaneous at 00:00Z), w_A3 (U/V/OMEGA, 3-hourly means at 01:30Z) and w_A1 (PBLH, hourly means at 00:30Z).\n\nFace fluxes follow the metric the ESD divergence stencils imply on the unit sphere: Mx = dp_face*U_face/a and My = dp_face*V_face/a (Pa/s, matching m in Pa), with the A-grid GEOS-FP winds averaged to faces. Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD; Mz is +ve UPWARD at each cell's LOWER edge).\n\nCAVEATS. (1) PS is read in hPa and scaled by 100 — the loader declares Pa but EarthSciIO returns raw file values. (2) The lev no-flux BC is baked into the stencils (they never read Mz[1] or Mz[NLEV+1]), so the 7-level slab is CLOSED at its ~906 hPa top even though real air flows through it — a truncated-column artifact, negligible over the 1 s first-light window but not for long runs. (3) The two end lat rows are half-width (lat_edge clamps them) while native lat cells are a full 4 deg. (4) Using OMEGA directly means m drifts from dp: the mass fluxes are not the ones that reproduce the observed surface-pressure tendency (Jockel et al. 2001). CWC still holds EXACTLY — both continuity and tracer use the same fluxes — which is what the q == 1 gate tests.",
@@ -72,7 +72,7 @@
       ],
       "variables": {
         "m": {
-          "type": "state",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
@@ -82,7 +82,7 @@
           "description": "Air mass per cell (a pressure thickness). Strictly positive."
         },
         "mq": {
-          "type": "state",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
@@ -92,7 +92,7 @@
           "description": "Tracer mass per cell. Initialised bitwise equal to m, so q == 1."
         },
         "dev": {
-          "type": "state",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
@@ -114,1058 +114,112 @@
           "description": "Southern-most lat POINT of the slice. GEOS-FP 4x5 lat points are -90+4*(j-1); 26 is native j=30, so points j=30..36 (26..50) map to lat_local 1..7 with NO interpolation."
         },
         "dlon_deg": {
-          "type": "observed",
+          "type": "unknown",
           "units": "deg",
-          "expression": 5.0,
           "description": "GEOS-FP 4x5 native zonal spacing. Open west/east walls (regional, not periodic)."
         },
         "dlat_deg": {
-          "type": "observed",
+          "type": "unknown",
           "units": "deg",
-          "expression": 4.0,
           "description": "GEOS-FP 4x5 native meridional spacing. Open south/north walls (regional, not polar)."
         },
         "phie": {
-          "type": "observed",
+          "type": "unknown",
           "units": "deg",
           "shape": [
             "lat_nodes"
           ],
-          "description": "Latitude cell EDGES from the grid's lat_edge template; the half-polar caps fall out of the clamp at +/-90.",
-          "expression": {
-            "op": "apply_expression_template",
-            "args": [],
-            "name": "lat_edge",
-            "bindings": {}
-          }
+          "description": "Latitude cell EDGES from the grid's lat_edge template; the half-polar caps fall out of the clamp at +/-90."
         },
         "coslat_e": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lat_nodes"
           ],
-          "description": "cos of the latitude edges. Zero-length face at each pole. Never read at faces 1 or NLAT+1 -- the pole terms are structurally omitted.",
-          "expression": {
-            "op": "apply_expression_template",
-            "args": [],
-            "name": "coslat_edge",
-            "bindings": {
-              "phie": "phie"
-            }
-          }
+          "description": "cos of the latitude edges. Zero-length face at each pole. Never read at faces 1 or NLAT+1 -- the pole terms are structurally omitted."
         },
         "dS_lat": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lat"
           ],
-          "description": "Exact spherical cell-area weight sin(phie[j+1]) - sin(phie[j]).",
-          "expression": {
-            "op": "apply_expression_template",
-            "args": [],
-            "name": "latcell_area",
-            "bindings": {
-              "phie": "phie"
-            }
-          }
+          "description": "Exact spherical cell-area weight sin(phie[j+1]) - sin(phie[j])."
         },
         "dphi_lat": {
-          "type": "observed",
+          "type": "unknown",
           "units": "rad",
           "shape": [
             "lat"
           ],
-          "description": "Meridional cell extent; HALF-width at the two polar caps.",
-          "expression": {
-            "op": "apply_expression_template",
-            "args": [],
-            "name": "latcell_dphi",
-            "bindings": {
-              "phie": "phie"
-            }
-          }
+          "description": "Meridional cell extent; HALF-width at the two polar caps."
         },
         "Mx": {
-          "type": "observed",
+          "type": "unknown",
           "units": "Pa/s",
           "shape": [
             "lon_nodes",
             "lat",
             "lev"
           ],
-          "description": "Zonal face-normal AIR-MASS flux (Pa/s) at each lon face: Mx = dp_face * U_face / a, the metric the ESD divergence stencil implies on the unit sphere (cell area dlon_rad*dS_lat, zonal face length dphi_lat). dp_face and U_face are 2-point averages of the two native cells flanking the face (13+ie, 14+ie) — exact, because each local lon cell has the same footprint as native cell 14+i and the local edges sit on native cell midpoints. Replaces the Stage-B analytic wind. The west/east wall faces (ie=1, ie=NLON+1) are GENUINE faces on an open domain, and their halo cells (native 14 and 22) exist in the native array — no extrapolation needed.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gie",
-              "gj",
-              "gk"
-            ],
-            "args": [
-              "F_PS",
-              "F_U",
-              "dA",
-              "dB"
-            ],
-            "ranges": {
-              "gie": {
-                "from": "lon_nodes"
-              },
-              "gj": {
-                "from": "lat"
-              },
-              "gk": {
-                "from": "lev"
-              }
-            },
-            "expr": {
-              "op": "/",
-              "args": [
-                {
-                  "op": "*",
-                  "args": [
-                    {
-                      "op": "*",
-                      "args": [
-                        0.5,
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "dA",
-                                    "gk"
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "dB",
-                                        "gk"
-                                      ]
-                                    },
-                                    {
-                                      "op": "*",
-                                      "args": [
-                                        100.0,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                {
-                                                  "op": "-",
-                                                  "args": [
-                                                    1.0,
-                                                    "w_I3"
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    1,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        "gj"
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        13,
-                                                        "gie"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            },
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                "w_I3",
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    2,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        "gj"
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        13,
-                                                        "gie"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "dA",
-                                    "gk"
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "dB",
-                                        "gk"
-                                      ]
-                                    },
-                                    {
-                                      "op": "*",
-                                      "args": [
-                                        100.0,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                {
-                                                  "op": "-",
-                                                  "args": [
-                                                    1.0,
-                                                    "w_I3"
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    1,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        "gj"
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gie"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            },
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                "w_I3",
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    2,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        "gj"
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gie"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "op": "*",
-                      "args": [
-                        0.5,
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_U",
-                                        1,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            13,
-                                            "gie"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "w_A3",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_U",
-                                        2,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            13,
-                                            "gie"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_U",
-                                        1,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gie"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "w_A3",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_U",
-                                        2,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gie"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                6371000.0
-              ]
-            }
-          }
+          "description": "Zonal face-normal AIR-MASS flux (Pa/s) at each lon face: Mx = dp_face * U_face / a, the metric the ESD divergence stencil implies on the unit sphere (cell area dlon_rad*dS_lat, zonal face length dphi_lat). dp_face and U_face are 2-point averages of the two native cells flanking the face (13+ie, 14+ie) — exact, because each local lon cell has the same footprint as native cell 14+i and the local edges sit on native cell midpoints. Replaces the Stage-B analytic wind. The west/east wall faces (ie=1, ie=NLON+1) are GENUINE faces on an open domain, and their halo cells (native 14 and 22) exist in the native array — no extrapolation needed."
         },
         "My": {
-          "type": "observed",
+          "type": "unknown",
           "units": "Pa/s",
           "shape": [
             "lon",
             "lat_nodes",
             "lev"
           ],
-          "description": "Meridional face-normal AIR-MASS flux (Pa/s) at each lat face: My = dp_face * V_face / a, the metric the ESD divergence stencil implies on the unit sphere (meridional face length dlon_rad*cos(phi), supplied by the stencil's coslat_e factor). Because lat is POINT-based with lat_edge CLAMPING the two end edges onto the end points, the flanking native points are jL = 28+max(je,2) and jR = 29+min(je,7): the walls (je=1, je=8) collapse to the single native point that the face sits on, and interior faces bisect their two neighbours. Replaces the Stage-B analytic wind.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gi",
-              "gje",
-              "gk"
-            ],
-            "args": [
-              "F_PS",
-              "F_V",
-              "dA",
-              "dB"
-            ],
-            "ranges": {
-              "gi": {
-                "from": "lon"
-              },
-              "gje": {
-                "from": "lat_nodes"
-              },
-              "gk": {
-                "from": "lev"
-              }
-            },
-            "expr": {
-              "op": "/",
-              "args": [
-                {
-                  "op": "*",
-                  "args": [
-                    {
-                      "op": "*",
-                      "args": [
-                        0.5,
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "dA",
-                                    "gk"
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "dB",
-                                        "gk"
-                                      ]
-                                    },
-                                    {
-                                      "op": "*",
-                                      "args": [
-                                        100.0,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                {
-                                                  "op": "-",
-                                                  "args": [
-                                                    1.0,
-                                                    "w_I3"
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    1,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        28,
-                                                        {
-                                                          "op": "max",
-                                                          "args": [
-                                                            "gje",
-                                                            2
-                                                          ]
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gi"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            },
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                "w_I3",
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    2,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        28,
-                                                        {
-                                                          "op": "max",
-                                                          "args": [
-                                                            "gje",
-                                                            2
-                                                          ]
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gi"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "dA",
-                                    "gk"
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "dB",
-                                        "gk"
-                                      ]
-                                    },
-                                    {
-                                      "op": "*",
-                                      "args": [
-                                        100.0,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                {
-                                                  "op": "-",
-                                                  "args": [
-                                                    1.0,
-                                                    "w_I3"
-                                                  ]
-                                                },
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    1,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        {
-                                                          "op": "min",
-                                                          "args": [
-                                                            "gje",
-                                                            7
-                                                          ]
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gi"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            },
-                                            {
-                                              "op": "*",
-                                              "args": [
-                                                "w_I3",
-                                                {
-                                                  "op": "index",
-                                                  "args": [
-                                                    "F_PS",
-                                                    2,
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        29,
-                                                        {
-                                                          "op": "min",
-                                                          "args": [
-                                                            "gje",
-                                                            7
-                                                          ]
-                                                        }
-                                                      ]
-                                                    },
-                                                    {
-                                                      "op": "+",
-                                                      "args": [
-                                                        14,
-                                                        "gi"
-                                                      ]
-                                                    }
-                                                  ]
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "op": "*",
-                      "args": [
-                        0.5,
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_V",
-                                        1,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            28,
-                                            {
-                                              "op": "max",
-                                              "args": [
-                                                "gje",
-                                                2
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "w_A3",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_V",
-                                        2,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            28,
-                                            {
-                                              "op": "max",
-                                              "args": [
-                                                "gje",
-                                                2
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_V",
-                                        1,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            {
-                                              "op": "min",
-                                              "args": [
-                                                "gje",
-                                                7
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "w_A3",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_V",
-                                        2,
-                                        "gk",
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            29,
-                                            {
-                                              "op": "min",
-                                              "args": [
-                                                "gje",
-                                                7
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            14,
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                6371000.0
-              ]
-            }
-          }
+          "description": "Meridional face-normal AIR-MASS flux (Pa/s) at each lat face: My = dp_face * V_face / a, the metric the ESD divergence stencil implies on the unit sphere (meridional face length dlon_rad*cos(phi), supplied by the stencil's coslat_e factor). Because lat is POINT-based with lat_edge CLAMPING the two end edges onto the end points, the flanking native points are jL = 28+max(je,2) and jR = 29+min(je,7): the walls (je=1, je=8) collapse to the single native point that the face sits on, and interior faces bisect their two neighbours. Replaces the Stage-B analytic wind."
         },
         "q": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
             "lat",
             "lev"
           ],
-          "description": "Mixing ratio mq/m. The quantity under test: it must stay EXACTLY 1.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "iq",
-              "jq",
-              "kq"
-            ],
-            "args": [
-              "mq",
-              "m"
-            ],
-            "ranges": {
-              "iq": {
-                "from": "lon"
-              },
-              "jq": {
-                "from": "lat"
-              },
-              "kq": {
-                "from": "lev"
-              }
-            },
-            "expr": {
-              "op": "/",
-              "args": [
-                {
-                  "op": "index",
-                  "args": [
-                    "mq",
-                    "iq",
-                    "jq",
-                    "kq"
-                  ]
-                },
-                {
-                  "op": "index",
-                  "args": [
-                    "m",
-                    "iq",
-                    "jq",
-                    "kq"
-                  ]
-                }
-              ]
-            }
-          }
+          "description": "Mixing ratio mq/m. The quantity under test: it must stay EXACTLY 1."
         },
         "qbc_w": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lat",
             "lev"
           ],
-          "description": "Prescribed tracer concentration in the WEST halo (Dirichlet inflow data), == 1 so the incoming tracer matches the interior and q stays 1. The falsifier perturbs this.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gl",
-              "gl"
-            ],
-            "args": [],
-            "ranges": {
-              "gl": {
-                "from": "lev"
-              }
-            },
-            "expr": 1.0
-          }
+          "description": "Prescribed tracer concentration in the WEST halo (Dirichlet inflow data), == 1 so the incoming tracer matches the interior and q stays 1. The falsifier perturbs this."
         },
         "qbc_e": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lat",
             "lev"
           ],
-          "description": "Prescribed tracer concentration in the EAST halo, == 1.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gl",
-              "gl"
-            ],
-            "args": [],
-            "ranges": {
-              "gl": {
-                "from": "lev"
-              }
-            },
-            "expr": 1.0
-          }
+          "description": "Prescribed tracer concentration in the EAST halo, == 1."
         },
         "qbc_s": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
             "lev"
           ],
-          "description": "Prescribed tracer concentration in the SOUTH halo, == 1.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gl",
-              "gl"
-            ],
-            "args": [],
-            "ranges": {
-              "gl": {
-                "from": "lev"
-              }
-            },
-            "expr": 1.0
-          }
+          "description": "Prescribed tracer concentration in the SOUTH halo, == 1."
         },
         "qbc_n": {
-          "type": "observed",
+          "type": "unknown",
           "units": "1",
           "shape": [
             "lon",
             "lev"
           ],
-          "description": "Prescribed tracer concentration in the NORTH halo, == 1.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gl",
-              "gl"
-            ],
-            "args": [],
-            "ranges": {
-              "gl": {
-                "from": "lev"
-              }
-            },
-            "expr": 1.0
-          }
+          "description": "Prescribed tracer concentration in the NORTH halo, == 1."
         },
         "dA": {
           "type": "parameter",
@@ -1186,386 +240,33 @@
           "description": "dB[k] = Bp[k]-Bp[k+1] from the native GEOS-FP hybrid table at integer edges k=1..8. Supplied via const_arrays."
         },
         "PS": {
-          "type": "observed",
+          "type": "unknown",
           "units": "Pa",
           "shape": [
             "lon",
             "lat"
           ],
-          "description": "Surface pressure (Pa) on the local grid: the GEOS-FP I3 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_I3 and scaled hPa->Pa. Replaces the Stage-B constant 101325. Drives dp = dA[k] + dB[k]*PS, so the hybrid vertical breathes with the real surface pressure.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gi",
-              "gj"
-            ],
-            "args": [
-              "F_PS"
-            ],
-            "ranges": {
-              "gi": {
-                "from": "lon"
-              },
-              "gj": {
-                "from": "lat"
-              }
-            },
-            "expr": {
-              "op": "*",
-              "args": [
-                100.0,
-                {
-                  "op": "+",
-                  "args": [
-                    {
-                      "op": "*",
-                      "args": [
-                        {
-                          "op": "-",
-                          "args": [
-                            1.0,
-                            "w_I3"
-                          ]
-                        },
-                        {
-                          "op": "index",
-                          "args": [
-                            "F_PS",
-                            1,
-                            {
-                              "op": "+",
-                              "args": [
-                                29,
-                                "gj"
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                14,
-                                "gi"
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "op": "*",
-                      "args": [
-                        "w_I3",
-                        {
-                          "op": "index",
-                          "args": [
-                            "F_PS",
-                            2,
-                            {
-                              "op": "+",
-                              "args": [
-                                29,
-                                "gj"
-                              ]
-                            },
-                            {
-                              "op": "+",
-                              "args": [
-                                14,
-                                "gi"
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
+          "description": "Surface pressure (Pa) on the local grid: the GEOS-FP I3 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_I3 and scaled hPa->Pa. Replaces the Stage-B constant 101325. Drives dp = dA[k] + dB[k]*PS, so the hybrid vertical breathes with the real surface pressure."
         },
         "dp": {
-          "type": "observed",
+          "type": "unknown",
           "units": "Pa",
           "shape": [
             "lon",
             "lat",
             "lev"
           ],
-          "description": "Physical pressure thickness dp = dA[k] + dB[k]*Ps(i,j,t) on the GEOS-FP hybrid sigma-pressure grid; the CW84 parabola is built on these (ppmflux_D_lev_hyb_*). dA/dB are differences of the native GEOS-FP Ap(Pa)/Bp tables at integer edges k=1..8 -- read directly, NOT via interp.linear, which keeps the transport RHS pure arithmetic and therefore autodiff-capable.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gi",
-              "gj",
-              "gk"
-            ],
-            "ranges": {
-              "gi": {
-                "from": "lon"
-              },
-              "gj": {
-                "from": "lat"
-              },
-              "gk": {
-                "from": "lev"
-              }
-            },
-            "args": [
-              "PS",
-              "dA",
-              "dB"
-            ],
-            "expr": {
-              "op": "+",
-              "args": [
-                {
-                  "op": "index",
-                  "args": [
-                    "dA",
-                    "gk"
-                  ]
-                },
-                {
-                  "op": "*",
-                  "args": [
-                    {
-                      "op": "index",
-                      "args": [
-                        "dB",
-                        "gk"
-                      ]
-                    },
-                    {
-                      "op": "index",
-                      "args": [
-                        "PS",
-                        "gi",
-                        "gj"
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
+          "description": "Physical pressure thickness dp = dA[k] + dB[k]*Ps(i,j,t) on the GEOS-FP hybrid sigma-pressure grid; the CW84 parabola is built on these (ppmflux_D_lev_hyb_*). dA/dB are differences of the native GEOS-FP Ap(Pa)/Bp tables at integer edges k=1..8 -- read directly, NOT via interp.linear, which keeps the transport RHS pure arithmetic and therefore autodiff-capable."
         },
         "Mz": {
-          "type": "observed",
+          "type": "unknown",
           "units": "Pa/s",
           "shape": [
             "lon",
             "lat",
             "lev_nodes"
           ],
-          "description": "Vertical face-normal AIR-MASS flux (Pa/s) at each cell's LOWER edge, +ve UPWARD: Mz = -OMEGA (GEOS-FP OMEGA is dP/dt, +ve DOWNWARD). OMEGA is CELL-CENTRED in the archived files, so the edge value averages the two flanking cells, clamped at the walls. The values at ke=1 and ke=NLEV+1 are NEVER READ: facediv_lev_mass_nf_k1/_kN hardcode the no-flux wall to 0, which is what makes the 7-level slab closed at its ~906 hPa top. Replaces the Stage-B analytic profile.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gi",
-              "gj",
-              "gke"
-            ],
-            "args": [
-              "F_OM"
-            ],
-            "ranges": {
-              "gi": {
-                "from": "lon"
-              },
-              "gj": {
-                "from": "lat"
-              },
-              "gke": {
-                "from": "lev_nodes"
-              }
-            },
-            "expr": {
-              "op": "-",
-              "args": [
-                {
-                  "op": "*",
-                  "args": [
-                    0.5,
-                    {
-                      "op": "+",
-                      "args": [
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "*",
-                              "args": [
-                                {
-                                  "op": "-",
-                                  "args": [
-                                    1.0,
-                                    "w_A3"
-                                  ]
-                                },
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    1,
-                                    {
-                                      "op": "max",
-                                      "args": [
-                                        {
-                                          "op": "-",
-                                          "args": [
-                                            "gke",
-                                            1
-                                          ]
-                                        },
-                                        1
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "*",
-                              "args": [
-                                "w_A3",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    2,
-                                    {
-                                      "op": "max",
-                                      "args": [
-                                        {
-                                          "op": "-",
-                                          "args": [
-                                            "gke",
-                                            1
-                                          ]
-                                        },
-                                        1
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "op": "+",
-                          "args": [
-                            {
-                              "op": "*",
-                              "args": [
-                                {
-                                  "op": "-",
-                                  "args": [
-                                    1.0,
-                                    "w_A3"
-                                  ]
-                                },
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    1,
-                                    {
-                                      "op": "min",
-                                      "args": [
-                                        "gke",
-                                        72
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            },
-                            {
-                              "op": "*",
-                              "args": [
-                                "w_A3",
-                                {
-                                  "op": "index",
-                                  "args": [
-                                    "F_OM",
-                                    2,
-                                    {
-                                      "op": "min",
-                                      "args": [
-                                        "gke",
-                                        72
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        29,
-                                        "gj"
-                                      ]
-                                    },
-                                    {
-                                      "op": "+",
-                                      "args": [
-                                        14,
-                                        "gi"
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
+          "description": "Vertical face-normal AIR-MASS flux (Pa/s) at each cell's LOWER edge, +ve UPWARD: Mz = -OMEGA (GEOS-FP OMEGA is dP/dt, +ve DOWNWARD). OMEGA is CELL-CENTRED in the archived files, so the edge value averages the two flanking cells, clamped at the walls. The values at ke=1 and ke=NLEV+1 are NEVER READ: facediv_lev_mass_nf_k1/_kN hardcode the no-flux wall to 0, which is what makes the 7-level slab closed at its ~906 hPa top. Replaces the Stage-B analytic profile."
         },
         "F_PS": {
           "type": "parameter",
@@ -1644,96 +345,13 @@
           "description": "Time-interpolation weight for the A1 cadence (PBLH): hourly time-AVERAGED records centred 00:30, 01:30, ... UTC. Coupled from GEOSFP.w_time_A1."
         },
         "PBLH": {
-          "type": "observed",
+          "type": "unknown",
           "units": "m",
           "shape": [
             "lon",
             "lat"
           ],
-          "description": "Planetary boundary layer height (m) on the local grid: the GEOS-FP A1 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_A1. Carried for the Kzz parameterization; not yet consumed by the transport RHS.",
-          "expression": {
-            "op": "aggregate",
-            "output_idx": [
-              "gi",
-              "gj"
-            ],
-            "args": [
-              "F_PBLH"
-            ],
-            "ranges": {
-              "gi": {
-                "from": "lon"
-              },
-              "gj": {
-                "from": "lat"
-              }
-            },
-            "expr": {
-              "op": "+",
-              "args": [
-                {
-                  "op": "*",
-                  "args": [
-                    {
-                      "op": "-",
-                      "args": [
-                        1.0,
-                        "w_A1"
-                      ]
-                    },
-                    {
-                      "op": "index",
-                      "args": [
-                        "F_PBLH",
-                        1,
-                        {
-                          "op": "+",
-                          "args": [
-                            29,
-                            "gj"
-                          ]
-                        },
-                        {
-                          "op": "+",
-                          "args": [
-                            14,
-                            "gi"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "op": "*",
-                  "args": [
-                    "w_A1",
-                    {
-                      "op": "index",
-                      "args": [
-                        "F_PBLH",
-                        2,
-                        {
-                          "op": "+",
-                          "args": [
-                            29,
-                            "gj"
-                          ]
-                        },
-                        {
-                          "op": "+",
-                          "args": [
-                            14,
-                            "gi"
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
+          "description": "Planetary boundary layer height (m) on the local grid: the GEOS-FP A1 field at NATIVE (lat=29+j, lon=14+i), blended across its two bracketing records with w_A1. Carried for the Kzz parameterization; not yet consumed by the transport RHS."
         }
       },
       "tests": [
@@ -2231,6 +849,1439 @@
                 ]
               }
             ]
+          }
+        },
+        {
+          "lhs": "dlon_deg",
+          "rhs": 5.0
+        },
+        {
+          "lhs": "dlat_deg",
+          "rhs": 4.0
+        },
+        {
+          "lhs": "phie",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "lat_edge",
+            "bindings": {}
+          }
+        },
+        {
+          "lhs": "coslat_e",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "coslat_edge",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        {
+          "lhs": "dS_lat",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "latcell_area",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        {
+          "lhs": "dphi_lat",
+          "rhs": {
+            "op": "apply_expression_template",
+            "args": [],
+            "name": "latcell_dphi",
+            "bindings": {
+              "phie": "phie"
+            }
+          }
+        },
+        {
+          "lhs": "Mx",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gie",
+              "gj",
+              "gk"
+            ],
+            "args": [
+              "F_PS",
+              "F_U",
+              "dA",
+              "dB"
+            ],
+            "ranges": {
+              "gie": {
+                "from": "lon_nodes"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        13,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        13,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        "gj"
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gie"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            13,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            13,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_U",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            "gj"
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gie"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                6371000.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "My",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gje",
+              "gk"
+            ],
+            "args": [
+              "F_PS",
+              "F_V",
+              "dA",
+              "dB"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gje": {
+                "from": "lat_nodes"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        28,
+                                                        {
+                                                          "op": "max",
+                                                          "args": [
+                                                            "gje",
+                                                            2
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        28,
+                                                        {
+                                                          "op": "max",
+                                                          "args": [
+                                                            "gje",
+                                                            2
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "dA",
+                                    "gk"
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "dB",
+                                        "gk"
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        100.0,
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                {
+                                                  "op": "-",
+                                                  "args": [
+                                                    1.0,
+                                                    "w_I3"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    1,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        {
+                                                          "op": "min",
+                                                          "args": [
+                                                            "gje",
+                                                            7
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "op": "*",
+                                              "args": [
+                                                "w_I3",
+                                                {
+                                                  "op": "index",
+                                                  "args": [
+                                                    "F_PS",
+                                                    2,
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        29,
+                                                        {
+                                                          "op": "min",
+                                                          "args": [
+                                                            "gje",
+                                                            7
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "op": "+",
+                                                      "args": [
+                                                        14,
+                                                        "gi"
+                                                      ]
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        0.5,
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            28,
+                                            {
+                                              "op": "max",
+                                              "args": [
+                                                "gje",
+                                                2
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            28,
+                                            {
+                                              "op": "max",
+                                              "args": [
+                                                "gje",
+                                                2
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    {
+                                      "op": "-",
+                                      "args": [
+                                        1.0,
+                                        "w_A3"
+                                      ]
+                                    },
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        1,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "gje",
+                                                7
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "op": "*",
+                                  "args": [
+                                    "w_A3",
+                                    {
+                                      "op": "index",
+                                      "args": [
+                                        "F_V",
+                                        2,
+                                        "gk",
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            29,
+                                            {
+                                              "op": "min",
+                                              "args": [
+                                                "gje",
+                                                7
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "+",
+                                          "args": [
+                                            14,
+                                            "gi"
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                6371000.0
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "q",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "iq",
+              "jq",
+              "kq"
+            ],
+            "args": [
+              "mq",
+              "m"
+            ],
+            "ranges": {
+              "iq": {
+                "from": "lon"
+              },
+              "jq": {
+                "from": "lat"
+              },
+              "kq": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "mq",
+                    "iq",
+                    "jq",
+                    "kq"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "m",
+                    "iq",
+                    "jq",
+                    "kq"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "qbc_w",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gl",
+              "gl"
+            ],
+            "args": [],
+            "ranges": {
+              "gl": {
+                "from": "lev"
+              }
+            },
+            "expr": 1.0
+          }
+        },
+        {
+          "lhs": "qbc_e",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gl",
+              "gl"
+            ],
+            "args": [],
+            "ranges": {
+              "gl": {
+                "from": "lev"
+              }
+            },
+            "expr": 1.0
+          }
+        },
+        {
+          "lhs": "qbc_s",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gl",
+              "gl"
+            ],
+            "args": [],
+            "ranges": {
+              "gl": {
+                "from": "lev"
+              }
+            },
+            "expr": 1.0
+          }
+        },
+        {
+          "lhs": "qbc_n",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gl",
+              "gl"
+            ],
+            "args": [],
+            "ranges": {
+              "gl": {
+                "from": "lev"
+              }
+            },
+            "expr": 1.0
+          }
+        },
+        {
+          "lhs": "PS",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "F_PS"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                100.0,
+                {
+                  "op": "+",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "-",
+                          "args": [
+                            1.0,
+                            "w_I3"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            1,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "w_I3",
+                        {
+                          "op": "index",
+                          "args": [
+                            "F_PS",
+                            2,
+                            {
+                              "op": "+",
+                              "args": [
+                                29,
+                                "gj"
+                              ]
+                            },
+                            {
+                              "op": "+",
+                              "args": [
+                                14,
+                                "gi"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "dp",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gk"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gk": {
+                "from": "lev"
+              }
+            },
+            "args": [
+              "PS",
+              "dA",
+              "dB"
+            ],
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "dA",
+                    "gk"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "dB",
+                        "gk"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "PS",
+                        "gi",
+                        "gj"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "Mz",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj",
+              "gke"
+            ],
+            "args": [
+              "F_OM"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              },
+              "gke": {
+                "from": "lev_nodes"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "+",
+                      "args": [
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    1.0,
+                                    "w_A3"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    1,
+                                    {
+                                      "op": "max",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "gke",
+                                            1
+                                          ]
+                                        },
+                                        1
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "w_A3",
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    2,
+                                    {
+                                      "op": "max",
+                                      "args": [
+                                        {
+                                          "op": "-",
+                                          "args": [
+                                            "gke",
+                                            1
+                                          ]
+                                        },
+                                        1
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            {
+                              "op": "*",
+                              "args": [
+                                {
+                                  "op": "-",
+                                  "args": [
+                                    1.0,
+                                    "w_A3"
+                                  ]
+                                },
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    1,
+                                    {
+                                      "op": "min",
+                                      "args": [
+                                        "gke",
+                                        72
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "op": "*",
+                              "args": [
+                                "w_A3",
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "F_OM",
+                                    2,
+                                    {
+                                      "op": "min",
+                                      "args": [
+                                        "gke",
+                                        72
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        29,
+                                        "gj"
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        14,
+                                        "gi"
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "PBLH",
+          "rhs": {
+            "op": "aggregate",
+            "output_idx": [
+              "gi",
+              "gj"
+            ],
+            "args": [
+              "F_PBLH"
+            ],
+            "ranges": {
+              "gi": {
+                "from": "lon"
+              },
+              "gj": {
+                "from": "lat"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1.0,
+                        "w_A1"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_PBLH",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w_A1",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F_PBLH",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            29,
+                            "gj"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            14,
+                            "gi"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
           }
         }
       ]
