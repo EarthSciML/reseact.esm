@@ -84,6 +84,10 @@
 # FLUSH_EVERY), plus
 #   RESEACT_DT0T / RESEACT_DT0C  initial transport/chemistry dt (15.0 / 0.5)
 #   RESEACT_RXENV                Julia env WITH Reactant (default run-model-jl)
+#   RESEACT_RXJAC                fd (default) | ad | sym -- the chemistry block
+#                                Jacobian. sym is EarthSciASTDiff's analytic one
+#                                and needs EarthSciASTDiff in the project (use
+#                                /u/ctessum/reseact-esast-pin/env-sym); see 1b.
 #   RESEACT_RXFIX                XLA:CPU race workaround (1 = default, on)
 #   RESEACT_RXJAC                chem block Jacobian: fd (default) or ad (exact,
 #                                coloured forward-mode JVPs) -- see below
@@ -171,16 +175,20 @@ fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = docs1 = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
 ff = nothing
+# escaped so RESEACT_RXJAC=sym can prepare the symbolic Jacobian from the SAME
+# split part, with the SAME overrides, that part 2's RHS is built from.
+splitparts = nothing; merged_const = nothing; ov = nothing
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
     global fo, dms, u0, p, var_map, merged_param, discrete, ff, docs1
+    global splitparts, merged_const, ov
     file = EA.load(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)
     promoted = EA.promoted_array_names(pre, flat)
-    parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
-    docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
+    splitparts = split_system(flat, stencil_following_rule(flat); nparts = 2)
+    docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in splitparts]
     docs1 = docs[1]
     f0 = reseact_forcing(CHEMDIR; ndays = NDAYS)
     ff = merge(f0, (; const_arrays = GridResize.slice_hybrid_coefs(f0.const_arrays, NLEV_EFF)))
@@ -225,6 +233,7 @@ end
 
 include(joinpath(RXDIR, "rx_native_patch.jl"))       # AFTER using Reactant/EarthSciAST
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
+include(joinpath(RXDIR, "rx_sym_block_jac.jl")); using .RxSymBlockJac
 
 # The kernel-class merge runs INSIDE EarthSciAST's build (src/tree_walk/oop_merge.jl),
 # so `build_evaluator(form=:oop)` already hands back lane-batched kernels and the
@@ -247,9 +256,54 @@ masks = RxTracedIntegrator.species_masks(var_map, NS, NC)
 const CTRL_T = RxTracedIntegrator.pictrl_ssprk43()
 const CTRL_C = RxTracedIntegrator.pictrl_ros23()
 const JACMODE = Symbol(get(ENV, "RESEACT_RXJAC", "fd"))
-JACMODE in (:fd, :ad) || error("RESEACT_RXJAC must be fd or ad, got $JACMODE")
-adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
-    (uR, pR, t0R, t1R, dtTR, dtCR, bufsT, bufsC) -> begin
+JACMODE in (:fd, :ad, :sym) || error("RESEACT_RXJAC must be fd, ad or sym, got $JACMODE")
+const SYMJAC = JACMODE === :sym
+
+# --------------------------------------------------------------------------- #
+# 1b. RESEACT_RXJAC=sym -- EarthSciASTDiff's ANALYTIC block Jacobian.
+#
+# WHY IT MATTERS TO THIS RUNNER, which has no adjoint in it. The longest CONUS
+# run on record before 2026-08-20 died at 36.2 h of simulated time, and the
+# mechanism recorded at the time was: surface O3 dry-deposits away (correct
+# physics), leaving species at ~1e-30, and the FD chemistry Jacobian then fails
+# on them -- FD's step is sqrt(eps)*|u|, which at 1e-30 is not a step at all.
+# The analytic Jacobian has no step size and evaluates the derivative AT that
+# concentration, so it is finite where FD is garbage. That is the specific thing
+# this option exists to test.
+#
+# It also traces SMALLER than either alternative (109k lines of MLIR against
+# 323k for both :fd and :ad on the adjoint driver's single step), which matters
+# rather more inside a `@trace while` body than it does standalone.
+#
+# Needs EarthSciASTDiff in the active project -- run-model-jl cannot resolve it;
+# use /u/ctessum/reseact-esast-pin/env-sym.
+PLAN = gjbJ = host_bufsJ = dev_bufsJ = jacE = nothing
+if SYMJAC
+    @eval using EarthSciASTDiff
+    tj = time()
+    jacE = Logging.with_logger(Logging.NullLogger()) do
+        EarthSciASTDiff.prepare_jacobian(splitparts[2]; wrt = :states,
+            build_kwargs = (; form = :oop, parameter_overrides = ov,
+                              const_arrays = merged_const, param_arrays = merged_param))
+    end
+    say(@sprintf("  prepare_jacobian %.1f s   structure=%s  oop=%s",
+                 time() - tj, jacE.structure, jacE.oop))
+    jacE.oop || error("RXJAC=sym: the band model came back IN-PLACE; it captures " *
+                      "host scratch per node and cannot be traced")
+    # indexes by POSITION, and the two var maps come from independent builds
+    PLAN = block_jac_plan(jacE; runner_names = first.(sort(collect(var_map), by = last)))
+    gjbJ = EA.rhs_with_buffers(jacE.fJ!)
+    host_bufsJ = EA.forcing_buffers(jacE.fJ!)
+    say("  $PLAN   band buffers=$(length(host_bufsJ))")
+    let w = validate_plan(PLAN, jacE, u0, p, T0; gjb = gjbJ, bufs = host_bufsJ)
+        say(@sprintf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s",
+                     w, w <= 1e-12 ? "PASS" : "FAIL"))
+        w <= 1e-12 || error("RXJAC=sym: the gather plan does not reproduce the host Jacobian")
+    end
+end
+adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks,
+         PLAN = PLAN, gjbJ = gjbJ, SYMJAC = SYMJAC
+    (uR, pR, t0R, t1R, dtTR, dtCR, bufsT, bufsC, bufsJ) -> begin
         fT = (u, t, dtc, aux) -> RxTracedIntegrator.ssprk43_step(
             (uu, tt) -> gT(uu, aux.p, tt, aux.bufs), u, t, dtc, ATOL_T, RTOL)
         uT, _, dtTend, naT, nrT = RxTracedIntegrator.adaptive_solve(
@@ -278,17 +332,36 @@ adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks
             # AD Jacobian cut rejected steps at CONUS, so this may well win at
             # CONUS too -- but nobody has measured that, and the default should
             # not change on a hope. See tools/rx_adjoint_check.jl.
-            jac = JACMODE)
+            jac = JACMODE,
+            # theta reaches the band model through `aux`, not through a closure:
+            # `aux.bufsJ` is the band model's OWN forcing buffer set, so the
+            # Jacobian's meteorology advances with the RHS's rather than being
+            # baked in at the trace.
+            symjac = SYMJAC ?
+                ((uu, tt) -> block_jac(PLAN, gjbJ(gather_uj(PLAN, uu), aux.p, tt, aux.bufsJ))) :
+                nothing)
         uC, _, dtCend, naC, nrC = RxTracedIntegrator.adaptive_solve(
-            fC, uT, t0R, t1R, dtCR, CTRL_C, (p = pR, bufs = bufsC); clamp_nonneg = true)
+            fC, uT, t0R, t1R, dtCR, CTRL_C,
+            SYMJAC ? (p = pR, bufs = bufsC, bufsJ = bufsJ) : (p = pR, bufs = bufsC);
+            clamp_nonneg = true)
         return uC, naT, nrT, naC, nrC, dtTend, dtCend
     end
 end
 _dev(pp::NamedTuple) = NamedTuple{keys(pp)}(map(RX.ConcreteRNumber, values(pp)))
 _dev(::Nothing) = nothing
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
-push_forcing!() = for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+SYMJAC && (dev_bufsJ = map(RX.ConcreteRArray, host_bufsJ))
+function push_forcing!()
+    for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+    # miss this and the Jacobian freezes at the T0 epoch while the RHS advances:
+    # a wrong Jacobian that still converges, which is the worst kind.
+    SYMJAC && EA.sync_forcing!(dev_bufsJ, EA.forcing_buffers(jacE.fJ!))
+    return nothing
+end
 push_forcing!()
+# a placeholder operand when there is no band model, so the compiled program has
+# one arity regardless of RXJAC.
+const BUFSJ = SYMJAC ? dev_bufsJ : (; )
 
 PRd = _dev(p)
 UR = RX.ConcreteRArray(copy(u0))
@@ -342,7 +415,7 @@ tc = time()
 xadv = RX.@compile compile_options=COPTS adv(UR, PRd, RX.ConcreteRNumber(T0),
                                  RX.ConcreteRNumber(T0 + MACRO_DT),
                                  RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C),
-                                 dev_bufs[1], dev_bufs[2])
+                                 dev_bufs[1], dev_bufs[2], BUFSJ)
 say(@sprintf("TRACED @compile: %.1f s", time() - tc))
 try; report_patch_stats(); catch; end
 
@@ -449,7 +522,7 @@ dtT = RX.ConcreteRNumber(DT0T); dtC = RX.ConcreteRNumber(DT0C)
 for tnext in stops
     tnext <= tcur + 1e-9 && continue
     res = xadv(UR, PRd, RX.ConcreteRNumber(tcur), RX.ConcreteRNumber(tnext),
-               dtT, dtC, dev_bufs[1], dev_bufs[2])
+               dtT, dtC, dev_bufs[1], dev_bufs[2], BUFSJ)
     global UR = res[1]
     global dtT = res[6]; global dtC = res[7]
     global nT += Int(round(Float64(res[2]))); global nrTt += Int(round(Float64(res[3])))
