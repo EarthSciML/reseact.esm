@@ -798,8 +798,14 @@ function backward_sweep(lam0::Vector{Float64})
         lam = backward_stage!(CROSV, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
         lam = backward_stage!(CSSPV, tpT, lam, THT, "transport[macro $k]")
         nvjp += length(tpC) + length(tpT)
+        # FLUSH, not decoration. Julia block-buffers a file stdout at 64 kB and
+        # these lines are ~80 B, so a 576-macro-step sweep emits ~46 kB and
+        # NOTHING reaches the log until the sweep ends and the next `say` flushes.
+        # Observed on slurm 10044327: four hours of a live, 3-core-busy backward
+        # sweep looking exactly like a hang.
         @printf("  macro step %2d  t=%.0f  vjps: %d chem + %d transport   ||lambda||=%.6e\n",
                 k, ck.t, length(tpC), length(tpT), norm(lam))
+        flush(stdout)
     end
     return lam, t_replay, nvjp
 end
