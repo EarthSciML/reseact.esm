@@ -122,6 +122,9 @@
 #   RESEACT_ADJ_UJITTER   relative jitter on the base point (default 1e-1)
 #   RESEACT_ADJ_KEEPTAPE  1 = keep inner tapes from the forward pass (no replay)
 #   RESEACT_ADJ_CLAMP     0 = no clamp_nonneg (REQUIRED today; see above)
+#   RESEACT_ADJ_JAC       block Jacobian for Rosenbrock23: sym (default, exact,
+#                         reverse-safe), fd (sqrt(eps), the old default), or
+#                         ad (exact but SEGFAULTS under a reverse sweep)
 #   RESEACT_ADJ_STAGES    subset of ctl,fwd,adj,ref,fdtape (default all but ctl)
 #   RESEACT_ADJ_REFPARAM  parameters for the forward-mode reference
 #                         (default NEIRegrid.scale,Transport3D.tau_pblmix,NEIRegrid.g0)
@@ -192,16 +195,21 @@ fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
 ff = nothing
+# escaped from the build block below so the SYMBOLIC JACOBIAN can be prepared
+# from the same split part, with the same overrides, that part 2's RHS was built
+# from. Any drift between the two would be a silently wrong Jacobian.
+splitparts = nothing; merged_const = nothing; ov = nothing
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
     global fo, dms, u0, p, var_map, merged_param, discrete, ff
+    global splitparts, merged_const, ov
     file = EA.load(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)
     promoted = EA.promoted_array_names(pre, flat)
-    parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
-    docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
+    splitparts = split_system(flat, stencil_following_rule(flat); nparts = 2)
+    docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in splitparts]
     f0 = reseact_forcing(CHEMDIR; ndays = NDAYS)
     ff = merge(f0, (; const_arrays = GridResize.slice_hybrid_coefs(f0.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
@@ -245,6 +253,10 @@ end
 include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
+# unconditional: the gather plan needs only Reactant, and a `using` inside a
+# conditional block is one more thing that can only fail at runtime.
+include(joinpath(RXDIR, "rx_sym_block_jac.jl"))
+using .RxSymBlockJac
 
 host_bufs = [EA.forcing_buffers(fo[i]) for i in 1:2]
 g4 = [EA.rhs_with_buffers(fo[i]) for i in 1:2]
@@ -253,6 +265,62 @@ const NS = PERM.NS; const NC = PERM.NC; const N = PERM.N
 const MASKS = RTI.species_masks(var_map, NS, NC)
 say("  NS=$NS species, NC=$NC cells, N=$N states")
 
+# --------------------------------------------------------------------------- #
+# 1b. BLOCKER 2 -- the block Jacobian Rosenbrock23 needs.
+#
+# `jac = :fd` (the historical default) finite-differences the chemistry RHS once
+# per species to build each cell block. It costs NS extra RHS evaluations per
+# attempt and, worse, it is only accurate to sqrt(eps): it degraded the adjoint's
+# dot-product identity <lam,Jv> == <J'lam,v> to 1.1e-6 -- exactly the accuracy
+# asked of the whole gradient, with no margin left over. `jac = :ad` is exact but
+# it is a nested forward-over-reverse, and Enzyme-MLIR segfaults in
+# `AutoDiffCallRev::createReverseModeAdjoint` when a reverse sweep crosses it.
+#
+# `jac = :sym` is EarthSciASTDiff's ANALYTIC Jacobian: a separate generated
+# "band model" that emits the nonzero entries directly, gathered into cell blocks
+# by RxSymBlockJac. It contains no nested AD, so reverse mode crosses it, and it
+# is exact -- measured 5.0e-16 max entry-wise against :ad, and it restores the
+# dot-product identity to 5.3e-16. It also compiles 4x cheaper than :fd
+# (12.0 s vs 49.9 s standalone; 109k lines of MLIR vs 323k).
+#
+# The band model carries ITS OWN forcing buffers (15 of them), so meteorology
+# stays a runtime operand there too rather than being baked into the program.
+# They are built from the same `merged_param` dict the RHS uses, which is what
+# makes `refresh_forcing` reach them.
+const JACMODE = Symbol(get(ENV, "RESEACT_ADJ_JAC", "sym"))
+JACMODE in (:sym, :fd, :ad) || error("RESEACT_ADJ_JAC must be sym, fd or ad")
+const SYMJAC = JACMODE === :sym
+PLAN = gjbJ = host_bufsJ = dev_bufsJ = nothing
+if SYMJAC
+    @eval using EarthSciASTDiff
+    tj = time()
+    jacE = Logging.with_logger(Logging.NullLogger()) do
+        EarthSciASTDiff.prepare_jacobian(splitparts[2]; wrt = :states,
+            build_kwargs = (; form = :oop, parameter_overrides = ov,
+                              const_arrays = merged_const, param_arrays = merged_param))
+    end
+    say(@sprintf("  prepare_jacobian %.1f s   structure=%s  oop=%s",
+                 time() - tj, jacE.structure, jacE.oop))
+    jacE.oop || error("jac=:sym: the band model came back IN-PLACE; it captures " *
+                      "host scratch per node and cannot be traced")
+    # `runner_names` costs nothing and would otherwise be a silent catastrophe:
+    # two independent builds, two var maps, and a plan that indexes by POSITION.
+    PLAN = block_jac_plan(jacE;
+                          runner_names = first.(sort(collect(var_map), by = last)))
+    gjbJ = EA.rhs_with_buffers(jacE.fJ!)
+    host_bufsJ = EA.forcing_buffers(jacE.fJ!)
+    say("  $PLAN   band buffers=$(length(host_bufsJ))")
+    # the plan is pure index algebra, so it is checkable on the host against the
+    # sparse Jacobian EarthSciASTDiff assembles itself -- one evaluation, and it
+    # is the only thing standing between a transposed gather and a plausible
+    # gradient that is wrong everywhere.
+    let w = validate_plan(PLAN, jacE, u0, p, T0; gjb = gjbJ, bufs = host_bufsJ)
+        say(@sprintf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s",
+                     w, w <= 1e-12 ? "PASS" : "FAIL"))
+        w <= 1e-12 || error("jac=:sym: the gather plan does not reproduce the host Jacobian")
+    end
+end
+
 # The RHS with its differentiable payload an EXPLICIT argument: the production
 # call site hides p and the forcing buffers in a closure, and a closure is
 # opaque to Enzyme.
@@ -260,12 +328,30 @@ gT(u, th, t) = g4[1](u, th.p, t, th.bufs)
 gC(u, th, t) = g4[2](u, th.p, t, th.bufs)
 
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
-push_forcing!() = for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+SYMJAC && (dev_bufsJ = map(RX.ConcreteRArray, host_bufsJ))
+function push_forcing!()
+    for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+    # the band model has its own buffer set; it is fed from the same
+    # `merged_param` arrays, so `refresh_forcing` moves it too -- but only if
+    # this line is here. Miss it and the Jacobian freezes at the T0 epoch while
+    # the RHS moves, which is a wrong Jacobian that still converges.
+    SYMJAC && EA.sync_forcing!(dev_bufsJ, EA.forcing_buffers(jacE.fJ!))
+    return nothing
+end
 push_forcing!()
 _devp(pp::NamedTuple) = NamedTuple{keys(pp)}(map(RX.ConcreteRNumber, values(pp)))
 const PRd = _devp(p)
 const THT = (p = PRd, bufs = dev_bufs[1])
-const THC = (p = PRd, bufs = dev_bufs[2])
+# The chemistry theta grows a THIRD field under jac=:sym. Every construction of
+# one goes through `thC` so the shape cannot drift between primal, VJP and JVP --
+# a mismatch there is an Enzyme activity error at best and a dropped dJ/dp at
+# worst. `theta` is passed to the band model APART from the closure for the same
+# reason: a closure over `p` would make dJ/dp through the JACOBIAN invisible.
+thC(pp, bb, bbJ) = SYMJAC ? (p = pp, bufs = bb, bufsJ = bbJ) : (p = pp, bufs = bb)
+const THC = thC(PRd, dev_bufs[2], dev_bufsJ)
+# u -> the NS x NS matrix of length-NC cell-block diagonals, all on device.
+gJ = SYMJAC ? ((u, th, t) -> block_jac(PLAN, gjbJ(gather_uj(PLAN, u), th.p, t, th.bufsJ))) :
+              nothing
 
 # every entry of `p` must be a runtime scalar; the gradient vector IS `keys(p)`.
 const PNAMES = Tuple(sort(collect(keys(p))))
@@ -327,10 +413,12 @@ ssp_step(u, th, t, dt) = RTI.ssprk43_step_unrolled((uu, tt) -> gT(uu, th, tt),
                                                    u, t, dt, ATOL_T, RTOL)
 ros_step(u, th, t, dt) = RTI.ros23_step((uu, tt) -> gC(uu, th, tt), u, t, dt,
                                         NS, NC, MASKS, ATOL_C, RTOL;
-                                        unrolled = true, jac = :fd)
+                                        unrolled = true, jac = JACMODE,
+                                        symjac = SYMJAC ? ((uu, tt) -> gJ(uu, th, tt)) : nothing)
 ssp_vjp(u, th, lam, t, dt) = RTI.ssprk43_step_vjp(gT, u, th, t, dt, lam, ATOL_T, RTOL)
 ros_vjp(u, th, lam, t, dt) = RTI.ros23_step_vjp(gC, u, th, t, dt, lam,
-                                                NS, NC, MASKS, ATOL_C, RTOL; jac = :fd)
+                                                NS, NC, MASKS, ATOL_C, RTOL;
+                                                jac = JACMODE, gj = gJ)
 # The JVPs return the WHOLE `Enzyme.autodiff` result, not `r[1]`. MEASURED, and
 # it is a trap: `RxTracedIntegrator.{ros23,ssprk43}_step_jvp` hand back `r[1]`,
 # and on the REAL model that slot is the PRIMAL, not the tangent -- a chained
@@ -345,7 +433,7 @@ ssp_jvp(u, du, th, dth, t, dt) = EZ.autodiff(EZ.Forward, RTI._ssprk43_out_c, EZ.
 ros_jvp(u, du, th, dth, t, dt) = EZ.autodiff(EZ.Forward, RTI._ros23_out_c, EZ.Duplicated,
     EZ.Const(gC), EZ.Duplicated(u, du), EZ.Duplicated(th, dth),
     EZ.Const(t), EZ.Const(dt), EZ.Const(NS), EZ.Const(NC), EZ.Const(MASKS),
-    EZ.Const(ATOL_C), EZ.Const(RTOL), EZ.Const(:fd))
+    EZ.Const(ATOL_C), EZ.Const(RTOL), EZ.Const(JACMODE), EZ.Const(gJ))
 
 const U_R  = RX.ConcreteRArray(copy(UBASE))
 const T_R  = RX.ConcreteRNumber(T0)
@@ -879,7 +967,9 @@ if want("ctl")
         u, t0_, t1_, d0, RTI.pictrl_ssprk43(), th; clamp_nonneg = true)
     adapC(u, th, t0_, t1_, d0) = RTI.adaptive_solve(
         (uu, tt, dd, ax) -> RTI.ros23_step((x, s) -> gC(x, ax, s), uu, tt, dd,
-                                           NS, NC, MASKS, ATOL_C, RTOL; unrolled = true),
+                                           NS, NC, MASKS, ATOL_C, RTOL; unrolled = true,
+                                           jac = JACMODE,
+                                           symjac = SYMJAC ? ((x, s) -> gJ(x, ax, s)) : nothing),
         u, t0_, t1_, d0, RTI.pictrl_ros23(), th; clamp_nonneg = true)
     T1R = RX.ConcreteRNumber(T0 + MACRO_DT)
     refresh_forcing(T0)
@@ -928,17 +1018,18 @@ if want("ref") && want("adj")
     CROSJ = timed_compile("ros_jvp", () -> RX.@compile compile_options=COPTS ros_jvp(U_R, U_R, THC, THC, T_R, DTC_R))
 
     zh_T = _zero_like((p = p, bufs = host_bufs[1]))
-    zh_C = _zero_like((p = p, bufs = host_bufs[2]))
-    function onehot_dth(zh, k::Symbol)
-        pp = NamedTuple{keys(zh.p)}(map(kk -> kk === k ? 1.0 : 0.0, keys(zh.p)))
-        return _todev((p = pp, bufs = zh.bufs))
-    end
+    zh_C = _zero_like(thC(p, host_bufs[2], host_bufsJ))
+    # `merge`, not a literal (p=..., bufs=...): the chemistry theta has a third
+    # field under jac=:sym and a literal would silently drop it.
+    onehot_dth(zh, k::Symbol) =
+        _todev(merge(zh, (p = NamedTuple{keys(zh.p)}(map(kk -> kk === k ? 1.0 : 0.0,
+                                                         keys(zh.p))),)))
 
     # WHICH SLOT IS THE TANGENT. Settled empirically, not assumed: with a zero
     # state seed AND a zero theta seed the tangent must be EXACTLY zero, and no
     # other slot of the returned tuple is (the primal is the state, which is not).
-    ZTHT = _todev((p = zh_T.p, bufs = zh_T.bufs))
-    ZTHC = _todev((p = zh_C.p, bufs = zh_C.bufs))
+    ZTHT = _todev(zh_T)
+    ZTHC = _todev(zh_C)
     ZU = RX.ConcreteRArray(zeros(Float64, N))
     JSLOT = let e = (refresh_forcing(CKPTS[1].epoch); tapes_for(1)[1][1])
         r = CSSPJ(RX.ConcreteRArray(e.u), ZU, THT, ZTHT,
@@ -981,7 +1072,7 @@ if want("ref") && want("adj")
         b = BADREC[]; ischem = startswith(b.label, "chem")
         cj = ischem ? CROSJ : CSSPJ; TH = ischem ? THC : THT
         zh = ischem ? zh_C : zh_T
-        dth0 = _todev((p = zh.p, bufs = zh.bufs))          # zero theta tangent
+        dth0 = _todev(zh)                                 # zero theta tangent
         duv = randn(Random.MersenneTwister(4242), N) .* max.(abs.(b.u), 1e-12)
         r = cj(RX.ConcreteRArray(b.u), RX.ConcreteRArray(duv), TH, dth0,
                RX.ConcreteRNumber(b.t), RX.ConcreteRNumber(b.dt))
@@ -1005,7 +1096,7 @@ if want("ref") && want("adj")
             lam = randn(rng, N) ./ scu
             dthh = NamedTuple{keys(p)}(map(kk -> randn(rng) * max(abs(Float64(getfield(p, kk))), 1e-12),
                                            keys(p)))
-            DTHd = _todev((p = dthh, bufs = zh.bufs))
+            DTHd = _todev(merge(zh, (p = dthh,)))
             local jv = Array(cj(RX.ConcreteRArray(e.u), RX.ConcreteRArray(v), TH, DTHd,
                                 RX.ConcreteRNumber(e.t), RX.ConcreteRNumber(e.dt))[JSLOT])
             local rv = cv(RX.ConcreteRArray(e.u), TH, RX.ConcreteRArray(lam),
@@ -1084,7 +1175,7 @@ if want("fdtape") && want("adj")
     theta_dev(k, h) = let vals = map(kk -> RX.ConcreteRNumber(Float64(getfield(p, kk)) +
                                                               (kk === k ? h : 0.0)), keys(p))
         pr = NamedTuple{keys(p)}(vals)
-        ((p = pr, bufs = dev_bufs[1]), (p = pr, bufs = dev_bufs[2]))
+        ((p = pr, bufs = dev_bufs[1]), thC(pr, dev_bufs[2], dev_bufsJ))
     end
     say("  parameter                        h            fd derivative        adjoint dJ/dtheta     rel")
     for nm in REFPARAM

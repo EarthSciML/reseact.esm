@@ -42,6 +42,16 @@ cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm
 
 JULIA=/u/ctessum/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/bin/julia
 
+# The symbolic block Jacobian (RESEACT_ADJ_JAC=sym, now the default) needs
+# EarthSciASTDiff. run-model-jl cannot resolve it -- its EarthSciAST checkout is
+# on the 0.1.x line while EarthSciASTDiff requires 0.9.x -- so this job runs out
+# of env-sym, which is run-model-jl's dependency set plus a pinned
+# EarthSciASTDiff, against the corpus-pinned model that env can load.
+export RESEACT_RXENV=${RESEACT_RXENV:-/u/ctessum/reseact-esast-pin/env-sym}
+export RESEACT_MODEL=${RESEACT_MODEL:-/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm}
+[ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV missing"; exit 1; }
+[ -f "$RESEACT_MODEL" ] || { echo "FATAL: model $RESEACT_MODEL missing"; exit 1; }
+
 export RESEACT_NLON=${RESEACT_NLON:-13}
 export RESEACT_NLAT=${RESEACT_NLAT:-7}
 export RESEACT_NLEV=${RESEACT_NLEV:-72}
@@ -49,15 +59,16 @@ export RESEACT_ADJ_STAGES=${RESEACT_ADJ_STAGES:-fwd,adj}
 export RESEACT_ADJ_CLAMP=${RESEACT_ADJ_CLAMP:-0}
 export RESEACT_ADJ_NMACRO=${RESEACT_ADJ_NMACRO:-3}
 export RESEACT_ADJ_XLAFIX=${RESEACT_ADJ_XLAFIX:-1}
+export RESEACT_ADJ_JAC=${RESEACT_ADJ_JAC:-sym}
 export RESEACT_LABEL=${RESEACT_LABEL:-conus-adj-$SLURM_JOB_ID}
 
 echo "=== node $(hostname)  cpus=$SLURM_CPUS_PER_TASK  mem=${SLURM_MEM_PER_NODE}M ==="
-echo "=== clamp=$RESEACT_ADJ_CLAMP xlafix=$RESEACT_ADJ_XLAFIX nmacro=$RESEACT_ADJ_NMACRO ==="
+echo "=== clamp=$RESEACT_ADJ_CLAMP xlafix=$RESEACT_ADJ_XLAFIX jac=$RESEACT_ADJ_JAC nmacro=$RESEACT_ADJ_NMACRO ==="
 free -g | head -2
 
 # -t 8 matches what every other measurement in this repo used, so the timings
 # stay comparable; the extra cores are headroom for XLA's own thread pool.
-"$JULIA" --project=run-model-jl -t 8 --heap-size-hint=64G tools/adjoint_gradient.jl
+"$JULIA" --project="$RESEACT_RXENV" -t 8 --heap-size-hint=64G tools/adjoint_gradient.jl
 
 echo "=== peak RSS: $(grep VmHWM /proc/self/status 2>/dev/null || echo n/a) ==="
 sacct -j "$SLURM_JOB_ID" --format=JobID,MaxRSS,Elapsed,State 2>/dev/null || true

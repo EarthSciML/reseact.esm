@@ -138,22 +138,55 @@
 #    unclamped gradient is a gradient of, for practical purposes, the same
 #    trajectory. UNEXPLAINED. This is the single biggest obstacle to trusting a
 #    long run, because a week is 2,016 macro steps and this fired at step 3.
-# 2. THE BLOCK JACOBIAN IS FINITE DIFFERENCE. `ros23_step` builds its
-#    linearization by FD, so the adjoint carries FD contamination on top of a
-#    step that `clamp_nonneg` and the controller already make piecewise. The
-#    exact alternative (`jac=:ad`) SEGFAULTS under reverse mode -- confirmed on
-#    the default pass pipeline, with a reproducer now reduced to ONE
-#    `enzyme.fwddiff` inside one reverse pass. It is upstream, in
-#    `AutoDiffCallRev::createReverseModeAdjoint`, which uses `CreateReverseDiff`'s
-#    result without a null check. Both routes around the nesting are also broken
-#    upstream (`BatchDuplicated` leaves an `enzyme.extract` XLA rejects;
-#    `Ops.batch` emits a rank-mismatched transpose). So: blocked, not deferred.
+# 2. THE BLOCK JACOBIAN IS FINITE DIFFERENCE. **CLOSED 2026-08-20.** It used to
+#    read: `ros23_step` builds its linearization by FD, so the adjoint carries FD
+#    contamination on top of a step that `clamp_nonneg` and the controller
+#    already make piecewise; and the exact alternative (`jac=:ad`) SEGFAULTS
+#    under reverse mode, upstream, in `AutoDiffCallRev::createReverseModeAdjoint`
+#    (reproducer reduced to ONE `enzyme.fwddiff` inside one reverse pass; both
+#    routes around the nesting also broken upstream -- `BatchDuplicated` leaves an
+#    `enzyme.extract` XLA rejects, `Ops.batch` emits a rank-mismatched transpose).
+#    All of that is still true of `:ad`. It is now MOOT, because there is a third
+#    option that is neither.
+#
+#    `RESEACT_ADJ_JAC=sym` (the default since 2026-08-20) uses EarthSciASTDiff's
+#    ANALYTIC Jacobian: a separately generated "band model" emitting the nonzero
+#    entries, gathered into cell blocks by tools/reactant_handoff/rx_sym_block_jac.jl.
+#    It contains no nested AD at all, so reverse mode crosses it -- which is the
+#    whole point, and it is why this closes the blocker rather than working around
+#    it. Measured, at 6x6x8 with the race workaround on:
+#      * vs `:ad`, max entry-wise relative error 5.0e-16, and ZERO entries that
+#        `:ad` calls nonzero and the gather plan leaves structurally zero;
+#      * the per-step dot-product identity <lam,Jv> == <J'lam,v> goes to 5.3e-16
+#        in the state direction, 2.3e-16 in p. The SAME check on the SAME jittered
+#        base point with `:fd` reads 1.8e-6 (slurm 10042219 vs 10041660) -- i.e.
+#        the historical 1e-6 was the FD Jacobian, not the race, and the two were
+#        confounded until both were measured with the workaround on;
+#      * it is CHEAPER, not a trade: the Jacobian alone compiles in 12.0 s against
+#        49.9 s (`:fd`) and 309.2 s (`:ad`), and the ROS23 primal module is
+#        109,035 lines of MLIR against 323,179. The VJP module handed to Enzyme is
+#        while-free and call-free.
+#    The gather plan is validated on the host against EarthSciASTDiff's own sparse
+#    Jacobian at every startup (`validate_plan`, worst relative 0.0 at 6x6x8 and
+#    at CONUS) and it THROWS rather than falling back.
+#    `:fd` and `:ad` remain reachable via RESEACT_ADJ_JAC for comparison.
+#    NB `:sym` needs EarthSciASTDiff in the active project -- see the env note
+#    at the foot of this header.
 # 3. COMPUTE. The tape is cheap -- 681 kB per macro step, so ~1.4 GB for a week,
-#    no Griewank scheme warranted. The TIME is the problem. A projection, and it
-#    is only a projection: the traced 24 h CONUS solve took 5,923 s, so a week
-#    forward is ~11.5 h, and at the measured 5.1x adjoint ratio ~59 h. That
-#    ratio was measured at demonstration scale, not at CONUS, and the backward
-#    sweep has never been run at CONUS at all. Treat it as an order of magnitude.
+#    no Griewank scheme warranted. The TIME is the problem, and it is now
+#    measured at CONUS rather than projected from demonstration scale (slurm
+#    10015169: 3 macro steps, forward 78.61 s / 170 accepted inner steps,
+#    backward 225.51 s, of which replay 73.30 s = 32.5% and VJPs 152.21 s =
+#    67.5% at 0.8954 s/VJP). The backward/forward ratio is 2.87, or 1.94 with the
+#    replay removed -- NOT the 5.1x measured at demonstration scale.
+#    Scaled off the traced 24 h CONUS solve (6,301.7 s with the race workaround
+#    on, slurm 10017939): a week forward is ~12.2 h and a week adjoint ~35 h,
+#    ~24 h if a device-side fixed-step loop removes the replay. Against the
+#    stated budget that is the open question, which is why the current target is
+#    48 h of simulation rather than a week: ~1/3.5 of those figures.
+#    THE LARGEST CONUS GRADIENT EVER RUN IS STILL 3 MACRO STEPS (~15 simulated
+#    minutes), and the largest CONUS FORWARD run is 24 h. Everything above 24 h
+#    is projection until tools/diag/traced_48h_gate.sbatch says otherwise.
 # 4. INTERMITTENT NON-FINITE RESULTS -- DIAGNOSED 2026-08-12: it is a DATA RACE
 #    IN XLA:CPU's intra-op parallel execution. With ONE XLA thread it does not
 #    happen at all (0 of 400,000 calls across ten compile variants); at 4 threads
@@ -198,11 +231,22 @@
 #    two). This retires the 3.1e-6 host/device gap AND the entire (t, dt)
 #    recording and replay apparatus. Untried at ReSEACT state sizes -- the tape
 #    is dense `[cap, state]`, so large state x large cap is the risk.
-# B. Explain blocker 1. It is the only one that is ours rather than upstream's.
-# C. File blocker 2 upstream (write-up ready in
-#    tools/diag/UPSTREAM_reverse_over_forward.md) and track it.
-# D. Only then attempt a week, and stage it: 24 h first, against a forward
+# B. Explain blocker 1. It is the only one that is ours rather than upstream's,
+#    and it has never been retested with EITHER of the two things that have
+#    changed underneath it (the race workaround, and now `jac=:sym`). Note the
+#    two are not independent of the clamp: the clamp writes EXACT ZEROS, and an
+#    FD Jacobian differencing a stiff RHS about a zero concentration has step
+#    size sqrt(eps)*|u| = 0. So the clamped, FD-Jacobian configuration in which
+#    blocker 1 was recorded is degenerate by construction.
+#    tools/diag/adjoint_clamp_retest.sbatch runs exactly that comparison.
+# C. `jac=:sym` inside `adaptive_solve`'s traced `@trace while` -- the FORWARD
+#    runner still uses the FD block Jacobian, and the 36.2 h CONUS death was
+#    attributed to precisely that (FD failing on species at 1e-30).
+# D. Only then attempt a long window, and stage it: 48 h first, against a forward
 #    sensitivity for two or three parameters as an independent check.
+# E. File the `:ad` reverse-over-forward segfault upstream (write-up ready in
+#    tools/diag/UPSTREAM_reverse_over_forward.md). Lower priority now that
+#    `jac=:sym` means nothing here depends on it.
 #
 # ---------------------------------------------------------------------------
 # READ THIS BEFORE CHANGING THE BASE POINT
@@ -228,6 +272,21 @@
 #
 # Anything already set in the environment WINS over the defaults chosen here, so
 # this script can be used as a thin preset over the real drivers.
+#
+# ---------------------------------------------------------------------------
+# WHICH JULIA ENVIRONMENT
+# ---------------------------------------------------------------------------
+# The default `jac=:sym` needs EarthSciASTDiff, and `run-model-jl` CANNOT resolve
+# it: run-model-jl develops the live EarthSciAST checkout (0.1.x line) while
+# EarthSciASTDiff requires 0.9.x, and the two also disagree about EarthSciIO.
+# That is a packaging fact, not something this script can paper over. So either
+#
+#   julia --project=/u/ctessum/reseact-esast-pin/env-sym run_reseact_adjoint.jl
+#     with RESEACT_MODEL=/u/ctessum/reseact-esast-pin/corpus-pin/reseact.esm/reseact.esm
+#
+# (what tools/diag/adjoint_conus.sbatch and adjoint_clamp_retest.sbatch do), or
+# run with RESEACT_ADJ_JAC=fd, which needs nothing beyond run-model-jl and is
+# what every result before 2026-08-20 was produced with.
 # ===========================================================================
 
 const REPO = @__DIR__
@@ -245,8 +304,16 @@ get!(ENV, "RESEACT_NLAT", "6")
 get!(ENV, "RESEACT_NLEV", "8")
 
 # `clamp_nonneg` OFF -- blocker 1. Not a preference; with it on the backward
-# sweep goes non-finite at the third macro step.
+# sweep goes non-finite at the third macro step. UNDER RETEST: the configuration
+# that observation was made in had both the XLA:CPU race active and an FD block
+# Jacobian, and the clamp's exact zeros are what make an FD Jacobian degenerate.
+# See tools/diag/adjoint_clamp_retest.sbatch.
 get!(ENV, "RESEACT_ADJ_CLAMP", "0")
+
+# The exact, reverse-safe block Jacobian -- blocker 2, closed. See the header for
+# what it replaced and what it measured. `fd` reproduces every pre-2026-08-20
+# result; `ad` is exact but segfaults under a reverse sweep.
+get!(ENV, "RESEACT_ADJ_JAC", "sym")
 
 # Displace the base point off the PPM limiter switching surface (see above).
 get!(ENV, "RESEACT_ADJ_UJITTER", "1e-1")
@@ -290,6 +357,8 @@ say("  grid          : $(ENV["RESEACT_NLON"])x$(ENV["RESEACT_NLAT"])x$(ENV["RESE
 say("  window        : $(ENV["RESEACT_ADJ_NMACRO"]) macro steps")
 say("  objective     : $(ENV["RESEACT_ADJ_OBJ"])")
 say("  clamp_nonneg  : $(ENV["RESEACT_ADJ_CLAMP"] == "0" ? "OFF (blocker 1)" : "ON")")
+say("  block Jacobian: $(ENV["RESEACT_ADJ_JAC"])" *
+    (ENV["RESEACT_ADJ_JAC"] == "sym" ? "  (analytic, exact, reverse-safe)" : ""))
 say("  base point    : jittered $(ENV["RESEACT_ADJ_UJITTER"]) relative (PPM limiter; see header)")
 say("")
 say("  NOTE This demonstrates d(objective)/d(parameters) over a SHORT window on")
