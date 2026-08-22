@@ -40,11 +40,22 @@
 #   accept/reject ladder is BYTE-IDENTICAL between the two, so the adaptive
 #   controller made all 27,973 of its decisions the same way. J moved 647 ulps
 #   (7.6e-14 relative) and the 19 nonzero gradient components agree to 2.8e-10
-#   worst-case -- floating-point reassociation, not a schema difference: 1.0.0
-#   exposes 111 setup-time geometry constants as runtime scalars, which XLA can
-#   no longer constant-fold, and all 111 came back EXACTLY zero. At 6x6x8 the
-#   same comparison was bit-identical; 27,973 steps of accumulation is the
-#   difference. Both runs are far inside the 1e-6 that this work targets.
+#   worst-case -- floating-point reassociation, not a schema difference. At 6x6x8
+#   the same comparison was bit-identical; 27,973 steps of accumulation is the
+#   difference. Both are far inside the 1e-6 that this work targets.
+#
+#   WHY 49 PARAMETERS BECAME 160, AND WHY 111 OF THEM ARE STRUCTURAL ZEROS.
+#   esm 1.0.0 redeclares every data-loader field as a PARAMETER carrying
+#   `update: {kind: "data", ...}` instead of an observed variable defined by an
+#   expression -- 42 GEOS-FP met fields and 69 NEI2016 species fluxes. They are
+#   in `p` and the gradient table prints them, but the scalar slot is not how
+#   the field enters the model: the values arrive as arrays through the forcing
+#   buffers, the half of `theta` this adjoint deliberately does not accumulate.
+#   Their zeros are therefore structural, NOT physical -- see the long note in
+#   tools/adjoint_gradient.jl. `dJ/d(NEI2016Emis.flux_NO) = 0` sits in the same
+#   table as `dJ/d(NEIRegrid.scale) = -2.114`, which is that same NO emission
+#   field entering through a channel that IS differentiated. The 49
+#   pre-migration scalars remain the calibratable set.
 # * A DISCRETE ADJOINT over the Lie-Trotter macro-step loop. One backward sweep
 #   returns the gradient w.r.t. ALL 160 runtime scalars at once, at a cost that
 #   does NOT scale with the parameter count -- measured 2.51x one forward solve

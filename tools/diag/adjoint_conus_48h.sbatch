@@ -35,11 +35,16 @@
 # one: the 576-step accept/reject ladder is BYTE-IDENTICAL, so the controller made
 # all 27,973 decisions the same way. J moved 647 ulps (7.6e-14) and the 19 nonzero
 # components agree to 2.8e-10 worst-case. That is reassociation, not a schema
-# difference -- 1.0.0 exposes 111 setup-time geometry constants as runtime scalars
-# that XLA can no longer constant-fold, and all 111 came back EXACTLY zero. The
-# same comparison at 6x6x8 was bit-identical; 27,973 steps of accumulation is what
-# separates them. The parameter count rising 49 -> 160 costs nothing: the reverse
-# pass returns the whole theta cotangent in one sweep.
+# difference; the same comparison at 6x6x8 was bit-identical, and 27,973 steps of
+# accumulation is what separates them.
+#
+# The parameter count rising 49 -> 160 costs nothing -- the reverse pass returns
+# the whole theta cotangent in one sweep -- but do not read the extra 111 as new
+# sensitivities. esm 1.0.0 redeclares data-loader fields as parameters with
+# `update: {kind: "data"}`; the scalar slot is not how they enter (the values come
+# through the forcing buffers, which this adjoint does not accumulate), so all 111
+# are STRUCTURAL zeros. See tools/adjoint_gradient.jl's "FORCING HAS NO
+# DERIVATIVE" note before quoting any of them.
 #
 # UJITTER=0 -- ON PURPOSE, and it contradicts the advice in the driver header.
 # That advice is about FINITE-DIFFERENCE VALIDATION: the default IC is exactly

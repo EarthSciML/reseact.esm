@@ -77,13 +77,36 @@
 # gradient of, for practical purposes, the same trajectory. Not explained; see
 # DIFFERENTIABILITY_PLAN.md's Phase 4 section.
 #
-# FORCING HAS NO DERIVATIVE. `theta` is `(p = the 49 runtime scalars,
-# bufs = the GEOS-FP forcing buffers)`. The VJP returns a gradient for both
-# halves; only `p` is accumulated. That is not a shortcut -- meteorology is
-# input data, not a function of the parameters, and we are not differentiating
-# w.r.t. GEOS-FP. The forcing refresh is a clean boundary: it is replayed from
-# the checkpointed epoch on the way back, so every macro step is adjointed
-# against the same forcing fields it was integrated with.
+# FORCING HAS NO DERIVATIVE. `theta` is `(p = the runtime scalars, bufs = the
+# GEOS-FP forcing buffers)`. The VJP returns a gradient for both halves; only
+# `p` is accumulated. That is not a shortcut -- meteorology is input data, not a
+# function of the parameters, and we are not differentiating w.r.t. GEOS-FP. The
+# forcing refresh is a clean boundary: it is replayed from the checkpointed epoch
+# on the way back, so every macro step is adjointed against the same forcing
+# fields it was integrated with.
+#
+# WHICH MAKES 111 OF THE 160 PRINTED COMPONENTS STRUCTURAL ZEROS -- READ THE
+# TABLE ACCORDINGLY. Under esm 0.8.0 `p` held 49 scalars, every one of them a
+# real knob. esm 1.0.0 redeclares each data-loader field as a PARAMETER carrying
+# `update: {kind: "data", source: ..., from: {file_variable: ...}}` -- 42 GEOS-FP
+# met fields and 69 NEI2016 species fluxes -- so `p` is now 160 long and the
+# gradient table prints all of them.
+#
+# Those 111 report `theta=0  dJ/dtheta=0.000e+00`, and BOTH halves of that are
+# placeholders rather than physics. The scalar slot is not how the field enters:
+# the values arrive as ARRAYS through `merged_param` / the forcing buffers (the
+# coupling carries them with `transform: param_to_var`), which is the `bufs` half
+# we deliberately do not accumulate. theta=0 for `GEOSFP.T` is the proof -- the
+# chemistry would not survive a 0 K temperature, so the slot is plainly unread.
+#
+# So `dJ/d(NEI2016Emis.flux_NO) = 0` does NOT mean surface O3 is insensitive to
+# NO emissions. It is intensely sensitive to them: the same emissions field
+# produces `dJ/d(NEIRegrid.scale) = -2.114`, the largest component in the table,
+# because NEIRegrid.scale is a genuine scalar in the differentiated map while
+# flux_NO is data. Only 20 of the 111 are even consumed by this model (15 of the
+# 42 GEOS-FP fields, 5 of the 69 NEI fluxes -- NO, NO2, CO, ISOP, FORM); the
+# other 91 are collection members nothing here reads, and their zeros are doubly
+# uninformative. The 49 pre-migration scalars are still the calibratable set.
 #
 # WHAT IS VALIDATED, AND WHY EACH CHECK EXISTS
 #   ctl    host adaptive loop vs traced `adaptive_solve` over one macro step.

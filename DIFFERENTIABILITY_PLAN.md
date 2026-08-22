@@ -219,7 +219,9 @@ Landed in `tools/reactant_handoff/rx_traced_integrator.jl`, validated by
   dot-product identity. `θ` is the RHS's differentiable payload made an explicit
   argument (the production call site hides it in a closure, and a closure is
   opaque to Enzyme); a nested `NamedTuple` of traced scalars **and** arrays
-  works, so all 49 runtime parameters and the forcing buffers come back at once.
+  works, so all runtime parameters and the forcing buffers come back at once (49
+  under esm 0.8.0; 160 under 1.0.0, of which 111 are data-loader slots — see the
+  Phase 4 CONUS note).
 * `ad_block_jac` — the exact block Jacobian by coloured forward-mode JVPs,
   replacing finite differences. `ros23_step(...; jac=:ad)`.
 
@@ -381,8 +383,8 @@ checked on 2–3 components.
 
 #### Phase 4 status — a working whole-window gradient, and two nondeterminism findings
 
-Landed as `tools/adjoint_gradient.jl`. It produces **dJ/dθ for all 49 runtime scalar
-parameters in ONE backward sweep**, and the cost does not depend on how many parameters
+Landed as `tools/adjoint_gradient.jl`. It produces **dJ/dθ for every runtime scalar
+parameter in ONE backward sweep**, and the cost does not depend on how many parameters
 you ask for — which was the entire point of the phase.
 
 Everything below is at **6×6×8** (3,744 states), `T0 = 5400`, three 300 s macro steps,
@@ -548,6 +550,61 @@ still run with `RESEACT_ADJ_CLAMP=0` because the clamped sweep failed twice).
   cannot reach 1e−8 while the host loop and the device loop are different floating-point
   programs. Closing it needs either reverse-over-`while` upstream, or an
   `adaptive_solve` whose body is compiled identically inside and outside the region.
+
+#### Phase 4 — **DONE at CONUS**, twice ✅ (2026-08-21)
+
+The "**It has not been run at CONUS**" above is superseded. The 48-hour CONUS gradient
+ran end to end, and then ran a second time on the migrated schema, which is what turned
+it from a result into a checked result.
+
+| | 10044327 (esm 0.8.0) | 10055533 (esm 1.0.0) |
+|---|---|---|
+| wall / MaxRSS | 8 h 18 m / 55.2 GB | 8 h 02 m / 38.4 GB |
+| forward | 7,774.93 s | 7,460.23 s |
+| backward | 19,273.16 s @ 0.4612 s/VJP | 18,761.89 s @ 0.4585 s/VJP |
+| ratio (VJP-only) | 2.48 (1.66) | 2.51 (1.72) |
+| J | 30.1943301698541 | 30.1943301698564 |
+| parameters | 49 | 160 |
+
+Both: 13×7×72, 85,176 states, 576 macro steps, 27,973 accepted inner steps
+(1,859 transport / 26,114 chemistry), `clamp_nonneg` **ON**, un-jittered, `jac=:sym`.
+Every reference-free check passed in both: gather plan vs host Jacobian 0.000e+00,
+fixed-sequence replay 0.000e+00 at all 576 checkpoints, **0 flaky-reverse retries over
+27,973 VJP calls**, structural identity `scale*dJ/dscale == g0*dJ/dg0` to 8.6e-15 and
+4.6e-15.
+
+**The cross-version comparison.** The 576-step accept/reject ladder is *byte-identical*
+between the two runs, so the adaptive controller made all 27,973 decisions the same way
+under both schemas. Against that, J differs by 647 ulps (7.6e-14) and the 19 nonzero
+gradient components by 2.8e-10 worst-case. An identical step ladder cannot survive a
+semantic change, so the residual is floating-point reassociation. Note that the same
+comparison at 6×6×8 came out *bit-identical*: **grid size and step count are what
+separate "bit-identical" from "1e-10", not the schema** — do not take a small-grid
+bit-identical result as evidence for CONUS.
+
+**Two corrections this run forces on the numbers above.**
+
+* **The cost ratio is 2.48–2.51, not 5.1.** The 5.1× repeated throughout Phase 4 was
+  measured at demonstration scale and does not survive CONUS. A week projects to ~26 h.
+* **The 5.1× replay share is 32–33%,** and that remains the one obvious lever: it is
+  pure recomputation of the primal, removable by a device-side fixed-step loop.
+
+**49 → 160 parameters is a labelling change, not 111 new sensitivities.** esm 1.0.0
+redeclares every data-loader field as a `parameter` carrying
+`update: {kind: "data", source: …, from: {file_variable: …}}` — 42 GEOS-FP met fields
+and 69 NEI2016 species fluxes — where 0.8.0 declared them `observed` with an
+`expression` pointing into a loader subsystem. They print in the gradient table and all
+111 report `theta=0  dJ/dtheta=0`, but the scalar slot is not the channel: the values
+reach the model as *arrays* through the forcing buffers (`transform: param_to_var`),
+the half of `θ` this adjoint deliberately does not accumulate. `theta=0` for `GEOSFP.T`
+is the tell — the chemistry would not survive 0 K, so nothing reads the slot.
+
+So those zeros are **structural, not physical**. `dJ/d(NEI2016Emis.flux_NO) = 0` shares
+a table with `dJ/d(NEIRegrid.scale) = −2.114`, and that is the *same* NO emission field
+entering through a channel that is differentiated. Only 20 of the 111 are consumed by
+this model at all (15 of 42 GEOS-FP fields; 5 of 69 NEI fluxes — NO, NO₂, CO, ISOP,
+FORM); the other 91 are collection members nothing here reads. **The 49 pre-migration
+scalars remain the calibratable set.**
 
 ### Phase 5 — structural/numeric partition + the SciML surface (~1 week)
 **Structural = its value changes the shape of the problem.** You cannot differentiate
