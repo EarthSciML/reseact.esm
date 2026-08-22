@@ -18,25 +18,37 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
-# * THE 48-HOUR CONUS GRADIENT (slurm 10044327, 2026-08-21, 8 h 18 m, MaxRSS
-#   55.2 GB). This is what the blockers section below used to say was out of
+# * THE 48-HOUR CONUS GRADIENT (slurm 10055533, 2026-08-21, 8 h 02 m, MaxRSS
+#   38.4 GB). This is what the blockers section below used to say was out of
 #   reach, and it is now the headline result rather than a projection.
 #   13x7x72, 85,176 states, 576 macro steps, `clamp_nonneg` ON, un-jittered,
-#   jac=:sym, all 49 parameters in ONE backward sweep:
-#     J        = 30.1943301698541 ppb mean surface O3 over 48 h
-#     forward    7,774.93 s  (576 macro steps, 27,973 accepted inner steps)
-#     backward  19,273.16 s  (27,973 VJPs at 0.4612 s; replay 6,372.10 s = 33%)
+#   jac=:sym, every runtime scalar in the model in ONE backward sweep:
+#     J        = 30.1943301698564 ppb mean surface O3 over 48 h
+#     forward    7,460.23 s  (576 macro steps, 27,973 accepted inner steps)
+#     backward  18,761.89 s  (27,973 VJPs at 0.4585 s; replay 5,935.61 s = 32%)
 #     dJ/d(NEIRegrid.scale) = -2.114   d/d(DryDepositionGas.kappa) = -1.617
-#     dJ/d(Transport3D.g_acc) = +0.669  -- 19 of 49 components nonzero
+#     dJ/d(Transport3D.g_acc) = +0.669  -- 19 of 160 components nonzero
 #   EVERY REFERENCE-FREE CHECK PASSED: the gather plan reproduces the host
 #   Jacobian at 0.000e+00, the fixed-sequence replay lands 0.000e+00 from all
 #   576 checkpoints, ZERO flaky-reverse retries over 27,973 VJP calls, and the
-#   structural identity scale*dJ/dscale == g0*dJ/dg0 holds to 8.611e-15.
-#   A week projects to ~27 h on these numbers.
+#   structural identity scale*dJ/dscale == g0*dJ/dg0 holds to 4.621e-15.
+#   A week projects to ~26 h on these numbers.
+#
+#   IT RAN TWICE, which is the only cross-version check this gradient has.
+#   10044327 was the same configuration on esm 0.8.0 out of the retired env-sym
+#   (8 h 18 m, MaxRSS 55.2 GB, backward 19,273.16 s, ratio 2.48). The 576-step
+#   accept/reject ladder is BYTE-IDENTICAL between the two, so the adaptive
+#   controller made all 27,973 of its decisions the same way. J moved 647 ulps
+#   (7.6e-14 relative) and the 19 nonzero gradient components agree to 2.8e-10
+#   worst-case -- floating-point reassociation, not a schema difference: 1.0.0
+#   exposes 111 setup-time geometry constants as runtime scalars, which XLA can
+#   no longer constant-fold, and all 111 came back EXACTLY zero. At 6x6x8 the
+#   same comparison was bit-identical; 27,973 steps of accumulation is the
+#   difference. Both runs are far inside the 1e-6 that this work targets.
 # * A DISCRETE ADJOINT over the Lie-Trotter macro-step loop. One backward sweep
-#   returns the gradient w.r.t. ALL 49 runtime scalars at once, at a cost that
-#   does NOT scale with the parameter count -- measured 2.48x one forward solve
-#   at CONUS over 48 simulated hours, or 1.66x with the replay excluded, against
+#   returns the gradient w.r.t. ALL 160 runtime scalars at once, at a cost that
+#   does NOT scale with the parameter count -- measured 2.51x one forward solve
+#   at CONUS over 48 simulated hours, or 1.72x with the replay excluded, against
 #   forward mode's cost-proportional-to-n_params. The 5.1x quoted here until
 #   2026-08-21 was measured at DEMONSTRATION SCALE and does not hold at CONUS.
 # * FORWARD SENSITIVITY as the independent cross-check, for a handful of named

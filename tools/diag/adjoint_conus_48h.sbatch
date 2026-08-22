@@ -25,16 +25,21 @@
 # identity 8.611e-15, replay 0.000e+00 at all 576 checkpoints, 0 retries in 27,973
 # VJP calls, clamp fired 50,973 times over 2.38e9 pairs, 19 of 49 components nonzero.
 #
-# WHY IT IS BEING RUN AGAIN. That run was produced out of the hand-built env-sym
-# against a corpus-pin copy of the model, because run-model-jl could not then
-# resolve EarthSciASTDiff. The esm 1.0.0 migration retired both pins, and its
-# equivalence evidence is at 6x6x8: J bit-identical, all 19 nonzero components
-# bit-identical, worst relative 0.000e+00. This re-run is that same check AT CONUS
-# AND AT 48 h -- the scale where a schema migration could plausibly move something
-# a small grid cannot see. Expect J = 30.1943301698541 and a gradient that matches
-# on its nonzero components; 1.0.0 exposes setup-time geometry constants as runtime
-# scalars, so the parameter COUNT rises from 49 to ~160 with the additions zero
-# (the reverse pass returns the whole theta cotangent at once, so that is free).
+# IT HAS RUN TWICE. 10044327 was esm 0.8.0 out of the hand-built env-sym against
+# a corpus-pin copy of the model, because run-model-jl could not then resolve
+# EarthSciASTDiff. 10055533 is this file as it stands: esm 1.0.0, plain
+# run-model-jl, 8 h 01 m 59 s, MaxRSS 38.4 GB, forward 7,460.23 s, backward
+# 18,761.89 s at 0.4585 s/VJP, ratio 2.51 (VJP-only 1.72), J = 30.1943301698564.
+#
+# The pair is the only cross-version check this gradient has, and it is a strong
+# one: the 576-step accept/reject ladder is BYTE-IDENTICAL, so the controller made
+# all 27,973 decisions the same way. J moved 647 ulps (7.6e-14) and the 19 nonzero
+# components agree to 2.8e-10 worst-case. That is reassociation, not a schema
+# difference -- 1.0.0 exposes 111 setup-time geometry constants as runtime scalars
+# that XLA can no longer constant-fold, and all 111 came back EXACTLY zero. The
+# same comparison at 6x6x8 was bit-identical; 27,973 steps of accumulation is what
+# separates them. The parameter count rising 49 -> 160 costs nothing: the reverse
+# pass returns the whole theta cotangent in one sweep.
 #
 # UJITTER=0 -- ON PURPOSE, and it contradicts the advice in the driver header.
 # That advice is about FINITE-DIFFERENCE VALIDATION: the default IC is exactly
@@ -58,9 +63,11 @@
 #SBATCH --cpus-per-task=16
 # The peak is the ssp_vjp COMPILE, not the window: 576 macro steps add only
 # ~390 MB of checkpoints on top. 64G was the pre-run sizing, taken from a
-# 3-macro-step peak of 22.96 GB; the 576-step run then measured MaxRSS 55.2 GB
-# against it, 86% of the request, which is not margin. 80G restores it without
-# reaching for a whole node's memory reservation (96G sat PENDING on Resources).
+# 3-macro-step peak of 22.96 GB; 10044327 then measured MaxRSS 55.2 GB against it,
+# 86% of the request, which is not margin -- hence 80G. Under esm 1.0.0 the same
+# run peaked at 38.4 GB (10055533), so 80G is now ~2x rather than 1.4x. Do not
+# trim it back: 96G sat PENDING on (Resources), and these nodes are held by
+# whole-node --mem=0 jobs often enough that the margin is cheaper than a requeue.
 #SBATCH --mem=80G
 #SBATCH --time=36:00:00
 #SBATCH --output=logs/%x-%j.out
