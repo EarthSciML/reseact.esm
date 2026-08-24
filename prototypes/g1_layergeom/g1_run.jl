@@ -24,7 +24,7 @@ ref(lev) = begin
     (P_lo=plo, P_hi=phi, dP=plo-phi, dz=Rd_over_g*T*log(plo/phi))
 end
 
-f  = EA.load(path)
+f  = EA.load_path(path)
 alg = OrdinaryDiffEqTsit5.Tsit5()
 
 function sim_at(lev)

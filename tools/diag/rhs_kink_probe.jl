@@ -50,7 +50,7 @@ merged_param = Dict{String,Any}(); ff = nothing
 tb = time()
 Logging.with_logger(Logging.NullLogger()) do
     global fo, dms, u0, p, var_map, merged_param, ff
-    file = EA.load(MODEL; metaparameters = GRID_MP)
+    file = EA.load_path(MODEL; metaparameters = GRID_MP)
     flat = EA.flatten(file)
     pre  = EA.algebraic_states_to_observeds(flat)
     flat = EA.promote_downstream_shapes(pre)

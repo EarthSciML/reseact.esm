@@ -3,7 +3,7 @@ using EarthSciAST; import OrdinaryDiffEqTsit5; using JSON3, Printf
 const EA = EarthSciAST
 r = EA.validate("probe6.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(5,end)]; println("  ", e.error_type, " @ ", e.path, " :: ", e.message); end
-f = EA.load("probe6.esm"); fs = EA.flatten(f)
+f = EA.load_path("probe6.esm"); fs = EA.flatten(f)
 for n in ["Chem.A","Chem.B","Transport3D.m"]
     haskey(fs.state_variables,n) && println("  $n :: shape=", fs.state_variables[n].shape)
 end

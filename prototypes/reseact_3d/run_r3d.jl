@@ -45,7 +45,7 @@ const_arrays = Dict{String,Any}("Transport3D.dA" => Float64.(co.dA),
 
 insp = EA.BuildInspection()
 t0 = time()
-sim = EA.simulate(EA.load(MODEL), (T0, T_END);
+sim = EA.simulate(EA.load_path(MODEL), (T0, T_END);
                   alg=OrdinaryDiffEqTsit5.Tsit5(), saveat=[T0, T_END],
                   providers=providers, parameters=params,
                   const_arrays=const_arrays, inspect=insp)

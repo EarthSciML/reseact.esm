@@ -57,7 +57,7 @@ function temporal(sp, t, lon_deg)
     error("no profile for $(sp)")
 end
 
-fs = EA.flatten(EA.load(joinpath(HERE, "box.esm")); base_path=HERE)
+fs = EA.flatten(EA.load_path(joinpath(HERE, "box.esm")); base_path=HERE)
 providers, fluxes, cell = nei_providers(fs, "NEI2016Emis"; lat=LAT, lon=LON, when=WHEN)
 # The providers are CONST (length-1 samples), so materialize them the way simulate would.
 const_arrays = Dict{String,Any}(k => EA.provider_sample(v, 0.0) for (k,v) in providers)

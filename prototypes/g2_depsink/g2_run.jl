@@ -19,7 +19,7 @@ HERE = @__DIR__
 alg = OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false)
 
 function run(path; params=Dict{String,Float64}())
-    f = EA.load(path)
+    f = EA.load_path(path)
     # flatten with base_path = the assembly file's dir so refs resolve relative to
     # the file, not the process CWD (simulate() defaults base_path=".").
     fs = EA.flatten(f; base_path=dirname(path))

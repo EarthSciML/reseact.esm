@@ -27,7 +27,7 @@ const T0 = 1462345200.0
 const WHEN = unix2datetime(T0)          # picks the NEI monthly file + days-in-month
 
 path = joinpath(HERE, "box.esm")
-fs = EA.flatten(EA.load(path); base_path=HERE)
+fs = EA.flatten(EA.load_path(path); base_path=HERE)
 println("── ", LABEL, "  lat=", LAT, "  lon=", LON, "  start=", unix2datetime(T0), " UTC")
 println("states=", length(fs.state_variables), "  observeds=", length(fs.observed_variables))
 

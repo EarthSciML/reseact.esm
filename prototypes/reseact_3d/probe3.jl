@@ -23,7 +23,7 @@ co = JSON3.read(read("hybrid_coefs.json", String))
 ca = Dict{String,Any}("Transport3D.dA"=>Float64.(co.dA), "Transport3D.dB"=>Float64.(co.dB))
 
 t0=time()
-sim = EA.simulate(EA.load("probe3.esm"), (T0, T0+1.0); alg=OrdinaryDiffEqTsit5.Tsit5(),
+sim = EA.simulate(EA.load_path("probe3.esm"), (T0, T0+1.0); alg=OrdinaryDiffEqTsit5.Tsit5(),
                   saveat=[T0,T0+1.0], providers=providers, parameters=params, const_arrays=ca)
 @printf("simulate: %.1f s  success=%s\n", time()-t0, sim.success)
 

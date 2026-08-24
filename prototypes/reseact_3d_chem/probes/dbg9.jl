@@ -1,7 +1,7 @@
 import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST
 const EA = EarthSciAST
-f = EA.load("probe6.esm")
+f = EA.load_path("probe6.esm")
 M = f.models["Transport3D"]
 for eq in M.equations
     sp = EA.differential_lhs_variable(eq.lhs)

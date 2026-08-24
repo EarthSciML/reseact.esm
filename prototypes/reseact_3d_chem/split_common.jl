@@ -150,8 +150,8 @@ end
 function prepare_split_docs(model_path; rule = nothing, nparts = 2,
                             preserve_refs::Bool = true,
                             metaparameters::AbstractDict = Dict{String,Int}())
-    file = isempty(metaparameters) ? EA.load(model_path) :
-           EA.load(model_path; metaparameters = metaparameters)
+    file = isempty(metaparameters) ? EA.load_path(model_path) :
+           EA.load_path(model_path; metaparameters = metaparameters)
     flat = EA.flatten(file)                                # carries refs by default now (tier at build)
     preserve_refs || (flat = EA.expand_flattened_refs(flat))
     pre  = EA.algebraic_states_to_observeds(flat)
@@ -364,7 +364,7 @@ end
 # defaults (NLON=13, LON0=11) and its `lon0_deg` parameter default (-127.5). All
 # three have to say the same thing: this function is the only place that derives
 # the degree-space twins from the index origin, but the .esm defaults are what a
-# bare `EA.load(model)` gets, so a disagreement between them would put a
+# bare `EA.load_path(model)` gets, so a disagreement between them would put a
 # metaparameter-free load on a different domain than a slice-driven one -- the
 # same silent class of failure the degree/index seam already invites.
 #
@@ -430,7 +430,7 @@ number of exemptions applied (0 means the model validated outright).
 function validate_reseact(model; metaparameters::AbstractDict = Dict{String,Int}(),
                           say = println)
     r = isempty(metaparameters) ? EA.validate(model) :
-        EA.validate(EA.load(model; metaparameters = metaparameters))
+        EA.validate(EA.load_path(model; metaparameters = metaparameters))
     real_errors = filter(!_is_manifold_false_positive, r.structural_errors)
     exempted = length(r.structural_errors) - length(real_errors)
     exempted == 0 ||
