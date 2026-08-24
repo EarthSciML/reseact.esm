@@ -11,6 +11,7 @@ catch
     @eval import OrdinaryDiffEqRosenbrock
 end
 using EarthSciAST
+import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 const EA = EarthSciAST
 
 HERE = @__DIR__
@@ -21,11 +22,14 @@ alg = OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false)
 function run(path; params=Dict{String,Float64}())
     f = EA.load_path(path)
     # flatten with base_path = the assembly file's dir so refs resolve relative to
-    # the file, not the process CWD (simulate() defaults base_path=".").
+    # the file, not the process CWD (esm_problem() defaults base_path=".").
     fs = EA.flatten(f; base_path=dirname(path))
-    sim = EA.simulate(fs, (0.0, 1.0); alg=alg, parameters=params,
-                       reltol=1e-6, abstol=1e-9, saveat=[0.0, 1.0])
-    return sim
+    # phase 4: build once, then solve. BOTH halves are returned: the solution is
+    # now a plain SciML ODESolution, so the state-name -> slot map lives on the
+    # PROBLEM and a caller that wants to read fields by name needs it too.
+    prob = EA.esm_problem(fs, (0.0, 1.0); p=params)
+    sim = SciMLBase.solve(prob, alg; reltol=1e-6, abstol=1e-9, saveat=[0.0, 1.0])
+    return (prob, sim)
 end
 
 # exaggerated deposition rates (1/s) for a visible 1 s effect, set on the ref'd sink model
@@ -39,9 +43,9 @@ DEP_PARAMS = Dict(
 )
 
 # map species name -> final value from a sim, tolerant of "SuperFast.O3", "O3", "SuperFast₊O3(t)" etc.
-function finals(sim)
+function finals(prob, sim)
     d = Dict{String,Float64}()
-    for (k, idx) in pairs(sim.var_map)
+    for (k, idx) in pairs(prob.var_map)
         ks = string(k)
         d[ks] = sim.u[end][idx]
     end
@@ -57,15 +61,15 @@ getsp(d, sp) = begin
 end
 
 println("== simulating g2_nodep.esm (baseline) ==")
-snd = run(joinpath(HERE, "g2_nodep.esm"))
-println("  success=", snd.success, " retcode=", snd.retcode, " nstates=", length(snd.u[end]))
-println("  var_map keys (first 20): ", first(sort(string.(collect(keys(snd.var_map)))), 20))
+pnd, snd = run(joinpath(HERE, "g2_nodep.esm"))
+println("  success=", SciMLBase.successful_retcode(snd), " retcode=", snd.retcode, " nstates=", length(snd.u[end]))
+println("  var_map keys (first 20): ", first(sort(string.(collect(keys(pnd.var_map)))), 20))
 
 println("== simulating g2_dep.esm (with deposition) ==")
-sd = run(joinpath(HERE, "g2_dep.esm"); params=DEP_PARAMS)
-println("  success=", sd.success, " retcode=", sd.retcode, " nstates=", length(sd.u[end]))
+pd, sd = run(joinpath(HERE, "g2_dep.esm"); params=DEP_PARAMS)
+println("  success=", SciMLBase.successful_retcode(sd), " retcode=", sd.retcode, " nstates=", length(sd.u[end]))
 
-fnd = finals(snd); fd = finals(sd)
+fnd = finals(pnd, snd); fd = finals(pd, sd)
 species = ["O3","NO2","NO","HNO3","H2O2","CH2O","CH3OOH","CO","ISOP","OH","HO2","CH3O2"]
 println("\nspecies    nodep_final      dep_final        diff(dep-nodep)   dep_active?")
 for sp in species

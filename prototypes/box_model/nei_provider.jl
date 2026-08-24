@@ -3,7 +3,7 @@
 # EarthSciIO owns all the I/O: URL resolution (including the `file://` local mirror),
 # caching, and NetCDF decoding. EarthSciAST's EarthSciIO extension already adapts
 # `EarthSciIO.Provider` to the provider seam, so an EarthSciIO provider can be handed
-# straight to `simulate(...; providers=...)`.
+# straight to `esm_problem(...; providers=...)`.
 #
 # EarthSciIO deliberately stops there — "Variable remap / unit conversion / regrid are NOT
 # here" (EarthSciIO/julia/src/provider.jl:1-6). It returns the RAW native array. Two things
@@ -107,7 +107,7 @@ end
 
 Build one provider per `<owner>.NEI2016.<SP>` loader field in the flattened system `fs`,
 sampling the 12US1 cell containing (`lat`, `lon`). Returns the provider dict keyed as
-`simulate` expects, the converted kg/m^2/s fluxes by species, and the (row, col) cell.
+`esm_problem` expects, the converted kg/m^2/s fluxes by species, and the (row, col) cell.
 """
 function nei_providers(fs, owner::AbstractString; lat::Float64, lon::Float64, when::DateTime)
     doc = JSON3.read(read(NEI_LOADER, String))

@@ -5,6 +5,7 @@ import Pkg
 Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 import OrdinaryDiffEqTsit5
 using EarthSciAST
+import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 const EA = EarthSciAST
 
 getmod(name) = (for (p,m) in Base.loaded_modules; p.name==name && return m; end; error("no $name"))
@@ -29,10 +30,11 @@ alg = OrdinaryDiffEqTsit5.Tsit5()
 
 function sim_at(lev)
     fs = EA.flatten(f; base_path=HERE)
-    sim = EA.simulate(fs, (0.0, 1.0); alg=alg,
-                       parameters=Dict("LayerGeometry.lev"=>Float64(lev)),
-                       saveat=[0.0, 1.0])
-    vm = sim.var_map
+    # phase 4: build once, then solve; the state map lives on the problem.
+    prob = EA.esm_problem(fs, (0.0, 1.0);
+                          p=Dict("LayerGeometry.lev"=>Float64(lev)))
+    sim = SciMLBase.solve(prob, alg; saveat=[0.0, 1.0])
+    vm = prob.var_map
     idx(sp) = vm[first(filter(k->endswith(string(k), sp), collect(keys(vm))))]
     (P_lo=sim.u[end][idx("col_P_lo")], P_hi=sim.u[end][idx("col_P_hi")],
      dP=sim.u[end][idx("col_dP")],   dz=sim.u[end][idx("col_dz")])

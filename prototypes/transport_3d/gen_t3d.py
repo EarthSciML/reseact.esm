@@ -38,7 +38,7 @@ def agg(idx, ranges, args, expr):
 def ix(a,*s): return {"op":"index","args":[a,*s]}
 def const(vals): return {"op":"const","args":[],"value":vals}
 
-# 3a. Hybrid coefficient differences as SHAPED PARAMETERS, supplied via const_arrays at simulate().
+# 3a. Hybrid coefficient differences as SHAPED PARAMETERS, supplied via const_arrays at esm_problem().
 #     They cannot be inline `const` arrays: index(const([...]), k) is rejected as a "non-scalar const
 #     op outside an array-consuming position". Routing them through interp.linear WOULD work (the
 #     fastjx pattern) but would drag interp.* into the transport RHS and forfeit autodiff.

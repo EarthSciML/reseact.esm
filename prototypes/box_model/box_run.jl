@@ -9,6 +9,7 @@ import Pkg
 Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 try; @eval import OrdinaryDiffEqRosenbrock; catch; Pkg.add("OrdinaryDiffEqRosenbrock"; io=devnull); @eval import OrdinaryDiffEqRosenbrock; end
 using EarthSciAST, Dates, Printf
+import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 const EA = EarthSciAST
 
 HERE = @__DIR__
@@ -93,14 +94,16 @@ params = Dict(
 )
 ics = Dict("SuperFast.O3"=>30.0, "SuperFast.NO2"=>1.0, "SuperFast.NO"=>0.5)
 
-el = @elapsed sim = EA.simulate(fs, (0.0, Tsec);
-        alg = OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false),
-        parameters = params, initial_conditions = ics, providers = providers,
+# phase 4: build once, then solve.
+prob = EA.esm_problem(fs, (0.0, Tsec);
+                      p = params, u0 = ics, providers = providers)
+el = @elapsed sim = SciMLBase.solve(prob,
+        OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false);
         reltol = 1e-7, abstol = 1e-10, saveat = save)
-println("\nsuccess=", sim.success, "  retcode=", sim.retcode, "  nsaved=", length(sim.t),
+println("\nsuccess=", SciMLBase.successful_retcode(sim), "  retcode=", sim.retcode, "  nsaved=", length(sim.t),
         @sprintf("  (%.1f s)", el))
 
-vm = sim.var_map
+vm = prob.var_map
 idx(sp) = vm[first(filter(k -> string(k) == "SuperFast.$sp", collect(keys(vm))))]
 species = ["O3","NO2","NO","OH","HO2","CH2O","CO","ISOP"]
 cols = Dict(sp => idx(sp) for sp in species)

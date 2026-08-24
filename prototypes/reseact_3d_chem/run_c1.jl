@@ -18,6 +18,7 @@
 # between a ~20 min build and a build that never finishes at 12 species.
 import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqRosenbrock; import DiffEqCallbacks
+import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 
@@ -71,13 +72,22 @@ const_arrays = Dict{String,Any}("Transport3D.dA" => Float64.(co.dA),
 insp = EA.BuildInspection()
 t0 = time()
 say("simulate: begin (compile-once TIER via preserve_refs; stiff Rosenbrock23)")
-sim = EA.simulate(EA.load_path(MODEL), (T0, T_END);
-                  alg=OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false),
-                  reltol=1e-4, abstol=1e-9, saveat=[T0, T_END],
-                  providers=providers, parameters=params, preserve_refs=true,
-                  const_arrays=const_arrays, inspect=insp)
+# EarthSciAST phase 4: build once, then solve. Build-time knobs (providers, p,
+# const_arrays, inspect) go to `esm_problem`; solver knobs stay on `solve`.
+#
+# `preserve_refs=true` is DROPPED, and it is not a phase-4 casualty: EarthSciAST
+# has never had a keyword by that name, on `simulate` or anything else, and
+# neither `simulate` method slurped unknown keywords. This call raised a
+# MethodError as written, before any of this migration.
+prob = EA.esm_problem(EA.load_path(MODEL), (T0, T_END);
+                      providers=providers, p=params,
+                      const_arrays=const_arrays, inspect=insp)
+sim = SciMLBase.solve(prob,
+                      OrdinaryDiffEqRosenbrock.Rosenbrock23(autodiff=false);
+                      reltol=1e-4, abstol=1e-9, saveat=[T0, T_END])
 say(@sprintf("simulate: %.1f s  success=%s retcode=%s nstates=%d",
-             time()-t0, sim.success, sim.retcode, length(sim.u[1])))
+             time()-t0, SciMLBase.successful_retcode(sim), sim.retcode,
+             length(sim.u[1])))
 # Print the forcing + chemistry diagnostics BELOW even on a solver failure — a
 # failed solve still built the RHS and populated `inspect`, and the t0 state / the
 # forcing arrays are exactly what tells an Unstable/blowup apart from stiffness.
@@ -91,7 +101,7 @@ for k in ["Transport3D.PS", "Transport3D.PBLH", "Transport3D.Mx", "Transport3D.M
 end
 
 # --- chemistry: did the species lift onto the grid, and do they move?
-vm = sim.var_map; names = collect(keys(vm))
+vm = prob.var_map; names = collect(keys(vm))
 cells(pat) = Dict(n[findfirst('[', n):end] => vm[n] for n in names if occursin(".$pat[", n))
 if !isempty(sim.u)
     for sp in ["O3","NO","NO2","OH","HO2","CO","ISOP","CH2O"]
@@ -108,5 +118,5 @@ if !isempty(sim.u)
                 "m", length(mi), minimum(m1), maximum(m1), all(>(0), m1))
     end
 end
-sim.success || error("solver failed: $(sim.retcode) — $(sim.message)")
+SciMLBase.successful_retcode(sim) || error("solver failed: $(sim.retcode)")
 say("DONE")

@@ -3,6 +3,7 @@
 # sliced natively over the central US. t=0 := 2013-01-01T00:00Z.
 import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__, "..", "..", "run-model-jl"))); io=devnull)
 using EarthSciAST; import OrdinaryDiffEqTsit5; import DiffEqCallbacks
+import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 
@@ -45,13 +46,15 @@ const_arrays = Dict{String,Any}("Transport3D.dA" => Float64.(co.dA),
 
 insp = EA.BuildInspection()
 t0 = time()
-sim = EA.simulate(EA.load_path(MODEL), (T0, T_END);
-                  alg=OrdinaryDiffEqTsit5.Tsit5(), saveat=[T0, T_END],
-                  providers=providers, parameters=params,
-                  const_arrays=const_arrays, inspect=insp)
+# phase 4: build once, then solve.
+prob = EA.esm_problem(EA.load_path(MODEL), (T0, T_END);
+                      providers=providers, p=params,
+                      const_arrays=const_arrays, inspect=insp)
+sim = SciMLBase.solve(prob, OrdinaryDiffEqTsit5.Tsit5(); saveat=[T0, T_END])
 @printf("simulate: %.1f s  success=%s retcode=%s nstates=%d\n",
-        time()-t0, sim.success, sim.retcode, length(sim.u[1]))
-sim.success || error("solver failed: $(sim.retcode) — $(sim.message)")
+        time()-t0, SciMLBase.successful_retcode(sim), sim.retcode,
+        length(sim.u[1]))
+SciMLBase.successful_retcode(sim) || error("solver failed: $(sim.retcode)")
 
 # --- what forcing did the model actually see? (read it out of the build)
 for k in ["Transport3D.PS", "Transport3D.PBLH", "Transport3D.Mx", "Transport3D.My", "Transport3D.Mz", "Transport3D.dp"]
@@ -62,7 +65,7 @@ for k in ["Transport3D.PS", "Transport3D.PBLH", "Transport3D.Mx", "Transport3D.M
 end
 
 # --- CWC gate: q = mq/m must stay EXACTLY 1, dev EXACTLY 0.
-vm = sim.var_map; names = collect(keys(vm))
+vm = prob.var_map; names = collect(keys(vm))
 cells(pat) = Dict(n[findfirst('[', n):end] => vm[n] for n in names if occursin(".$pat[", n))
 Mi, MQi, Di = cells("m"), cells("mq"), cells("dev")
 for (lbl, uu) in (("t=18:00Z", sim.u[1]), ("+$(T_END-T0)s", sim.u[end]))
