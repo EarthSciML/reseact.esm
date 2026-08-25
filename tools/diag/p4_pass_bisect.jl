@@ -40,8 +40,20 @@
 #   P4_MAXROUNDS             cap on @code_hlo probe rounds (default 60)
 #   P4_BIGN                  "big result" element threshold (default 400000)
 #
-# RESULTS (grid 6x6x8, Reactant v0.2.280):  <-- filled in after the run
-#   (pending)
+# RESULTS (grid 6x6x8, Reactant v0.2.280, 2026-08-25; round 2 = p4_round2.jl):
+#   * baseline: concat 79 / DUS 0.  exclude-all(493): concat 8 / DUS 292.
+#   * the ONLY effective singleton of 58 tried: `dynamic_update_to_concat`
+#     (concat 79 -> 40, DUS 0 -> 205) -- a C-side default pattern, invisible
+#     from the Julia dus_to_concat kwarg/Ref that were ruled out earlier.
+#   * round-2 ddmin from exclude-all with that winner held: ONE cooperator,
+#     `sub_const_prop`; the pair reaches the floor (concat 8, big 4 / DUS 292,
+#     big 232). Necessity-checked; 16 rounds.
+#   * step time (p4_steptime_excluded.jl, interleaved): default 10.98 ms ->
+#     excluded 5.22 ms = 2.10x, bit-for-bit equal unew.
+#   * TRAP: BIGN=400k classifies nothing at 6x6x8 (extended observed buffer
+#     is 57708 elems) -- round 1's "rewrite lives outside this list" verdict
+#     was this artifact. TRAP 2: excluding `slice_concat` INCREASES concats
+#     (it is the collapse pattern) -- 79 -> 252.
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
 get!(ENV, "RESEACT_NLON", "6"); get!(ENV, "RESEACT_NLAT", "6"); get!(ENV, "RESEACT_NLEV", "8")

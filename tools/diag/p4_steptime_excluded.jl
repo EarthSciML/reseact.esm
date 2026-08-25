@@ -19,8 +19,9 @@
 #                             (default: the P4 winner, see below)
 #   P4_STEPTIME_REPS          timing reps (default 60)
 #
-# RESULTS (grid 6x6x8, Reactant v0.2.280):  <-- filled in after the run
-#   (pending)
+# RESULTS (grid 6x6x8, Reactant v0.2.280, 2026-08-25):
+#   default 10.98 ms -> excluded 5.22 ms median (best-of-two, interleaved)
+#   = 2.10x, bit-for-bit equal unew. CONUS arm: see the campaign notes.
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
 get!(ENV, "RESEACT_NLON", "6"); get!(ENV, "RESEACT_NLAT", "6"); get!(ENV, "RESEACT_NLEV", "8")
@@ -37,7 +38,7 @@ say(s) = (println(s); flush(stdout))
 
 # The P4 winner (p4_pass_bisect.jl). Overridable so other exclusion sets can
 # be timed without editing the script.
-const DEFAULT_EXCLUDE = "PENDING_P4_WINNER"
+const DEFAULT_EXCLUDE = "dynamic_update_to_concat,sub_const_prop"
 const EXCL = String.(split(get(ENV, "P4_EXCLUDE", DEFAULT_EXCLUDE), ','))
 const REPS = parse(Int, get(ENV, "P4_STEPTIME_REPS", "60"))
 
