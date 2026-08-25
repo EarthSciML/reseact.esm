@@ -32,7 +32,7 @@ const ATOL  = 1e-9
 const LU    = LinearSolve.LUFactorization()
 rc_ok(rc) = (rc == SciMLBase.ReturnCode.Success || rc == SciMLBase.ReturnCode.Default)
 
-say("validate …"); r = EA.validate(MODEL)
+say("validate …"); r = EA.validate_path(MODEL)
 say("  is_valid=$(r.is_valid)  struct_errs=$(length(r.structural_errors))")
 r.is_valid || (for e in r.structural_errors[1:min(6,end)]; say("   $(e.error_type)@$(e.path): $(e.message)"); end; error("invalid"))
 

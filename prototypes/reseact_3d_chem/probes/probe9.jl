@@ -4,7 +4,7 @@ import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 const EA = EarthSciAST
 const T0 = 64800.0
 const BASE = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/2013/01/GEOSFP.20130101"
-r = EA.validate("probe9.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
+r = EA.validate_path("probe9.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(3,end)]; println("  ", e.error_type, " :: ", e.message); end
 cache = EarthSciIO.Cache()
 prov = EarthSciIO.discrete_provider(cache, "$BASE.I3.4x5.nc", [10800.0*k for k in 0:7];

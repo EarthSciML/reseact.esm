@@ -5,7 +5,7 @@ using EarthSciIO, Printf, JSON3
 const EA = EarthSciAST
 const T0 = 64800.0
 const BASE = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/2013/01/GEOSFP.20130101"
-r = EA.validate("probe3.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
+r = EA.validate_path("probe3.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(5,end)]; println("  ", e.error_type, " @ ", e.path, " :: ", e.message); end
 
 cache = EarthSciIO.Cache()

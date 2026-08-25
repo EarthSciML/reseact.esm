@@ -30,7 +30,7 @@ let ext = Base.get_extension(EA, :EarthSciASTDataRefreshExt)
     say("DataRefreshExt loaded ✓")
 end
 
-say("validate …"); r = EA.validate(MODEL)
+say("validate …"); r = EA.validate_path(MODEL)
 r.is_valid || error("invalid model")
 say("  is_valid=$(r.is_valid)")
 
