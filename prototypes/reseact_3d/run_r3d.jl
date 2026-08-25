@@ -15,7 +15,7 @@ const T0    = 64800.0
 const T_END = T0 + (length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0)
 const BASE  = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/2013/01/GEOSFP.20130101"
 
-r = EA.validate(MODEL)
+r = EA.validate_path(MODEL)
 println("validate: is_valid=$(r.is_valid) schema=$(length(r.schema_errors)) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(8,end)]; println("  ", e.error_type, " @ ", e.path, " :: ", e.message); end
 r.is_valid || error("model does not validate")

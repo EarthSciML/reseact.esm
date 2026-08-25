@@ -2,7 +2,7 @@ import Pkg; Pkg.activate(get(ENV, "RESEACT_RUN_ENV", normpath(joinpath(@__DIR__,
 using EarthSciAST; import OrdinaryDiffEqTsit5; using JSON3, Printf
 import SciMLBase   # phase 4: `solve` / `successful_retcode` are SciMLBase's own
 const EA = EarthSciAST
-r = EA.validate("probe6.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
+r = EA.validate_path("probe6.esm"); println("validate: is_valid=$(r.is_valid) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(5,end)]; println("  ", e.error_type, " @ ", e.path, " :: ", e.message); end
 f = EA.load_path("probe6.esm"); fs = EA.flatten(f)
 for n in ["Chem.A","Chem.B","Transport3D.m"]

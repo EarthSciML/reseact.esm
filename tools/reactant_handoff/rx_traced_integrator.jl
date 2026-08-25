@@ -276,8 +276,15 @@ const ROS23_c32 = 6 + sqrt(2)
 #        dependency on EarthSciASTDiff (see rx_sym_block_jac.jl for the
 #        producer). Straight-line and free of nested AD, so unlike `:ad` a
 #        reverse pass crosses it. `unrolled` is ignored.
+# `cellwise=true` additionally returns the PER-CELL error norm, an NC-vector, so
+# the distribution behind the single scalar `EEst` can be looked at. The global
+# controller sets ONE dt for the whole domain from the RMS over all N states; if
+# that distribution is wide, most cells are being stepped far below their own
+# stability limit and a per-cell controller would take the same trajectory in a
+# fraction of the step-cell-count. Costs one extra reduce when asked for and
+# nothing at all when not (the branch is resolved at trace time).
 function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64;
-        unrolled::Bool=false, jac::Symbol=:fd, symjac=nothing)
+        unrolled::Bool=false, jac::Symbol=:fd, symjac=nothing, cellwise::Bool=false)
     N = NS * NC
     f0 = f(u, t)
     f0b = [_blk(f0, r, NC) for r in 1:NS]
@@ -329,6 +336,7 @@ function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, relto
     # utilde = dt/6 * (k1 - 2k2 + k3); EEst = hairer norm of the residuals
     dto6 = dt / 6
     sse = nothing
+    csse = nothing
     for r in 1:NS
         w2 = 2.0 .* k2b[r]
         ut = k1b[r] .- w2
@@ -343,8 +351,12 @@ function ros23_step(f, u, t, dt, NS::Int, NC::Int, masks, abstol::Float64, relto
         at2 = at .* at
         s2 = sum(at2)
         sse = sse === nothing ? s2 : sse + s2
+        if cellwise
+            csse = csse === nothing ? at2 : csse .+ at2
+        end
     end
     EEst = sqrt(sse / N)
+    cellwise && return unew, EEst, sqrt.(csse ./ NS)
     return unew, EEst
 end
 

@@ -12,7 +12,7 @@
 # The split itself is EarthSciASTSplitter's `split_system` with the
 # `stencil_vs_pointwise` rule (a term is transport iff it carries a `makearray`
 # stencil). The forcing (GEOS-FP winds/T/pressure) is wired exactly as
-# `EarthSciAST.simulate` does — both parts are built over the SAME live forcing
+# `EarthSciAST.esm_problem` does — both parts are built over the SAME live forcing
 # buffers so one refresh callback drives both.
 
 using EarthSciAST
@@ -93,7 +93,7 @@ function stencil_following_rule(flat)
             outs = Set{String}(string(x) for x in something(e.output_idx, Any[]))
             for (nm, spec) in e.ranges
                 nm in outs && continue
-                # After `EA.load` a range spec is an `IndexSetRef` STRUCT, not the
+                # After `EA.load_path` a range spec is an `IndexSetRef` STRUCT, not the
                 # `{"from": ...}` dict of the JSON source. Reading it as a dict
                 # silently yields `nothing`, so the test never fires and the term
                 # is misrouted with no error -- which is exactly what happened.
@@ -429,7 +429,7 @@ number of exemptions applied (0 means the model validated outright).
 """
 function validate_reseact(model; metaparameters::AbstractDict = Dict{String,Int}(),
                           say = println)
-    r = isempty(metaparameters) ? EA.validate(model) :
+    r = isempty(metaparameters) ? EA.validate_path(model) :
         EA.validate(EA.load_path(model; metaparameters = metaparameters))
     real_errors = filter(!_is_manifold_false_positive, r.structural_errors)
     exempted = length(r.structural_errors) - length(real_errors)
@@ -446,7 +446,7 @@ end
 
 # --------------------------------------------------------------------------- #
 # 3. Build one forcing-wired RHS closure PER part, sharing u0/p/var_map and the
-#    live forcing buffers. Mirrors EarthSciAST.simulate's provider wiring, minus
+#    live forcing buffers. Mirrors `EarthSciAST.esm_problem`'s provider wiring, minus
 #    the solve. Returns funcs=(f_transport!, f_chem!, …), u0, p, var_map, and the
 #    single refresh callback (cb, tstops) that drives every part's forcing.
 # --------------------------------------------------------------------------- #
