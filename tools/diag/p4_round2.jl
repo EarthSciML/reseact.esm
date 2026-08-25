@@ -89,31 +89,36 @@ const extras0 = setdiff(ALLPATS, ALWAYS)
 const full = census(vcat(ALWAYS, extras0); label = "exclude-all")
 pred(r) = r.concat <= full.concat + 2 && r.dus >= full.dus - 5
 
-work = copy(extras0)
-n = 2
-try
-    while true
-        chunksz = max(1, length(work) ÷ n)
-        reduced = false
-        for i in 1:n
-            lo = (i - 1) * chunksz + 1; hi = i == n ? length(work) : i * chunksz
-            lo > length(work) && break
-            cand = vcat(work[1:lo-1], work[hi+1:end])
-            if pred(census(vcat(ALWAYS, cand); label = "drop $(lo):$(hi)"))
-                work = cand; n = max(n - 1, 2); reduced = true; break
+function minimize(extras0)
+    # soft-scope trap: all mutation lives inside this function on purpose
+    work = copy(extras0)
+    n = 2
+    try
+        while true
+            chunksz = max(1, length(work) ÷ n)
+            reduced = false
+            for i in 1:n
+                lo = (i - 1) * chunksz + 1; hi = i == n ? length(work) : i * chunksz
+                lo > length(work) && break
+                cand = vcat(work[1:lo-1], work[hi+1:end])
+                if pred(census(vcat(ALWAYS, cand); label = "drop $(lo):$(hi)"))
+                    work = cand; n = max(n - 1, 2); reduced = true; break
+                end
             end
+            reduced && continue
+            n >= length(work) && break
+            n = min(2n, length(work))
         end
-        reduced && continue
-        n >= length(work) && break
-        n = min(2n, length(work))
+    catch e
+        say("!! stopped early: $(sprint(showerror, e))")
     end
-catch e
-    say("!! stopped early: $(sprint(showerror, e))")
+    say("P4_MINSET n=$(length(work)): " * join(work, ","))
+    for p in copy(work)   # necessity check of each survivor
+        r = census(vcat(ALWAYS, setdiff(work, [p])); label = "need? -$p")
+        pred(r) && (work = setdiff(work, [p]))
+    end
+    return work
 end
-say("P4_MINSET n=$(length(work)): " * join(work, ","))
-for p in copy(work)   # necessity check of each survivor
-    r = census(vcat(ALWAYS, setdiff(work, [p])); label = "need? -$p")
-    pred(r) && (work = setdiff(work, [p]))
-end
-say("P4_WINNER " * join(vcat(ALWAYS, work), ","))
+const FINAL = minimize(extras0)
+say("P4_WINNER " * join(vcat(ALWAYS, FINAL), ","))
 say("P4_ROUND2_DONE rounds=$(NROUNDS[])")
