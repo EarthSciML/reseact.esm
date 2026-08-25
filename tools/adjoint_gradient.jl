@@ -508,11 +508,15 @@ const XLAFIX = get(ENV, "RESEACT_ADJ_XLAFIX", "1") == "1"
 # default list by base name. The P4 probes (tools/diag/p4_pass_bisect.jl)
 # measured that "dynamic_update_to_concat,sub_const_prop" keeps the emitter's
 # in-place dynamic_update_slices from being rewritten into whole-buffer
-# concatenates -- the ROS23 step runs 2.10x faster at 6x6x8, bit-for-bit
-# equal. Default EMPTY (stock pipeline) until the CONUS arm is on record;
-# supersedes CONCATS_TO_DUS[]=true (1.17x, 43% conversion) when set.
-const EXCLP = String.(filter(!isempty, strip.(split(
-    get(ENV, "RESEACT_EXCLUDED_PASSES", ""), ','))))
+# concatenates -- measured 2.10x on the ROS23 step at 6x6x8 and **3.32x at
+# CONUS 13x7x72** (174.8 -> 52.7 ms median, interleaved best-of-two, slurm
+# 10151977), bit-for-bit equal unew in both. ON BY DEFAULT on that record;
+# RESEACT_EXCLUDED_PASSES=none restores the stock pipeline, or set your own
+# comma-separated base names. Supersedes CONCATS_TO_DUS[]=true (1.17x, 43%).
+const _EXCL_DEFAULT = "dynamic_update_to_concat,sub_const_prop"
+const _EXCL_RAW = get(ENV, "RESEACT_EXCLUDED_PASSES", _EXCL_DEFAULT)
+const EXCLP = _EXCL_RAW == "none" ? String[] :
+    String.(filter(!isempty, strip.(split(_EXCL_RAW, ','))))
 const COPTS = XLAFIX ?
     RX.CompileOptions(; sync = true,
                       xla_debug_options = (; xla_cpu_prefer_vector_width = 128),
