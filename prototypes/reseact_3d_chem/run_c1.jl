@@ -37,7 +37,7 @@ const BASE  = "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/201
 say(s) = (println(s); flush(stdout))
 
 say("validate: begin")
-r = EA.validate(MODEL)
+r = EA.validate_path(MODEL)
 say("validate: is_valid=$(r.is_valid) schema=$(length(r.schema_errors)) struct=$(length(r.structural_errors))")
 for e in r.structural_errors[1:min(8,end)]; say("  $(e.error_type) @ $(e.path) :: $(e.message)"); end
 r.is_valid || error("model does not validate")
