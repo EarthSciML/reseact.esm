@@ -81,9 +81,9 @@ say(@sprintf("P4_STEPTIME_RATIO default/excluded = %.3f  (best-of-two medians %.
 
 # One-step functional spot check on the same inputs (fresh buffers -- donation).
 const u_def = Array(D.CROS(RX.ConcreteRArray(copy(D.UBASE)), D.THC,
-                           RX.ConcreteRNumber(D.T0), RX.ConcreteRNumber(D.DT0C)))
+                           RX.ConcreteRNumber(D.T0), RX.ConcreteRNumber(D.DT0C))[1])
 const u_exc = Array(CEXC(RX.ConcreteRArray(copy(D.UBASE)), D.THC,
-                         RX.ConcreteRNumber(D.T0), RX.ConcreteRNumber(D.DT0C)))
+                         RX.ConcreteRNumber(D.T0), RX.ConcreteRNumber(D.DT0C))[1])
 say("bit-for-bit equal: $(u_def == u_exc)")
 u_def == u_exc || say(@sprintf("max abs diff %.3e", maximum(abs.(u_def .- u_exc))))
 say("P4_STEPTIME_DONE")
