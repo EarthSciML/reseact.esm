@@ -208,11 +208,16 @@ end
 #       what the driver does; the fault may need states the base point never
 #       reaches.
 # --------------------------------------------------------------------------- #
-if hwant("walk")
-    say("\n---- E4: walking a trajectory ----")
+# The loop body lives in a FUNCTION, not at top level. A top-level `for` is soft
+# scope, and `u`/`t`/`nbad` are also names the included driver defines as globals,
+# so `u = ...` inside the loop was read as a fresh local and the first `copy(u)`
+# threw `UndefVarError: u not defined in local scope` -- which aborted the script
+# after the soak on julia 1.12. A function body is hard scope and has neither
+# problem; do not "fix" this by adding `global`.
+function walk_trajectory(nsteps::Int)
     u = copy(UBASE); t = T0
     nbad = 0; t0 = time()
-    for k in 1:HWALK
+    for k in 1:nsteps
         c, TH, dt = isodd(k) ? (CSSP, THT, DT0T) : (CROS, THC, DT0C)
         uin = copy(u)
         r = callstep(c, uin, TH, t, dt)
@@ -229,10 +234,16 @@ if hwant("walk")
         u = max.(out, 0.0)          # the production clamp, so the walk stays physical
         t += dt
         k % 500 == 0 && (say(@sprintf("     walk %d/%d bad=%d |u|max=%.4g %.1f s",
-                                      k, HWALK, nbad, maximum(abs, u), time() - t0)); flush(stdout))
+                                      k, nsteps, nbad, maximum(abs, u), time() - t0)); flush(stdout))
     end
-    say(@sprintf("  walk: %d steps, %d non-finite, %.4f s/step", HWALK, nbad,
-                 (time() - t0) / HWALK))
+    say(@sprintf("  walk: %d steps, %d non-finite, %.4f s/step", nsteps, nbad,
+                 (time() - t0) / nsteps))
+    return nbad
+end
+
+if hwant("walk")
+    say("\n---- E4: walking a trajectory ----")
+    walk_trajectory(HWALK)
 end
 
 # --------------------------------------------------------------------------- #

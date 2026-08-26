@@ -1,0 +1,16 @@
+variant	budget	nstep	raise	rc	verdict	status	rel
+none	0	8	1	0	RAN	EXACT	3.77404e-16
+true	0	8	1	0	RAN	EXACT	3.77404e-16
+periodic	3	8	1	0	RAN	EXACT	3.77404e-16
+binomial	3	8	1	0	RAN	EXACT	3.77404e-16
+binomial_mincut	3	8	1	0	RAN	EXACT	3.77404e-16
+binomial	3	8	0	0	RAN	EXACT	3.77404e-16
+binomial_mincut	3	8	0	0	RAN	EXACT	3.77404e-16
+binomial	2	8	1	0	RAN	EXACT	3.77404e-16
+binomial	4	8	1	0	RAN	EXACT	3.77404e-16
+binomial	5	8	1	0	RAN	EXACT	3.77404e-16
+binomial	8	8	1	0	RAN	EXACT	3.77404e-16
+binomial	3	4	1	0	RAN	EXACT	4.09903e-16
+binomial	3	16	1	0	RAN	EXACT	4.75897e-16
+binomial	3	20	1	0	RAN	EXACT	5.79056e-16
+binomial	3	64	1	0	RAN	EXACT	2.3244e-15
