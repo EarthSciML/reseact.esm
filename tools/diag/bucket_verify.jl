@@ -7,31 +7,33 @@
 # chemistry step (CROS) *and* the bucket rung(s); a TIGHT reference program
 # (rtol/10) is compiled here on top of the same RHS.
 #
-# THE GATE (accuracy, per the design spec). Run N macro windows three ways
-# from the same base point, transport included:
+# THE GATE (accuracy). Run N macro windows three ways from the same base
+# point, transport included:
 #   (a) LOCKSTEP  -- the global controller, host_adaptive!(CROS, ...)
 #   (b) BUCKETED  -- K=4 through bucket_window!
 #   (c) TIGHT     -- lockstep at rtol/10 (and atol/10), the reference
-# and require, for EVERY state,
-#   |u_b - u_t| <= max(3 * |u_a - u_t|, 10 * (atol + rtol * |u_t|))
-# The bucketed max-controller is STRICTER than the global RMS controller, so
-# (b) may differ from (a) -- but it must not sit further from the tight
-# reference than lockstep does (3x slack for controller-path divergence).
-# The gate is TOLERANCE-based on purpose: bitwise against (a) would be testing
-# a claim the design explicitly disowns.
+# and require the TOLERANCE CONTRACT: with the PRODUCTION controller's own
+# atol/rtol (not the tight arm's),
+#   err(arm) = max over cells of rms over species of
+#              (u_arm - u_tight) / (atol + rtol * |u_tight|)
+#   GATE: err(bucketed) <= 1.0
+# i.e. the bucketed trajectory ends within one tolerance unit of the tight
+# reference, in the norm the controllers actually control. err(lockstep) is
+# printed for context and must ALSO be <= 1 -- if it is not, the reference
+# setup itself is suspect and the run reports that rather than papering over
+# it. The gate is TOLERANCE-based on purpose: bitwise against (a) would test
+# a claim the design explicitly disowns (the bucketed max-controller is
+# STRICTER than the global RMS controller, so trajectories differ).
 #
-# THE FLOOR IS THE SOLVER'S OWN PER-STATE ERROR UNIT, not a bare absolute
-# atol -- and that is a MEASURED correction to the design note's `10*atol`.
-# On this gate's first run a handful of states failed with the bucketed
-# answer sitting at a few percent of ONE tolerance unit from the tight
-# reference: at those states the LOCKSTEP trajectory happened to land
-# coincidentally close to tight, so the 3x term collapsed and the bare-atol
-# floor -- orders of magnitude below the rtol-dominated error unit
-# |e|/(atol + rtol*|u|) that both controllers actually promise -- did not
-# absorb the coincidence. The aggregate form of the same criterion
-# (max|u_b - u_t| <= 3 max|u_a - u_t|) held on that run. The 3x-lockstep
-# term stays the binding bound wherever lockstep deviation is at its normal
-# level; the tolerance-unit floor only absorbs the coincidences.
+# HISTORY, measured on this gate's first run (coordinator ruling): the
+# original pointwise form |u_b - u_t| <= max(3 |u_a - u_t|, 10 atol) is
+# DEFECTIVE -- the 3x LOCAL slack collapses at states where lockstep lands
+# coincidentally close to the tight reference, and a bare-atol floor sits
+# orders of magnitude below the rtol-dominated error unit for any state of
+# ordinary magnitude, so a handful of states failed while the bucketed
+# answer was at a few percent of ONE tolerance unit from tight. That
+# pointwise comparison is kept below as a REPORTED DIAGNOSTIC, no longer
+# gating.
 #
 # THE BITWISE CHECK (padding / lane-order leak). Run (b) twice with different
 # random WITHIN-BUCKET lane permutations: membership identical, lane order and
@@ -165,47 +167,82 @@ let nbad = count(!isfinite, UE)
 end
 
 # --------------------------------------------------------------------------- #
-# THE GATE.
+# THE GATE: the tolerance contract, in the production controller's own norm.
 # --------------------------------------------------------------------------- #
-say("\n---- GATE: |u_bucket - u_tight| <= max(3 |u_lockstep - u_tight|, 10 (atol + rtol|u_t|)) per state ----")
-gate_floor(uti::Float64) = 10 * (D.ATOL_C + D.RTOL * abs(uti))
-function gate(ub::Vector{Float64}, ua::Vector{Float64}, ut::Vector{Float64})
-    nviol = 0; worstratio = 0.0; wat = 0
-    for i in 1:length(ut)
-        db = abs(ub[i] - ut[i]); da = abs(ua[i] - ut[i])
-        bound = max(3 * da, gate_floor(ut[i]))
-        ok = isfinite(db) && db <= bound
-        ok || (nviol += 1)
+say("\n---- GATE: err(arm) = max_cells rms_species (u_arm - u_tight)/(atol + rtol|u_tight|) ----")
+"""
+    tol_err(ua, ut) -> (err, worst_cell)
+
+Max over cells of the RMS over species of the deviation from the tight
+reference, in PRODUCTION tolerance units (atol + rtol|u_tight| per state --
+the same atol/rtol the production controller runs with, NOT the tight arm's).
+A non-finite state scores Inf, never a skip.
+"""
+function tol_err(ua::Vector{Float64}, ut::Vector{Float64})
+    worst = 0.0; wc = 0
+    for c in 1:NC
+        ss = 0.0
+        for s in 1:NS
+            i = (s - 1) * NC + c
+            d = (ua[i] - ut[i]) / (D.ATOL_C + D.RTOL * abs(ut[i]))
+            ss += d * d
+        end
+        r = sqrt(ss / NS)
+        isfinite(r) || (r = Inf)
+        if r > worst
+            worst = r; wc = c
+        end
+    end
+    return worst, wc
+end
+errA, cA = tol_err(RA.u, RT.u)
+errB, cB = tol_err(RB.u, RT.u)
+say(@sprintf("  err(lockstep) = %.4e  (worst at cell %d)   [context]", errA, cA))
+say(@sprintf("  err(bucketed) = %.4e  (worst at cell %d)", errB, cB))
+gate_ok = errB <= 1.0                       # NaN/Inf-safe: a non-finite err fails
+gate_ok || (nfail[] += 1)
+say("  GATE err(bucketed) <= 1.0: " * (gate_ok ? "PASS" : "FAIL"))
+if !(errA <= 1.0)
+    nfail[] += 1
+    say("  SUSPECT REFERENCE: err(lockstep) > 1 -- the lockstep arm itself does not " *
+        "meet the tolerance contract against the tight reference, so the gate " *
+        "conclusion is unreliable; investigate the reference setup (reported, not papered over)")
+end
+
+# NEGATIVE CONTROL: the gate must be able to fail. Perturb ONE state of the
+# bucketed answer by 100 tolerance units (RMS over NS species dilutes that to
+# 100/sqrt(NS), still far over 1) and require the gate to see it.
+let ubad = copy(RB.u)
+    i = argmax(abs.(RT.u))
+    ubad[i] += 100 * (D.ATOL_C + D.RTOL * abs(RT.u[i]))
+    ebad, _ = tol_err(ubad, RT.u)
+    fired = !(ebad <= 1.0)
+    fired || (nfail[] += 1)
+    say(@sprintf("  NEG CONTROL perturbed answer: err=%.3e  %s", ebad,
+                 fired ? "FIRED" : "DID NOT FIRE -- the gate proves nothing"))
+end
+
+# --------------------------------------------------------------------------- #
+# DIAGNOSTIC (not gating): the original pointwise-3x comparison, kept as a
+# report line -- see the header for why it cannot gate.
+# --------------------------------------------------------------------------- #
+say("\n---- DIAGNOSTIC (not gating): pointwise |u_b-u_t| <= max(3 |u_a-u_t|, 10 (atol+rtol|u_t|)) ----")
+let floor_(uti) = 10 * (D.ATOL_C + D.RTOL * abs(uti))
+    nviol = 0; worstratio = 0.0; wat = 1
+    for i in 1:length(RT.u)
+        db = abs(RB.u[i] - RT.u[i]); da = abs(RA.u[i] - RT.u[i])
+        bound = max(3 * da, floor_(RT.u[i]))
+        (isfinite(db) && db <= bound) || (nviol += 1)
         r = db / bound
         if !isfinite(r) || r > worstratio
             worstratio = r; wat = i
         end
     end
-    return nviol, worstratio, wat
-end
-nviol, wr, wat = gate(RB.u, RA.u, RT.u)
-let s = (wat - 1) ÷ NC + 1, c = (wat - 1) % NC + 1
-    say(@sprintf("  %d of %d states violate; worst |u_b-u_t|/bound = %.3e at species block %d, cell %d",
-                 nviol, length(RT.u), wr, s, c))
-    say(@sprintf("    there: u_t=%.6e  u_lock=%.6e  u_bucket=%.6e  (tolerance-unit floor %.3e)",
-                 RT.u[wat], RA.u[wat], RB.u[wat], gate_floor(RT.u[wat])))
-end
-say(@sprintf("  summary: max|u_lock-u_tight| = %.3e, max|u_bucket-u_tight| = %.3e",
-             maximum(abs.(RA.u .- RT.u)), maximum(abs.(RB.u .- RT.u))))
-gate_ok = nviol == 0
-gate_ok || (nfail[] += 1)
-say("  GATE " * (gate_ok ? "PASS" : "FAIL"))
-
-# NEGATIVE CONTROL: the gate must be able to fail. Perturb the bucketed answer
-# by 100x the bound at its largest state and require a violation.
-let ubad = copy(RB.u)
-    i = argmax(abs.(RT.u))
-    ubad[i] += 100 * max(3 * abs(RA.u[i] - RT.u[i]), gate_floor(RT.u[i]))
-    nv, _, _ = gate(ubad, RA.u, RT.u)
-    fired = nv > 0
-    fired || (nfail[] += 1)
-    say("  NEG CONTROL perturbed answer: " *
-        (fired ? "FIRED" : "DID NOT FIRE -- the gate proves nothing"))
+    s = (wat - 1) ÷ NC + 1; c = (wat - 1) % NC + 1
+    say(@sprintf("  %d of %d states over the pointwise bound; worst ratio %.3e at species block %d, cell %d",
+                 nviol, length(RT.u), worstratio, s, c))
+    say(@sprintf("  summary: max|u_lock-u_tight| = %.3e, max|u_bucket-u_tight| = %.3e",
+                 maximum(abs.(RA.u .- RT.u)), maximum(abs.(RB.u .- RT.u))))
 end
 
 # --------------------------------------------------------------------------- #
@@ -245,6 +282,8 @@ end
 # The scoreboard.
 # --------------------------------------------------------------------------- #
 say("\n" * "="^78)
+@printf("RESULT err_lockstep        %.4e  (tolerance units vs tight; context)\n", errA)
+@printf("RESULT err_bucketed        %.4e  (tolerance units vs tight; GATE <= 1.0)\n", errB)
 @printf("RESULT cellsteps_lockstep  %.4g accepted (%.4g attempted; %d acc / %d rej)\n",
         Float64(RA.nacc) * NC, Float64(RA.nacc + RA.nrej) * NC, RA.nacc, RA.nrej)
 @printf("RESULT cellsteps_bucketed  %.4g attempted (%.4g accepted; %d calls, %d rejected)\n",
