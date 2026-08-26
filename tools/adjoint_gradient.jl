@@ -538,10 +538,25 @@ end
 # `compile_options` REPLACES every other compile option (Reactant Macros.jl:7),
 # so `sync = true` has to be set inside it rather than alongside it.
 const XLAFIX = get(ENV, "RESEACT_ADJ_XLAFIX", "1") == "1"
+# RESEACT_EXCLUDED_PASSES removes StableHLO patterns from the Enzyme-JAX
+# default list by base name. The P4 probes (tools/diag/p4_pass_bisect.jl)
+# measured that "dynamic_update_to_concat,sub_const_prop" keeps the emitter's
+# in-place dynamic_update_slices from being rewritten into whole-buffer
+# concatenates -- measured 2.10x on the ROS23 step at 6x6x8 and **3.32x at
+# CONUS 13x7x72** (174.8 -> 52.7 ms median, interleaved best-of-two, slurm
+# 10151977), bit-for-bit equal unew in both. ON BY DEFAULT on that record;
+# RESEACT_EXCLUDED_PASSES=none restores the stock pipeline, or set your own
+# comma-separated base names. Supersedes CONCATS_TO_DUS[]=true (1.17x, 43%).
+const _EXCL_DEFAULT = "dynamic_update_to_concat,sub_const_prop"
+const _EXCL_RAW = get(ENV, "RESEACT_EXCLUDED_PASSES", _EXCL_DEFAULT)
+const EXCLP = _EXCL_RAW == "none" ? String[] :
+    String.(filter(!isempty, strip.(split(_EXCL_RAW, ','))))
 const COPTS = XLAFIX ?
     RX.CompileOptions(; sync = true,
-                      xla_debug_options = (; xla_cpu_prefer_vector_width = 128)) :
-    RX.CompileOptions(; sync = true)
+                      xla_debug_options = (; xla_cpu_prefer_vector_width = 128),
+                      (isempty(EXCLP) ? (;) : (; excluded_passes = EXCLP))...) :
+    RX.CompileOptions(; sync = true,
+                      (isempty(EXCLP) ? (;) : (; excluded_passes = EXCLP))...)
 
 say("\n---- compiling single-step programs (no while region in any of them) ----")
 say("     XLA:CPU race workaround (blocker 4): " *
