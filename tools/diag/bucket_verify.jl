@@ -7,33 +7,40 @@
 # chemistry step (CROS) *and* the bucket rung(s); a TIGHT reference program
 # (rtol/10) is compiled here on top of the same RHS.
 #
-# THE GATE (accuracy). Run N macro windows three ways from the same base
-# point, transport included:
+# THE GATE (accuracy; FINAL, coordinator ruling #2). Run N macro windows
+# three ways from the same base point, transport included:
 #   (a) LOCKSTEP  -- the global controller, host_adaptive!(CROS, ...)
 #   (b) BUCKETED  -- K=4 through bucket_window!
 #   (c) TIGHT     -- lockstep at rtol/10 (and atol/10), the reference
-# and require the TOLERANCE CONTRACT: with the PRODUCTION controller's own
-# atol/rtol (not the tight arm's),
+# with, in the PRODUCTION controller's own atol/rtol (not the tight arm's),
 #   err(arm) = max over cells of rms over species of
 #              (u_arm - u_tight) / (atol + rtol * |u_tight|)
-#   GATE: err(bucketed) <= 1.0
-# i.e. the bucketed trajectory ends within one tolerance unit of the tight
-# reference, in the norm the controllers actually control. err(lockstep) is
-# printed for context and must ALSO be <= 1 -- if it is not, the reference
-# setup itself is suspect and the run reports that rather than papering over
-# it. The gate is TOLERANCE-based on purpose: bitwise against (a) would test
-# a claim the design explicitly disowns (the bucketed max-controller is
-# STRICTER than the global RMS controller, so trajectories differ).
+#   GATE: err(bucketed) <= 1.05 * err(lockstep)
+# i.e. BUCKETING MUST NOT DEGRADE PER-CELL ACCURACY RELATIVE TO THE
+# PRODUCTION LOCKSTEP BASELINE. An absolute err <= 1 contract is unattainable
+# for ANY controller over a multi-step window: per-step local-error control
+# never bounds the ACCUMULATED window error to one tolerance unit (error
+# compounds over the ~hundreds of accepted steps), and the lockstep global
+# RMS norm is known to under-resolve the stiffest cell (the campaign measured
+# max_c(cell_err)/EEst median ~21x at CONUS -- and both arms' worst cell here
+# is the same stiffest cell). err(bucketed) exceeding err(lockstep) AT ALL is
+# the actual red flag (the bucketed max-norm controller should be TIGHTER,
+# and measured several times tighter on this gate's first run); it is warned
+# about below even inside the 5% slack. The gate is TOLERANCE-based on
+# purpose: bitwise against (a) would test a claim the design explicitly
+# disowns (the trajectories legitimately differ).
 #
-# HISTORY, measured on this gate's first run (coordinator ruling): the
-# original pointwise form |u_b - u_t| <= max(3 |u_a - u_t|, 10 atol) is
-# DEFECTIVE -- the 3x LOCAL slack collapses at states where lockstep lands
-# coincidentally close to the tight reference, and a bare-atol floor sits
-# orders of magnitude below the rtol-dominated error unit for any state of
-# ordinary magnitude, so a handful of states failed while the bucketed
-# answer was at a few percent of ONE tolerance unit from tight. That
-# pointwise comparison is kept below as a REPORTED DIAGNOSTIC, no longer
-# gating.
+# HISTORY (both measured, both coordinator-ruled):
+#   * The design note's pointwise form |u_b-u_t| <= max(3 |u_a-u_t|, 10 atol)
+#     is DEFECTIVE -- the 3x LOCAL slack collapses at states where lockstep
+#     lands coincidentally close to the tight reference, and a bare-atol
+#     floor sits orders of magnitude below the rtol-dominated error unit.
+#     Kept below as a reported diagnostic, no longer gating.
+#   * The absolute tolerance-contract form err(bucketed) <= 1.0 fails for
+#     LOCKSTEP ITSELF (accumulated-vs-local error, above), so it cannot
+#     separate a good scheduler from a bad one. Replaced by the relative
+#     form; the reference setup was validated, not suspect (the tight arm's
+#     accepted-step ratio matches the order-3 rtol/10 prediction).
 #
 # THE BITWISE CHECK (padding / lane-order leak). Run (b) twice with different
 # random WITHIN-BUCKET lane permutations: membership identical, lane order and
@@ -166,8 +173,20 @@ let nbad = count(!isfinite, UE)
                  nbad == 0 ? "PASS" : "FAIL"))
 end
 
+# Save the three arms' final states so a future gate re-ruling can be
+# re-evaluated offline instead of burning a node on a rerun (this gate has
+# been re-ruled twice on saved numbers already).
+let f = joinpath(REPO, "logs", "bucket",
+                 "bucketverify-states-" * get(ENV, "SLURM_JOB_ID", "local") * ".bin")
+    open(f, "w") do io
+        write(io, Int64(NS), Int64(NC))
+        write(io, RA.u); write(io, RT.u); write(io, RB.u); write(io, UE)
+    end
+    say("  (arm final states saved: $f  [NS, NC, then u_lock/u_tight/u_bucket/u_fwdpass])")
+end
+
 # --------------------------------------------------------------------------- #
-# THE GATE: the tolerance contract, in the production controller's own norm.
+# THE GATE: relative to the production baseline, in its own tolerance norm.
 # --------------------------------------------------------------------------- #
 say("\n---- GATE: err(arm) = max_cells rms_species (u_arm - u_tight)/(atol + rtol|u_tight|) ----")
 """
@@ -197,29 +216,36 @@ function tol_err(ua::Vector{Float64}, ut::Vector{Float64})
 end
 errA, cA = tol_err(RA.u, RT.u)
 errB, cB = tol_err(RB.u, RT.u)
-say(@sprintf("  err(lockstep) = %.4e  (worst at cell %d)   [context]", errA, cA))
+say(@sprintf("  err(lockstep) = %.4e  (worst at cell %d)   [the baseline]", errA, cA))
 say(@sprintf("  err(bucketed) = %.4e  (worst at cell %d)", errB, cB))
-gate_ok = errB <= 1.0                       # NaN/Inf-safe: a non-finite err fails
+# Both errs must be finite (a trajectory that blew up must not pass by making
+# the baseline Inf), and bucketing must not degrade accuracy vs the baseline.
+gate_ok = isfinite(errA) && isfinite(errB) && errB <= 1.05 * errA
 gate_ok || (nfail[] += 1)
-say("  GATE err(bucketed) <= 1.0: " * (gate_ok ? "PASS" : "FAIL"))
-if !(errA <= 1.0)
-    nfail[] += 1
-    say("  SUSPECT REFERENCE: err(lockstep) > 1 -- the lockstep arm itself does not " *
-        "meet the tolerance contract against the tight reference, so the gate " *
-        "conclusion is unreliable; investigate the reference setup (reported, not papered over)")
+say(@sprintf("  GATE err(bucketed) <= 1.05 * err(lockstep) (%.4e): %s",
+             1.05 * errA, gate_ok ? "PASS" : "FAIL"))
+if !(errB <= errA)
+    # The red flag, even inside the 5% slack: the bucketed max-norm controller
+    # is STRICTER than the lockstep RMS norm, so it should sit CLOSER to the
+    # tight reference. Looser-than-baseline says the scheduler is giving
+    # accuracy away somewhere -- warned loudly; the gate above is the
+    # pass/fail authority.
+    say("  WARNING: err(bucketed) > err(lockstep) -- the bucketed trajectory is " *
+        "LOOSER than the production baseline; a stricter accept test should sit " *
+        "closer to the tight reference, so something is giving accuracy away")
 end
 
 # NEGATIVE CONTROL: the gate must be able to fail. Perturb ONE state of the
-# bucketed answer by 100 tolerance units (RMS over NS species dilutes that to
-# 100/sqrt(NS), still far over 1) and require the gate to see it.
+# bucketed answer by enough tolerance units that its cell RMS lands two
+# orders over the baseline err, and require the RELATIVE gate to see it.
 let ubad = copy(RB.u)
     i = argmax(abs.(RT.u))
-    ubad[i] += 100 * (D.ATOL_C + D.RTOL * abs(RT.u[i]))
+    ubad[i] += 100 * sqrt(NS) * max(errA, 1.0) * (D.ATOL_C + D.RTOL * abs(RT.u[i]))
     ebad, _ = tol_err(ubad, RT.u)
-    fired = !(ebad <= 1.0)
+    fired = !(ebad <= 1.05 * errA)
     fired || (nfail[] += 1)
-    say(@sprintf("  NEG CONTROL perturbed answer: err=%.3e  %s", ebad,
-                 fired ? "FIRED" : "DID NOT FIRE -- the gate proves nothing"))
+    say(@sprintf("  NEG CONTROL perturbed answer: err=%.3e vs gate bound %.3e  %s", ebad,
+                 1.05 * errA, fired ? "FIRED" : "DID NOT FIRE -- the gate proves nothing"))
 end
 
 # --------------------------------------------------------------------------- #
@@ -325,8 +351,9 @@ end
 # The scoreboard.
 # --------------------------------------------------------------------------- #
 say("\n" * "="^78)
-@printf("RESULT err_lockstep        %.4e  (tolerance units vs tight; context)\n", errA)
-@printf("RESULT err_bucketed        %.4e  (tolerance units vs tight; GATE <= 1.0)\n", errB)
+@printf("RESULT err_lockstep        %.4e  (tolerance units vs tight; the baseline)\n", errA)
+@printf("RESULT err_bucketed        %.4e  (tolerance units vs tight; GATE <= 1.05 * baseline = %.4e)\n",
+        errB, 1.05 * errA)
 @printf("RESULT cellsteps_lockstep  %.4g accepted (%.4g attempted; %d acc / %d rej)\n",
         Float64(RA.nacc) * NC, Float64(RA.nacc + RA.nrej) * NC, RA.nacc, RA.nrej)
 @printf("RESULT cellsteps_bucketed  %.4g attempted (%.4g accepted; %d calls, %d rejected)\n",
