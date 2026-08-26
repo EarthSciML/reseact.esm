@@ -213,6 +213,20 @@ if SUBCYCLE && (want("adj") || want("fdtape"))
           "differentiate the recorded step sequence, and the subcycle does not " *
           "record one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
 end
+# PER-BUCKET ADAPTIVE chemistry stepping (tools/bucket_chem.jl): K equal-count
+# buckets of cells sorted by predicted demand, each with its own PI controller.
+# DEFAULT OFF, and off means the path below is unchanged. Mutually exclusive
+# with the level subcycle -- they replace the same chemistry half.
+const BUCKETK = parse(Int, get(ENV, "RESEACT_BUCKET", "0"))
+BUCKETK >= 0 || error("RESEACT_BUCKET must be >= 0 (0 = off), got $BUCKETK")
+SUBCYCLE && BUCKETK > 0 &&
+    error("RESEACT_SUBCYCLE=1 and RESEACT_BUCKET=$BUCKETK are mutually exclusive; " *
+          "both replace the chemistry half's controller -- pick one.")
+if BUCKETK > 0 && (want("adj") || want("fdtape"))
+    error("RESEACT_BUCKET=$BUCKETK is FORWARD ONLY (Phase 1). Stages adj/fdtape " *
+          "differentiate the recorded step sequence, and a bucketed window is K " *
+          "interleaved sequences, not one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
+end
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
                            nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
@@ -232,7 +246,7 @@ say("    stages: " * join(sort(collect(STAGES)), ", "))
 # 1. Build -- identical to run_reseact_reactant.jl / sensitivity_forward.jl.
 # --------------------------------------------------------------------------- #
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
-const BINSP = SUBCYCLE ? EA.BuildInspection() : nothing
+const BINSP = (SUBCYCLE || BUCKETK > 0) ? EA.BuildInspection() : nothing
 fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
@@ -277,7 +291,7 @@ Logging.with_logger(Logging.NullLogger()) do
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
             parameter_overrides = ov, const_arrays = merged_const,
             param_arrays = merged_param, materialize_out = dms[i],
-            inspect = (SUBCYCLE && i == 2) ? BINSP : nothing)
+            inspect = ((SUBCYCLE || BUCKETK > 0) && i == 2) ? BINSP : nothing)
         fo[i] = fi
         if i == 1
             u0, p, var_map = u0i, pi, vmi
@@ -589,6 +603,16 @@ if SUBCYCLE
     LADDER = build_subcycle_ladder(BINSP)
 end
 
+# --- the PER-BUCKET scheduler's own programs (RESEACT_BUCKET=K only) --------
+# bucket_chem.jl includes subcycle_chem.jl for the capacity-ladder machinery
+# (the knobs are mutually exclusive, so this never double-includes) and builds
+# ONLY the rung(s) the configured bucket sizes can reach.
+BLADDER = nothing
+if BUCKETK > 0
+    include(joinpath(REPO, "tools", "bucket_chem.jl"))
+    BLADDER = build_bucket_ladder(BINSP)
+end
+
 # --------------------------------------------------------------------------- #
 # 5. The host adaptive loop -- a line-by-line transcription of
 #    RxTracedIntegrator.adaptive_solve. Stage `ctl` proves it is exact.
@@ -702,6 +726,17 @@ function macro_step(u::Vector{Float64}, t0::Float64, t1::Float64,
         naC = st.calls; nrC = st.rejects; dtCe = dtC
         return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
     end
+    if BUCKETK > 0
+        # TRANSPORT IS UNTOUCHED above; only the chemistry half is bucketed.
+        record && error("macro_step: RESEACT_BUCKET>0 cannot record a step tape -- " *
+                        "a bucketed window is K interleaved (t, dt) sequences, not one, " *
+                        "so a tape recorded here would not describe the map that ran")
+        uC, st = bucket_window!(BLADDER, uT, t0, t1; K = BUCKETK, state = BUCKET_STATE)
+        BUCKET_STATS[] = BUCKET_STATS[] + st
+        BUCKET_LAST[] = st
+        naC = st.calls; nrC = st.rejects; dtCe = dtC
+        return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
+    end
     uC, _, dtCe, naC, nrC = host_adaptive!(CROS, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
                                            tape = tpC, seq = sC, clamp_nonneg = CLAMP[])
     return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
@@ -800,6 +835,13 @@ if want("fwd")
         st = SUB_STATS[]
         say("  ---- LEVEL SUBCYCLE, whole forward pass ----")
         subcycle_report(st)
+        say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
+                     st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
+    end
+    if BUCKETK > 0
+        st = BUCKET_STATS[]
+        say("  ---- BUCKETED CHEMISTRY, whole forward pass ----")
+        bucket_report(st)
         say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
                      st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
     end
