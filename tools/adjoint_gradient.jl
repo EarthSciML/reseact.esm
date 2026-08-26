@@ -190,6 +190,15 @@ const KEEPTAPE = get(ENV, "RESEACT_ADJ_KEEPTAPE", "0") == "1"
 # says whether the exact zeros it writes are what an infinite derivative is
 # coming from.
 const CLAMP = Ref(get(ENV, "RESEACT_ADJ_CLAMP", "1") == "1")
+# SSA CLASS-TO-CLASS EMISSION (EarthSciAST's ESS_OOP_SSA), ON BY DEFAULT. A
+# BUILD-time emitter flag, so it must be set before any build_evaluator /
+# prepare_jacobian call; `ESS_OOP_SSA=0` in the environment restores the stock
+# emitter. On because at CONUS it COMPOSES with the excluded-passes default
+# below rather than overlapping it, the full fwd+adj pipeline under it
+# reproduces the objective and every gradient component exactly, and the
+# emitted module is markedly smaller (fewer gathers and index constants) --
+# memory headroom this shared-cgroup environment spends immediately.
+get!(ENV, "ESS_OOP_SSA", "1")
 const ADJCSV   = get(ENV, "RESEACT_ADJ_CSV", "")
 const REFPARAM = String.(split(get(ENV, "RESEACT_ADJ_REFPARAM",
                    "NEIRegrid.scale,Transport3D.tau_pblmix,NEIRegrid.g0"), ','))
