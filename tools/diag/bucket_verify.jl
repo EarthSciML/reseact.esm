@@ -223,6 +223,49 @@ let ubad = copy(RB.u)
 end
 
 # --------------------------------------------------------------------------- #
+# DIAGNOSTIC (not gating): the anatomy behind the err numbers. Three views:
+#   * per-species breakdown at each arm's worst cell -- WHERE the units come
+#     from (a near-zero species scores atol-units; a big one rtol-units);
+#   * the per-cell err distribution -- is the worst cell a tail or typical;
+#   * the tight arm's step-count ratio vs lockstep -- for an order-3 error
+#     estimate, rtol/10 should cost ~10^(1/3) = 2.15x accepted steps; a ratio
+#     far from that says the tight arm is not the reference it claims to be.
+# --------------------------------------------------------------------------- #
+say("\n---- DIAGNOSTIC (not gating): err anatomy ----")
+function cell_anatomy(label::String, ua::Vector{Float64}, ut::Vector{Float64}, c::Int)
+    say(@sprintf("  worst cell %d (%s): per species block, u_tight / u_arm / |dev| / dev in tolerance units", c, label))
+    for s in 1:NS
+        i = (s - 1) * NC + c
+        unit = D.ATOL_C + D.RTOL * abs(ut[i])
+        say(@sprintf("    s%02d  u_t=% .6e  u=% .6e  |d|=%.3e  %8.2f units%s",
+                     s, ut[i], ua[i], abs(ua[i] - ut[i]), abs(ua[i] - ut[i]) / unit,
+                     ut[i] == 0.0 ? "  (tight EXACTLY 0: clamped; unit = atol)" : ""))
+    end
+end
+cell_anatomy("lockstep", RA.u, RT.u, cA)
+cell_anatomy("bucketed", RB.u, RT.u, cB)
+function tol_err_dist(label::String, ua::Vector{Float64}, ut::Vector{Float64})
+    errs = Vector{Float64}(undef, NC)
+    for c in 1:NC
+        ss = 0.0
+        for s in 1:NS
+            i = (s - 1) * NC + c
+            d = (ua[i] - ut[i]) / (D.ATOL_C + D.RTOL * abs(ut[i]))
+            ss += d * d
+        end
+        e = sqrt(ss / NS)
+        errs[c] = isfinite(e) ? e : Inf
+    end
+    q = quantile(errs, [0.5, 0.9, 0.99])
+    say(@sprintf("  err/cell %-9s p50 %.3e  p90 %.3e  p99 %.3e  max %.3e  cells>1: %d of %d",
+                 label, q[1], q[2], q[3], maximum(errs), count(>(1.0), errs), NC))
+end
+tol_err_dist("lockstep", RA.u, RT.u)
+tol_err_dist("bucketed", RB.u, RT.u)
+say(@sprintf("  tight arm integrity: %d accepted steps vs lockstep's %d = %.2fx (rtol/10 on an order-3 estimate predicts ~%.2fx)",
+             RT.nacc, RA.nacc, RT.nacc / max(RA.nacc, 1), 10.0^(1 / 3)))
+
+# --------------------------------------------------------------------------- #
 # DIAGNOSTIC (not gating): the original pointwise-3x comparison, kept as a
 # report line -- see the header for why it cannot gate.
 # --------------------------------------------------------------------------- #
