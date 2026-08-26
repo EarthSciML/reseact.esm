@@ -195,6 +195,24 @@ const REFPARAM = String.(split(get(ENV, "RESEACT_ADJ_REFPARAM",
                    "NEIRegrid.scale,Transport3D.tau_pblmix,NEIRegrid.g0"), ','))
 const STAGES   = Set(String.(split(get(ENV, "RESEACT_ADJ_STAGES", "fwd,adj,ref,fdtape"), ',')))
 want(s) = s in STAGES
+# LEVEL-BASED PER-CELL TIME STEPPING for the chemistry half (tools/subcycle_chem.jl).
+# DEFAULT OFF, and OFF MEANS THE PATH BELOW IS UNCHANGED: nothing extra is built,
+# nothing extra is compiled, and `macro_step` reaches the same
+# `host_adaptive!(CROS, ...)` it always did. ON replaces the chemistry half's
+# GLOBAL-dt controller with a dyadic level schedule over a LADDER of capacity
+# builds. The transport half is untouched either way.
+#
+# Phase 2 (the adjoint THROUGH the subcycle) is not built: the batch list is a
+# different composition of step maps than the tape records, so `replay_fixed`
+# and the backward sweep would silently differentiate a trajectory the forward
+# pass did not take. The driver refuses the combination rather than producing a
+# gradient of the wrong thing.
+const SUBCYCLE = get(ENV, "RESEACT_SUBCYCLE", "0") == "1"
+if SUBCYCLE && (want("adj") || want("fdtape"))
+    error("RESEACT_SUBCYCLE=1 is FORWARD ONLY (Phase 1). Stages adj/fdtape " *
+          "differentiate the recorded step sequence, and the subcycle does not " *
+          "record one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
+end
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
                            nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
@@ -214,6 +232,7 @@ say("    stages: " * join(sort(collect(STAGES)), ", "))
 # 1. Build -- identical to run_reseact_reactant.jl / sensitivity_forward.jl.
 # --------------------------------------------------------------------------- #
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
+const BINSP = SUBCYCLE ? EA.BuildInspection() : nothing
 fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
@@ -248,9 +267,17 @@ Logging.with_logger(Logging.NullLogger()) do
     merge!(ov, Dict{String,Float64}(k => Float64(v) for (k, v) in SLICE.parameters))
     for i in 1:2
         dms[i] = EA.DiscreteMaterializer()
+        # `inspect` ONLY under the subcycle, and only on part 2. `NEIRegrid.E_*`
+        # is the conservative regrid of the 137,241-cell NEI inventory and is
+        # CONST-FOLDED at build time, so a capacity build cannot be given its
+        # values without reading them back off the build. `build_evaluator`'s
+        # `(f!, u0, p, tspan, var_map)` is documented identical with or without
+        # `inspect`, and passing `nothing` is its own default -- so the OFF path
+        # is byte for byte what it was.
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
             parameter_overrides = ov, const_arrays = merged_const,
-            param_arrays = merged_param, materialize_out = dms[i])
+            param_arrays = merged_param, materialize_out = dms[i],
+            inspect = (SUBCYCLE && i == 2) ? BINSP : nothing)
         fo[i] = fi
         if i == 1
             u0, p, var_map = u0i, pi, vmi
@@ -318,9 +345,16 @@ if SYMJAC
     @eval using EarthSciASTDiff
     tj = time()
     jacE = Logging.with_logger(Logging.NullLogger()) do
+        # `source_layout` skips the SOURCE-model rebuild inside prepare_jacobian
+        # -- ~half its wall time on a real grid, and a share that GROWS with the
+        # grid. The layout below is the part-2 build from the block above: same
+        # split part, same overrides/const_arrays/param_arrays, which is exactly
+        # the contract the kwarg asks for. (`var_map` is asserted identical
+        # across the two parts there; wrt = :states never reads `p`.)
         EarthSciASTDiff.prepare_jacobian(splitparts[2]; wrt = :states,
             build_kwargs = (; form = :oop, parameter_overrides = ov,
-                              const_arrays = merged_const, param_arrays = merged_param))
+                              const_arrays = merged_const, param_arrays = merged_param),
+            source_layout = (u0 = u0, p = p, var_map = var_map))
     end
     say(@sprintf("  prepare_jacobian %.1f s   structure=%s  oop=%s",
                  time() - tj, jacE.structure, jacE.oop))
@@ -519,6 +553,27 @@ CSSPV = want("adj") ?
 CROSV = want("adj") ?
     timed_compile("ros_vjp", () -> RX.@compile compile_options=COPTS ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
 
+# --- the LEVEL SUBCYCLE's own programs (RESEACT_SUBCYCLE=1 only) -----------
+# `ros_step_cw` is `ros_step` plus the PER-CELL error norm (`cellwise=true` costs
+# one extra reduce and nothing when not asked for). It is the PREDICTOR: one
+# probe call per macro window turns the global controller's single scalar EEst
+# into the per-cell step demand the level schedule is built from. It is a
+# SEPARATE compiled program from `ros_step` -- the extra output changes the
+# signature -- which is why it is behind the flag rather than replacing CROS.
+CROSCW = nothing
+LADDER = nothing
+if SUBCYCLE
+    ros_step_cw(u, th, t, dt) = RTI.ros23_step((uu, tt) -> gC(uu, th, tt), u, t, dt,
+                                               NS, NC, MASKS, ATOL_C, RTOL;
+                                               unrolled = true, jac = JACMODE,
+                                               symjac = SYMJAC ? ((uu, tt) -> gJ(uu, th, tt)) : nothing,
+                                               cellwise = true)
+    CROSCW = timed_compile("ros_step_cw",
+                () -> RX.@compile compile_options=COPTS ros_step_cw(U_R, THC, T_R, DTC_R))
+    include(joinpath(REPO, "tools", "subcycle_chem.jl"))
+    LADDER = build_subcycle_ladder(BINSP)
+end
+
 # --------------------------------------------------------------------------- #
 # 5. The host adaptive loop -- a line-by-line transcription of
 #    RxTracedIntegrator.adaptive_solve. Stage `ctl` proves it is exact.
@@ -613,6 +668,25 @@ function macro_step(u::Vector{Float64}, t0::Float64, t1::Float64,
     sT = StepSeq(); sC = StepSeq()
     uT, _, dtTe, naT, nrT = host_adaptive!(CSSP, u,  t0, t1, dtT, RTI.pictrl_ssprk43(), THT;
                                            tape = tpT, seq = sT, clamp_nonneg = CLAMP[])
+    if SUBCYCLE
+        # TRANSPORT IS UNTOUCHED above; only the chemistry half is level-scheduled.
+        record && error("macro_step: RESEACT_SUBCYCLE=1 cannot record a step tape -- " *
+                        "the subcycle runs a BATCH LIST, not a single (t, dt) sequence, " *
+                        "so a tape recorded here would not describe the map that ran")
+        uC, need_next, st = subcycle_chem(LADDER, uT, t0, t1;
+                                          need_prev = SUB_NEED[], dt_probe = SUB_DTPROBE[])
+        SUB_NEED[] = need_next
+        # Probe the NEXT window at the step the MEDIAN cell just needed: the
+        # dt^3 extrapolation behind `need` is only informative near the dt it was
+        # taken at, so a probe fixed at DT0C would mis-price every window but the
+        # first.
+        SUB_DTPROBE[] = (t1 - t0) /
+            2.0^clamp(round(Int, median(log2.(max.(need_next, 1.0)))), 0, SUB_JMAX)
+        SUB_STATS[] = SUB_STATS[] + st
+        SUB_LAST[] = st
+        naC = st.calls; nrC = st.rejects; dtCe = dtC
+        return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
+    end
     uC, _, dtCe, naC, nrC = host_adaptive!(CROS, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
                                            tape = tpC, seq = sC, clamp_nonneg = CLAMP[])
     return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
@@ -707,6 +781,13 @@ if want("fwd")
     say(@sprintf("  checkpoint cost: %d states x 8 B = %.1f kB/macro step, %.1f MB total",
                  N, N * 8 / 1024, length(CKPTS) * N * 8 / 1024^2))
     say(@sprintf("  J = %.15g", JVAL))
+    if SUBCYCLE
+        st = SUB_STATS[]
+        say("  ---- LEVEL SUBCYCLE, whole forward pass ----")
+        subcycle_report(st)
+        say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
+                     st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
+    end
     all(isfinite, UEND) || error("non-finite state at the end of the window")
 end
 
