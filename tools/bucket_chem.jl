@@ -1,6 +1,46 @@
 # ===========================================================================
 # bucket_chem.jl -- PER-BUCKET ADAPTIVE chemistry stepping (Phase 1, forward).
 # ===========================================================================
+# STATUS (2026-08-25, coordinator ruling: the bucketing line is PAUSED).
+#
+# VERDICT: ACCURACY-SAFE, WALL-NEGATIVE AT CURRENT PREDICTION QUALITY.
+#   * Accuracy: the 6x6x8 gate passes with margin -- the bucketed max-norm
+#     controller sits several times CLOSER to a rtol/10 reference than the
+#     production lockstep baseline does, the padding/lane-permutation checks
+#     are bitwise clean, and the production macro_step path is bit-identical
+#     to the harness path (tools/diag/bucket_verify.jl, slurm 10154836/46).
+#   * Wall: measured at CONUS on the sunrise segment (slurm 10155020),
+#     equal-count buckets deliver 1.16x (K=16) / 1.77x (K=64) fewer
+#     cell-steps than lockstep but 0.66x wall -- the cell-step win is spent
+#     on per-bucket controller slop (~1.8x extra steps vs the ceiling model)
+#     and on the small-batch per-lane cost premium plus rung padding.
+#
+# PRICED CEILINGS (tools/diag/bucket_replay_segment.py on the recorded
+# 288-window demand matrix, using the per-lane cost curve measured from the
+# three compiled programs; "realizable" = partition and order chosen from
+# prediction, priced on true demand, zero controller slop):
+#   * sunrise segment: best realizable partition ~1.2x; NO partition policy
+#     with history-only prediction beats lockstep there once any slop exists.
+#   * whole day: realizable ~1.9x at zero slop, ~1.5x at 1.25x slop.
+#   * lazy+stiff-tail partitions (one big lax bucket + demand bands): DEAD --
+#     priced below 1x on the segment and dominated by equal-count everywhere;
+#     one mispredicted stiff cell prices the whole near-full-grid rung.
+#   * probe-at-t0 predictor (one full-grid cellwise call per window, its cost
+#     charged): pessimistic estimate 1.69x whole-day at 1.25x slop -- under
+#     the 1.8x authorization bar, hence the pause; optimistic reading 1.94x.
+#
+# THE TWO REMAINING LEVERS, in priced order:
+#   1. PREDICTION. Oracle knowledge of each window's demand prices ~3.2x
+#      whole-day wall; trend/prev realize ~1.9x (zero slop). A t0 probe
+#      closes 40-60% of that gap depending on how much of the mid-window
+#      terminator ramp an instantaneous probe can see. This is the lever
+#      that moves the verdict.
+#   2. SMALL-C PROGRAM EFFICIENCY. The C=512 / C=128 programs pay ~1.4x /
+#      ~2.1x more per lane than the full-grid program (plus rung padding);
+#      flattening that curve is worth ~1.4x across every scheme and
+#      compounds with lever 1.
+# Do not start cluster runs on this line without coordinator authorization.
+# ===========================================================================
 # The successor to the DYADIC level scheme (tools/subcycle_chem.jl /
 # tools/level_subcycle.jl), and the design verdicts that force its shape:
 #

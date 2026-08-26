@@ -98,10 +98,25 @@ for m in seg:
 #     lazy+bands     one lazy bucket (predicted demand <= the q quantile) at
 #                    a near-full-grid rung, stiff tail in equal-LOG-width
 #                    demand bands, bands merged upward rather than padded
-#                    below the C=128 rung floor
+#                    below the C=128 rung floor.
+#                    VERDICT (priced 2026-08-25, coordinator-accepted): DEAD.
+#                    0.77-0.95x ceiling on the sunrise segment and dominated
+#                    by equal-K at every config on the whole day -- one
+#                    mispredicted stiff cell inside the ~0.75*NC lazy bucket
+#                    prices the whole near-full-grid rung at that cell's
+#                    step count, and in the terminator band that happens
+#                    essentially every window. Do not implement.
 #     DP-optimal     best contiguous partition of the prediction-sorted
 #                    cells under the cost model (stride-quantized break-
 #                    points) -- the model's own ceiling over ALL such schemes
+#                    (the clairvoyant variant places cuts on TRUE demand;
+#                    the REALIZABLE variant places order and cuts on the
+#                    prediction and pays the true demand)
+#
+#   predictors priced (the PROBE section at the bottom): trend and prev from
+#   history alone, and PROBE-AT-T0 -- one full-grid cellwise call at the
+#   window start measuring the demand RATE at t0, estimated from the
+#   recorded per-window integrals and charged its own call cost.
 #
 # Charged per bucket per window: steps = max TRUE demand over members
 # (ceiling: zero restart slop, zero rejects), cost = steps x callcost(rung).
@@ -252,3 +267,61 @@ _, sizes = wall_lazy(S[m0], order("trend", m0),
                      S[m0 - 1] ** 2 / S[m0 - 2], 0.75, 4)
 print(f"  lazy q=.75 nb=4 sizes at t={tcur[m0]:.0f}: {sizes} "
       f"(rungs {[rung_of(s) for s in sizes]})")
+
+# ===========================================================================
+# PROBE-AT-T0 PREDICTOR (Phase 1.5 final pricing, coordinator-directed).
+# One full-grid cellwise call at the window start measures each cell's
+# demand RATE at t0; the window's cost is its INTEGRAL demand, so the probe
+# is an estimate, not an oracle. THE APPROXIMATION, stated explicitly: the
+# recording holds only per-window integrals S[m-1] and S[m]; put them at
+# the centers of their windows (-W/2 and +W/2 around the probe instant) and
+# model intra-window demand evolution as log-linear. Then
+#
+#   probe-opt : the probe reads the instantaneous t0 rate exactly
+#               -> closes HALF the log-gap:  sqrt(S[m-1] * S[m])
+#   probe-pess: the probe only sees the first 1/5 of window m's demand
+#               pattern -> closes 20% of the log-gap:  S[m-1]^0.8 * S[m]^0.2
+#               (the terminator's mid-window ramps are exactly what a t0
+#               instant cannot see, so this is the honest decision variant)
+#   +memory   : hybrid, max(probe, need/2) with need the decaying-max
+#               ratchet guard need[m] = max(S[m-1], need[m-1]/2)
+#
+# The probe's own cost -- one full-grid cellwise call per window, priced at
+# the measured full-grid call cost -- is ADDED to the wall, and slop scales
+# only the bucket steps, never the probe: wall = slop * buckets + probes.
+# Window 0 uses S[-1] := 1 (cold start), one window of 288.
+# ===========================================================================
+print("\n" + "=" * 74)
+print("PROBE-AT-T0 PREDICTOR PRICING (DP-realizable partition, probe cost charged)")
+PROBE_COST = callcost_s(NC)          # one full-grid cellwise call, seconds
+print(f"  probe cost charged: {1e3 * PROBE_COST:.1f} ms/window x {len(seg)} windows "
+      f"= {len(seg) * PROBE_COST:.1f} s")
+
+Sm1 = np.vstack([np.ones(NC), S[:-1]])          # S[m-1] with cold window 0
+need = np.ones_like(S)                           # decaying-max memory
+for m in range(M):
+    prev = need[m - 1] if m > 0 else np.ones(NC)
+    need[m] = np.maximum(Sm1[m], prev / 2)
+
+PREDS = {
+    "trend (no probe)":  lambda m: S[m - 1] ** 2 / S[m - 2] if m > 1 else Sm1[m],
+    "probe-opt":         lambda m: np.sqrt(Sm1[m] * S[m]),
+    "probe-pess":        lambda m: Sm1[m] ** 0.8 * S[m] ** 0.2,
+    "probe-opt +memory": lambda m: np.maximum(np.sqrt(Sm1[m] * S[m]), need[m] / 2),
+    "probe-pess+memory": lambda m: np.maximum(Sm1[m] ** 0.8 * S[m] ** 0.2, need[m] / 2),
+}
+
+print(f"  {'predictor':18s} {'buckets(s)':>10s}   " +
+      "   ".join(f"slop {sl:.2f}x" for sl in (1.0, 1.25, 1.5, 1.8)))
+for name, pf in PREDS.items():
+    has_probe = name.startswith("probe")
+    wb = 0.0
+    for m in seg:
+        sp = pf(m)
+        wb += wall_dp_real(S[m], sp, np.argsort(sp))
+    probes = len(seg) * PROBE_COST if has_probe else 0.0
+    ratios = [LOCK_WALL / (sl * wb + probes) for sl in (1.0, 1.25, 1.5, 1.8)]
+    print(f"  {name:18s} {wb:10.1f}   " +
+          "   ".join(f"{r:8.2f}x" for r in ratios) +
+          ("   (+probe)" if has_probe else ""))
+print("  DECISION NUMBER (ruling): probe-pess [+memory] whole-day, DP-realizable, slop 1.25x")
