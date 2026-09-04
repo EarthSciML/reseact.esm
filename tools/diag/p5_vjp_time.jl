@@ -16,6 +16,7 @@
 #   RESEACT_NLON/NLAT/NLEV   grid (6x6x8 in a session; CONUS via sbatch only)
 #   P5_EXTRA                 comma-separated EXTRA pattern base-names
 #   P5_PROGRAMS              default "ros_vjp,ssp_vjp"; may add ros_step,ssp_step
+#   P5_XLAOPT                extra XLA debug options for arm B, "k=v;k=v"
 #   P5_REPS                  timing reps per arm per pass (default 40)
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
@@ -35,9 +36,22 @@ const D = Main._Drv
 const RX = D.RX
 const BASEX = collect(String, D.EXCLP)
 const FULLX = unique(vcat(BASEX, EXTRA))
-say("P5_VJP_TIME grid=$(D.NC) cells   default excl=[" * join(BASEX, ",") * "]   +extra=[" * join(EXTRA, ",") * "]")
-copts_excl(excl) = RX.CompileOptions(; sync = true,
-    xla_debug_options = (; xla_cpu_prefer_vector_width = 128),
+# Arm B may also carry extra XLA debug options: P5_XLAOPT="name=value;name=value"
+# (Bool/Int/String parsed by shape). The race workaround stays in every arm.
+function parse_xlaopt(s)
+    kv = Pair{Symbol,Any}[]
+    for item in filter(!isempty, strip.(split(s, ';')))
+        k, v = strip.(split(item, '='; limit = 2))
+        val = v in ("true", "false") ? parse(Bool, v) :
+              occursin(r"^-?\d+$", v) ? parse(Int, v) : String(v)
+        push!(kv, Symbol(k) => val)
+    end
+    return kv
+end
+const XLAOPT = parse_xlaopt(get(ENV, "P5_XLAOPT", ""))
+say("P5_VJP_TIME grid=$(D.NC) cells   default excl=[" * join(BASEX, ",") * "]   +extra=[" * join(EXTRA, ",") * "]   +xlaopt=" * repr(XLAOPT))
+copts_excl(excl; xlaopt = Pair{Symbol,Any}[]) = RX.CompileOptions(; sync = true,
+    xla_debug_options = (; xla_cpu_prefer_vector_width = 128, xlaopt...),
     (isempty(excl) ? (;) : (; excluded_passes = collect(String, excl)))...)
 
 fresh_u() = RX.ConcreteRArray(copy(D.UBASE))
@@ -68,28 +82,40 @@ function outputs(prog, r)
         return Array(r[1]), Float64[]
     end
 end
+# Process CPU time (all threads). CLOCK_PROCESS_CPUTIME_ID == 2 on Linux. The
+# cpu/wall ratio over the timed region says how many cores XLA:CPU actually
+# keeps busy for this program (~3 for the primal step, xla_cpu_sweep.jl).
+function cpu_ns()
+    ts = Ref((Clong(0), Clong(0)))
+    ccall(:clock_gettime, Cint, (Cint, Ptr{Cvoid}), 2, ts)
+    t = ts[]
+    return Int64(t[1]) * 1_000_000_000 + Int64(t[2])
+end
+const CPUWALL = Dict{String,Float64}()
 function time_calls(prog, c, reps)
     for _ in 1:3; call_prog(prog, c); end
     ts = Float64[]
+    c0 = cpu_ns(); w0 = time_ns()
     for _ in 1:reps
         t0 = time(); call_prog(prog, c); push!(ts, time() - t0)
     end
+    CPUWALL[prog] = (cpu_ns() - c0) / max(time_ns() - w0, 1)
     return median(ts), minimum(ts)
 end
 
 for prog in PROGS
     say("\n---- $prog ----")
     t0 = time(); CA = compile_prog(prog, copts_excl(BASEX)); say(@sprintf("  @compile default %.1f s", time() - t0))
-    CB = if isempty(EXTRA)
+    CB = if isempty(EXTRA) && isempty(XLAOPT)
         CA      # no extra set: time the driver default alone (both arms identical)
     else
-        t0 = time(); c = compile_prog(prog, copts_excl(FULLX)); say(@sprintf("  @compile +extra  %.1f s", time() - t0)); c
+        t0 = time(); c = compile_prog(prog, copts_excl(FULLX; xlaopt = XLAOPT)); say(@sprintf("  @compile +extra  %.1f s", time() - t0)); c
     end
     a1 = time_calls(prog, CA, REPS); b1 = time_calls(prog, CB, REPS)
     a2 = time_calls(prog, CA, REPS); b2 = time_calls(prog, CB, REPS)
     ma = min(a1[1], a2[1]); mb = min(b1[1], b2[1])
-    say(@sprintf("P5_TIME %-8s NC=%d  default %.3f ms  +extra %.3f ms   ratio %.3f   (mins %.3f / %.3f)",
-                 prog, D.NC, 1e3 * ma, 1e3 * mb, ma / mb, 1e3 * min(a1[2], a2[2]), 1e3 * min(b1[2], b2[2])))
+    say(@sprintf("P5_TIME %-8s NC=%d  default %.3f ms  +extra %.3f ms   ratio %.3f   (mins %.3f / %.3f)   cpu/wall %.2f",
+                 prog, D.NC, 1e3 * ma, 1e3 * mb, ma / mb, 1e3 * min(a1[2], a2[2]), 1e3 * min(b1[2], b2[2]), CPUWALL[prog]))
     la, pa = outputs(prog, call_prog(prog, CA)); lb, pb = outputs(prog, call_prog(prog, CB))
     same = la == lb && pa == pb
     rel(x, y) = isempty(x) ? 0.0 : maximum(abs.(x .- y) ./ max.(abs.(x), abs.(y), 1e-300))
