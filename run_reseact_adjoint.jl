@@ -8,11 +8,29 @@
 # where the objective is a functional of the end state (default: mean surface
 # O3) and the parameters are the model's runtime scalars.
 #
-# It is a demonstration, not a production driver. It runs a SHORT window on a
-# SMALL grid because that is what is validated end to end. What it cannot yet
-# do -- a week of CONUS -- is the subject of the blockers section below, which
-# is the more useful half of this file.
+# ITS DEFAULT IS A FULL-SCALE RUN: CONUS at 13x7x72 for 1,440 macro steps of
+# 300 s = FIVE DAYS of simulation, with `clamp_nonneg` on and no jitter, i.e. a
+# gradient of the trajectory the production runner actually integrates. The 48 h
+# gradient recorded below was the staging post for exactly this. On those
+# measured numbers it is ~20 h of wall time and ~40 GB of RSS, so it is a BATCH
+# JOB and not something to start inside a session (an interactive Slurm cgroup
+# here is capped at 40 GiB):
 #
+#   mkdir -p logs && sbatch tools/diag/adjoint_conus_5d.sbatch
+#
+# It ran short and small for a long time, and the blockers section below is the
+# record of why; all four blockers are now closed or worked around, which is what
+# makes this default legitimate rather than optimistic. The one thing still
+# unproven is the LENGTH: 48 h has been run twice, 120 h not yet.
+#
+# The old demonstration preset -- 6x6x8, three macro steps, all four validation
+# stages, the configuration the acceptance checks are green on and the one the
+# recorded output further down describes -- is one command away, because every
+# default here is `get!` and the environment wins:
+#
+#   RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 RESEACT_ADJ_NMACRO=3 \
+#   RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 \
+#   RESEACT_ADJ_STAGES=fwd,adj,ref,fdtape \
 #   julia --project=run-model-jl run_reseact_adjoint.jl
 #
 # ---------------------------------------------------------------------------
@@ -78,9 +96,13 @@
 # loop" below.
 #
 # ---------------------------------------------------------------------------
-# WHAT THIS RUN ACTUALLY PRINTS -- read this before reading the output
+# WHAT THE DEMONSTRATION PRESET PRINTS -- read this before reading its output
 # ---------------------------------------------------------------------------
-# A recorded run of exactly this script (6x6x8, 3 macro steps, build 599 s,
+# This section describes the 6x6x8 / 3-macro-step preset above, NOT the 5-day
+# CONUS default: `ref` and `fdtape` are acceptance tests priced for three macro
+# steps and the default configuration does not run them at all.
+#
+# A recorded run of that preset (6x6x8, 3 macro steps, build 599 s,
 # 3,744 states, 49 parameters, exit 0) produced:
 #
 #   * J = 38.844190627265334, and the frozen replay reproduced it BIT-IDENTICALLY
@@ -327,6 +349,11 @@
 #    default.
 # D. Only then attempt a long window, and stage it: 48 h first, against a forward
 #    sensitivity for two or three parameters as an independent check.
+#    **48 h DONE**, twice (slurm 10044327 / 10055533), which is what makes the
+#    FIVE-DAY window this file now defaults to the next rung rather than a leap.
+#    That rung is not yet climbed: 120 h has never been run end to end. The
+#    per-checkpoint replay check makes a faithfulness failure visible as it
+#    happens rather than at the end, so a long run that is going wrong says so.
 # E. File the `:ad` reverse-over-forward segfault upstream (write-up ready in
 #    tools/diag/UPSTREAM_reverse_over_forward.md). Lower priority now that
 #    `jac=:sym` means nothing here depends on it.
@@ -383,36 +410,96 @@ const DEMO = lowercase(get(ENV, "RESEACT_DEMO", "adjoint"))
 DEMO in ("adjoint", "forward", "both") ||
     error("RESEACT_DEMO must be adjoint|forward|both, got \"$DEMO\"")
 
-# ---- Demonstration defaults ------------------------------------------------
-# Small grid, short window: this is the configuration the acceptance checks in
-# tools/adjoint_gradient.jl are green on, and it finishes. The production grid
-# is 13x7x72 over a week (see run_reseact.jl); getting THERE is the blockers
-# section above, not a matter of changing these numbers.
-get!(ENV, "RESEACT_NLON", "6")
-get!(ENV, "RESEACT_NLAT", "6")
-get!(ENV, "RESEACT_NLEV", "8")
+# ---- Production defaults: FIVE DAYS OF CONUS --------------------------------
+# CONUS at the native GEOS-FP 4x5 resolution -- 13x7x72, 85,176 states, the same
+# slice run_reseact.jl and run_reseact_reactant.jl integrate -- for 1,440 macro
+# steps of 300 s = 120 h of simulation. That is a REAL RUN, not the 6x6x8 / 900 s
+# demonstration this file defaulted to until now.
+#
+# WHAT IT COSTS, scaled off the measured 48 h CONUS gradient (slurm 10055533:
+# 8 h 02 m all in, forward 7,460 s, backward 18,761 s at 0.4585 s/VJP, MaxRSS
+# 38.4 GB): five days is 2.5x that window, so expect ~20 h wall and ~40 GB RSS,
+# plus ~980 MB of macro-step checkpoints (681 kB each) carried in memory. Linear
+# scaling is if anything pessimistic -- 24 h -> 48 h cost 1.64x, not 2x, because
+# the spin-up day is the stiff one.
+#
+# THOSE NUMBERS PREDATE THE FAST STEP. Since 2026-08-25 the driver defaults to
+# `ESS_OOP_SSA=1` and `RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,
+# sub_const_prop`, which together take one CONUS ROS23 step from 259.8 ms to
+# 60.9 ms (4.27x, bit-identical state; slurm 10154418) and were validated through
+# the adjoint at 6x6x8 (all 160 gradient components identical, slurm 10155819).
+# Chemistry is ~90% of the forward pass and the VJP is built from the same
+# emitter, so the 20 h projection above is an upper bound and the transport
+# half -- untouched by either default -- is now a larger share. No window-length
+# run has been timed with the fast step yet; the next 48 h run is that
+# measurement.
+#
+# SO DO NOT RUN IT IN A SESSION. An interactive Slurm cgroup here is capped at
+# 40 GiB and this wants ~40 GB for the better part of a day. Submit it:
+#
+#   mkdir -p logs && sbatch tools/diag/adjoint_conus_5d.sbatch
+#
+# HOW MUCH OF THIS IS PROVEN. The 48 h window is, twice, with every
+# reference-free check passing (see the header). The 5-day window has not been
+# run end to end -- days 3-5 are new only in the sense that nobody has paid for
+# them yet, the forcing span being derived from the window and the 36.2 h forward
+# death having been PBL mixing rather than window length.
+#
+# EVERY DEFAULT BELOW IS `get!`, so anything already in the environment WINS and
+# the old demonstration preset is still one command:
+#
+#   RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 RESEACT_ADJ_NMACRO=3 \
+#   RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 \
+#   RESEACT_ADJ_STAGES=fwd,adj,ref,fdtape \
+#   julia --project=run-model-jl run_reseact_adjoint.jl
+get!(ENV, "RESEACT_NLON", "13")
+get!(ENV, "RESEACT_NLAT", "7")
+get!(ENV, "RESEACT_NLEV", "72")
 
-# `clamp_nonneg` OFF -- blocker 1. Not a preference; with it on the backward
-# sweep goes non-finite at the third macro step. UNDER RETEST: the configuration
-# that observation was made in had both the XLA:CPU race active and an FD block
-# Jacobian, and the clamp's exact zeros are what make an FD Jacobian degenerate.
-# See tools/diag/adjoint_clamp_retest.sbatch.
-get!(ENV, "RESEACT_ADJ_CLAMP", "0")
+# 1,440 * 300 s = 432,000 s = 5 days. The driver derives the GEOS-FP forcing span
+# from the window (`forcing_days_for`), so lengthening the run is exactly this
+# number: it pulls 7 daily files per collection instead of 3, and nothing else
+# has to change.
+get!(ENV, "RESEACT_ADJ_NMACRO", "1440")
+# The forward arm is the per-parameter CROSS-CHECK, not the run -- its cost is
+# proportional to the parameter count -- so it stays on a short window even here.
+# RESEACT_DEMO=adjoint, the default, does not run it at all.
+get!(ENV, "RESEACT_SENS_NMACRO", "3")
+
+# `clamp_nonneg` ON: differentiate the map the production runner actually
+# integrates. This defaulted to 0 while blocker 1 was open. That blocker closed
+# on 2026-08-21 and the clamp is now confirmed AT SCALE -- 576 macro steps of
+# CONUS with the clamp firing 50,973 times, the sweep finite throughout, zero
+# flaky-reverse retries over 27,973 VJP calls.
+get!(ENV, "RESEACT_ADJ_CLAMP", "1")
 
 # The exact, reverse-safe block Jacobian -- blocker 2, closed. See the header for
 # what it replaced and what it measured. `fd` reproduces every pre-2026-08-20
 # result; `ad` is exact but segfaults under a reverse sweep.
 get!(ENV, "RESEACT_ADJ_JAC", "sym")
 
-# Displace the base point off the PPM limiter switching surface (see above).
-get!(ENV, "RESEACT_ADJ_UJITTER", "1e-1")
+# The XLA:CPU race workaround -- blocker 4. The driver already defaults it on; it
+# is named here because a 1,440-step run makes ~70,000 compiled calls and a ~1%
+# per-call fault rate is not something a window this long survives.
+get!(ENV, "RESEACT_ADJ_XLAFIX", "1")
+
+# NO JITTER, and that is a change of purpose, not of taste. The jitter exists to
+# lift the base point off the PPM limiter's switching surface so that FINITE
+# DIFFERENCES mean something (see "READ THIS BEFORE CHANGING THE BASE POINT").
+# This configuration computes a gradient rather than FD-checking one, so it wants
+# the real trajectory; only macro step 1 sits at the uniform IC. Put it back to
+# 1e-1 together with the ref/fdtape stages if you are validating.
+get!(ENV, "RESEACT_ADJ_UJITTER", "0")
 get!(ENV, "RESEACT_SENS_UJITTER", "1e-1")
 
-# Three macro steps = 900 s of simulation. Enough for the Lie-Trotter chaining
-# and the backward replay to be exercised more than once, which is what the
-# ordering checks actually test.
-get!(ENV, "RESEACT_ADJ_NMACRO", "3")
-get!(ENV, "RESEACT_SENS_NMACRO", "3")
+# fwd,adj only. `ref` (forward mode, once per parameter) and `fdtape` (central
+# differences of the composed map, several evaluations per parameter per step
+# size) are ACCEPTANCE TESTS priced for three macro steps; at 1,440 they cost
+# multiples of the gradient itself. The REFERENCE-FREE checks are not stages and
+# run regardless -- the gather-plan validation, the fixed-sequence replay against
+# every checkpoint, and the structural identity scale*dJ/dscale == g0*dJ/dg0 --
+# and they are the ones that passed at 48 h.
+get!(ENV, "RESEACT_ADJ_STAGES", "fwd,adj")
 
 # Phase 2's objective, kept as the default so the two drivers are comparable.
 get!(ENV, "RESEACT_ADJ_OBJ", "SuperFast.O3:surf")
@@ -437,22 +524,43 @@ function run_arm(name::Symbol, path::AbstractString)
     Base.include(Core.eval(Main, :(module $name end)), path)
 end
 
+# The banner reports the window in SIMULATED TIME, not just in macro steps: the
+# whole point of the defaults above is that "1440" is five days, and nobody
+# should have to multiply to find that out. `RESEACT_MACRO_DT` is read the same
+# way the driver reads it, so an override shows up here too.
+const MACRO_DT_S = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
+const NMACRO_ADJ = parse(Int, ENV["RESEACT_ADJ_NMACRO"])
+const WINDOW_H   = NMACRO_ADJ * MACRO_DT_S / 3600
+const GRIDSTR    = "$(ENV["RESEACT_NLON"])x$(ENV["RESEACT_NLAT"])x$(ENV["RESEACT_NLEV"])"
+
 say("="^75)
-say("run_reseact_adjoint.jl -- simulation gradient demonstration")
+say("run_reseact_adjoint.jl -- simulation gradient")
 say("="^75)
 say("  mode          : $DEMO")
-say("  grid          : $(ENV["RESEACT_NLON"])x$(ENV["RESEACT_NLAT"])x$(ENV["RESEACT_NLEV"])" *
-    "   (production is 13x7x72 -- see the blockers in this file's header)")
-say("  window        : $(ENV["RESEACT_ADJ_NMACRO"]) macro steps")
+say("  grid          : $GRIDSTR" * (GRIDSTR == "13x7x72" ? "   (CONUS, production)" :
+                                    "   (production is 13x7x72 -- CONUS)"))
+say("  window        : $NMACRO_ADJ macro steps x $(round(Int, MACRO_DT_S)) s = " *
+    "$(round(WINDOW_H; digits = 2)) h of simulation " *
+    "($(round(WINDOW_H / 24; digits = 2)) days)")
+say("  stages        : $(ENV["RESEACT_ADJ_STAGES"])")
 say("  objective     : $(ENV["RESEACT_ADJ_OBJ"])")
-say("  clamp_nonneg  : $(ENV["RESEACT_ADJ_CLAMP"] == "0" ? "OFF (blocker 1)" : "ON")")
+say("  clamp_nonneg  : $(ENV["RESEACT_ADJ_CLAMP"] == "0" ? "OFF (see blocker 1)" : "ON (production map)")")
 say("  block Jacobian: $(ENV["RESEACT_ADJ_JAC"])" *
     (ENV["RESEACT_ADJ_JAC"] == "sym" ? "  (analytic, exact, reverse-safe)" : ""))
-say("  base point    : jittered $(ENV["RESEACT_ADJ_UJITTER"]) relative (PPM limiter; see header)")
+say("  base point    : " * (ENV["RESEACT_ADJ_UJITTER"] == "0" ?
+    "un-jittered (the real trajectory; jitter is for FD checks)" :
+    "jittered $(ENV["RESEACT_ADJ_UJITTER"]) relative (PPM limiter; see header)"))
 say("")
-say("  NOTE This demonstrates d(objective)/d(parameters) over a SHORT window on")
-say("       a SMALL grid. It is not a week of CONUS, and the header of this file")
-say("       says precisely what stands between the two.")
+if GRIDSTR == "13x7x72" && WINDOW_H >= 24
+    say("  NOTE This is a FULL-SCALE run, not the old demonstration preset. On the")
+    say("       measured 48 h CONUS numbers it is ~$(round(Int, 8 * WINDOW_H / 48)) h of wall time and ~40 GB of")
+    say("       RSS, so it belongs on a batch node -- an interactive Slurm cgroup")
+    say("       here is capped at 40 GiB. See tools/diag/adjoint_conus_5d.sbatch,")
+    say("       and this file's header for what has and has not been run before.")
+else
+    say("  NOTE Reduced configuration: this is NOT the 5-day CONUS default. The")
+    say("       environment is overriding it -- see the preset block in this file.")
+end
 say("")
 
 if DEMO in ("forward", "both")
