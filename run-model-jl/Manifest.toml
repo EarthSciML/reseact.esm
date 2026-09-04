@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "07d5b25faa07a88eb2aa745ec5bdb687cd9702e7"
+project_hash = "3541b5a9171ca298d0c5b8e0ad084d3e0bcc2953"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "5970c86505ae9c07bf5bc521ef2bbbb3849e8b7b"
@@ -523,12 +523,14 @@ version = "0.1.2"
 
     [deps.EarthSciIO.extensions]
     EarthSciIOBloscExt = "Blosc"
+    EarthSciIOShapefileExt = "Shapefile"
     EarthSciIOTiffImagesExt = "TiffImages"
     EarthSciIOZstdExt = "CodecZstd"
 
     [deps.EarthSciIO.weakdeps]
     Blosc = "a74b3585-a348-5f62-a45c-50e91977d574"
     CodecZstd = "6b39b394-51ab-5f42-8807-6242bab2b4c2"
+    Shapefile = "8e980c4a-a4fe-5da2-b3a7-4b4b0353a2f4"
     TiffImages = "731e570b-9d59-4bfa-96dc-6df516fadf69"
 
 [[deps.EnumX]]
@@ -753,14 +755,11 @@ version = "1.11.0"
 git-tree-sha1 = "a779299d77cd080bf77b97535acecd73e1c5e5cb"
 uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
 version = "0.1.17"
+weakdeps = ["Dates", "Test"]
 
     [deps.InverseFunctions.extensions]
     InverseFunctionsDatesExt = "Dates"
     InverseFunctionsTestExt = "Test"
-
-    [deps.InverseFunctions.weakdeps]
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[deps.IrrationalConstants]]
 git-tree-sha1 = "b2d91fe939cae05960e760110b328288867b5758"
@@ -1932,6 +1931,11 @@ version = "1.13.0"
 deps = ["ArgTools", "SHA"]
 uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
+
+[[deps.Test]]
+deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
+uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+version = "1.11.0"
 
 [[deps.ThreadingUtilities]]
 deps = ["ManualMemory"]
