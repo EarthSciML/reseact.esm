@@ -78,9 +78,12 @@
 # DIFFERENTIABILITY_PLAN.md's Phase 4 section.
 #
 # FORCING HAS NO DERIVATIVE. `theta` is `(p = the runtime scalars, bufs = the
-# GEOS-FP forcing buffers)`. The VJP returns a gradient for both halves; only
-# `p` is accumulated. That is not a shortcut -- meteorology is input data, not a
-# function of the parameters, and we are not differentiating w.r.t. GEOS-FP. The
+# GEOS-FP forcing buffers)`. Only `p` is accumulated -- and since 2026-09-04
+# only `p` is ACTIVE in the VJP (`RESEACT_ADJ_BUFGRAD=0`, the default): the old
+# form, which also returned a gradient for `bufs`, was materialising and
+# discarding ~1.5 GB of forcing-buffer gradient per VJP at CONUS
+# (tools/diag/p5_vjp_dump.jl). That is not a shortcut -- meteorology is input
+# data, not a function of the parameters, and we are not differentiating w.r.t. GEOS-FP. The
 # forcing refresh is a clean boundary: it is replayed from the checkpointed epoch
 # on the way back, so every macro step is adjointed against the same forcing
 # fields it was integrated with.
@@ -495,10 +498,18 @@ ros_step(u, th, t, dt) = RTI.ros23_step((uu, tt) -> gC(uu, th, tt), u, t, dt,
                                         NS, NC, MASKS, ATOL_C, RTOL;
                                         unrolled = true, jac = JACMODE,
                                         symjac = SYMJAC ? ((uu, tt) -> gJ(uu, th, tt)) : nothing)
-ssp_vjp(u, th, lam, t, dt) = RTI.ssprk43_step_vjp(gT, u, th, t, dt, lam, ATOL_T, RTOL)
+# RESEACT_ADJ_BUFGRAD=1 restores the pre-2026-09-04 VJP, in which the GEOS-FP
+# and band-model buffers in `theta` were ACTIVE and a gradient w.r.t. every one
+# of them was computed and discarded on each call (see `ros23_step_vjp`'s
+# `active_bufs` note for the measured cost). Default off: `p` is the only
+# active half of `theta`, which is the only half this driver accumulates.
+const BUFGRAD = get(ENV, "RESEACT_ADJ_BUFGRAD", "0") == "1"
+ssp_vjp(u, th, lam, t, dt) = RTI.ssprk43_step_vjp(gT, u, th, t, dt, lam, ATOL_T, RTOL;
+                                                  active_bufs = BUFGRAD)
 ros_vjp(u, th, lam, t, dt) = RTI.ros23_step_vjp(gC, u, th, t, dt, lam,
                                                 NS, NC, MASKS, ATOL_C, RTOL;
-                                                jac = JACMODE, gj = gJ)
+                                                jac = JACMODE, gj = gJ,
+                                                active_bufs = BUFGRAD)
 # The JVPs return the WHOLE `Enzyme.autodiff` result, not `r[1]`. MEASURED, and
 # it is a trap: `RxTracedIntegrator.{ros23,ssprk43}_step_jvp` hand back `r[1]`,
 # and on the REAL model that slot is the PRIMAL, not the tangent -- a chained

@@ -18,6 +18,30 @@
 #   RESEACT_NLON/NLAT/NLEV   grid (default 6 6 8)
 #   P5_PROGRAMS              default ros_step,ros_vjp,ssp_step,ssp_vjp
 #   P5_BIGN                  big-result threshold in elements (default 40000)
+#
+# RESULTS (grid 6x6x8, Reactant v0.2.280, driver default excluded_passes,
+# 2026-09-04, logs/p5-dump-local.out) -- XLA's ENTRY computation after its own
+# passes; `copy` = instructions XLA's copy-insertion materialised, which the
+# StableHLO census cannot see:
+#
+#   program   ENTRY instr   fusions          copies (n, MB/call, big)   non-fused
+#   ros_step     1147       832 kLoop          2    0.1 MB    0            8
+#   ros_vjp      2986      2329 kLoop+9 kCust 220   67.2 MB   22          276
+#   ssp_step     1443      1058 kLoop         16    1.6 MB    0           22
+#   ssp_vjp      5501      4624 kLoop        311   36.9 MB    6          405
+#
+# THE FINDING. The 22 big copies in ros_vjp (and the 6 in ssp_vjp) are
+# f64[476928] / f64[483552] -- the GEOS-FP forcing buffers and the band
+# model's input buffers -- produced by zero-broadcasts and scatter
+# accumulations and consumed by the program's ROOT tuple. They are the
+# gradient w.r.t. `theta.bufs` / `theta.bufsJ`: the VJP entry points passed
+# the whole `(p, bufs[, bufsJ])` NamedTuple as ONE active argument, so reverse
+# mode allocated, zero-filled, scatter-accumulated and copied out a gradient
+# for every forcing buffer on every call, and the driver discarded it
+# (`r[2].bufs`). 67 MB per chemistry VJP at 288 cells scales with the grid:
+# ~1.5 GB per VJP at CONUS. Fix: `active_bufs=false` in ros23_step_vjp /
+# ssprk43_step_vjp (only `theta.p` active), the driver default since
+# RESEACT_ADJ_BUFGRAD. Measured effect: tools/diag/p5_vjp_time.jl.
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
 get!(ENV, "RESEACT_NLON", "6"); get!(ENV, "RESEACT_NLAT", "6"); get!(ENV, "RESEACT_NLEV", "8")
