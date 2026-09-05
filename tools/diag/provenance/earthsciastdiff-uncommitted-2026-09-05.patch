@@ -1,0 +1,202 @@
+diff --git a/pkg/EarthSciASTDiff.jl/src/assemble.jl b/pkg/EarthSciASTDiff.jl/src/assemble.jl
+index 1f31878..457c877 100644
+--- a/pkg/EarthSciASTDiff.jl/src/assemble.jl
++++ b/pkg/EarthSciASTDiff.jl/src/assemble.jl
+@@ -63,24 +63,102 @@ function _colmap(vm0, p0, wrt::Symbol)
+     end
+ end
+ 
++# --------------------------------------------------------------------------- #
++# The SOURCE-model layout: `(n, p0, vm0)`.
++#
++# Both `jacobian_pattern` and `prepare_jacobian` need three things about the
++# source model -- its state count, its scalar-parameter NamedTuple and its
++# name -> state-slot map -- and by default they get them by running a COMPLETE
++# `build_evaluator` of the source and throwing the RHS away. On a large grid
++# that build is half of `prepare_jacobian`'s wall time (measured 45% at 288
++# cells, 51% at 648, and the share GROWS with the grid because the band build
++# is grid-independent while the source build is not).
++#
++# A caller that has ALREADY built the source evaluator can hand the layout in
++# and skip the rebuild. That is a sharp edge: a layout from a build with
++# different `build_kwargs` (different `const_arrays`, `parameter_overrides`,
++# metaparameters, ...) would put every band in the wrong cell with no visible
++# symptom -- so the hand-in carries a contract (see `prepare_jacobian`), the
++# cheap structural half of which is checked here and the name half at the two
++# use sites below.
++#
++# `source_layout = (u0 = …, p = …, var_map = …)` is that hand-in: the 2nd, 3rd
++# and 5th returns of `EarthSciAST.build_evaluator`. `nothing` (the default)
++# rebuilds, which is exactly the historical behavior.
++function _source_layout(src, model_name, build_kwargs, layout, wrt::Symbol)
++    if layout === nothing
++        _, u00, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)
++        return (length(u00), p0, vm0)
++    end
++    for f in (:u0, :var_map)
++        hasproperty(layout, f) || throw(ArgumentError(
++            "source_layout must carry (u0, var_map[, p]); `$f` is missing"))
++    end
++    u0 = getproperty(layout, :u0)
++    vm0 = getproperty(layout, :var_map)
++    p0 = hasproperty(layout, :p) ? getproperty(layout, :p) : nothing
++    n = length(u0)
++    length(vm0) == n || throw(ArgumentError(
++        "source_layout: length(u0) = $n but length(var_map) = $(length(vm0)). " *
++        "The layout must come from a `build_evaluator` of the same source with " *
++        "the same build_kwargs."))
++    slots = sort!(collect(values(vm0)))
++    slots == 1:n || throw(ArgumentError(
++        "source_layout: var_map values are not a permutation of 1:$n, so it is " *
++        "not a state layout of this model."))
++    p0 === nothing && !(wrt in (:states, :time)) && throw(ArgumentError(
++        "source_layout: wrt = :$wrt indexes columns by parameter name, so the " *
++        "layout must carry `p` (the build_evaluator parameter NamedTuple)."))
++    return (n, p0, vm0)
++end
++
++# Name lookup with a legible failure: a `source_layout` from the wrong build
++# shows up here first, as a name that resolves nowhere.
++function _slot(map, name::String, what::String)
++    j = get(map, name, 0)
++    j == 0 && throw(ArgumentError(
++        "`$name` is not in the $what model's variable map -- if `source_layout` " *
++        "was passed, it does not match a `build_evaluator` of this source with " *
++        "these build_kwargs."))
++    return j
++end
++
++# The ROW slot of one scatter pair. A row whose column fell outside the layout
++# is never used, so an unresolvable name there is (historically) silent -- but
++# with a caller-supplied layout it is the loudest evidence available that the
++# layout is from the wrong build, and a layout whose names ALL miss would
++# otherwise assemble a silently EMPTY pattern. So under `strict` every row name
++# must resolve, column or no column.
++function _rowslot(vm0, rowname::String, cs::Int, strict::Bool)
++    r = get(vm0, rowname, 0)
++    (r == 0 && (strict || cs != 0)) && _slot(vm0, rowname, "source")
++    return r
++end
++
+ """
+     jacobian_pattern(input; wrt = :states) -> (pattern, rownames, colnames, entries)
+ 
+ The structural (global, point-independent) sparsity pattern of the Jacobian
+ as a `SparseMatrixCSC{Bool}`. `input` is an `EsmFile` + model name pair
+ (pass a `Tuple`), an `EsmFile` with a single model, or a `FlattenedSystem`.
++
++`source_layout` skips this function's own rebuild of the source model — see
++[`prepare_jacobian`](@ref) for the keyword and its contract.
+ """
+ function jacobian_pattern(input; wrt::Symbol = :states, model_name = nothing,
+-                          build_kwargs = NamedTuple())
++                          build_kwargs = NamedTuple(), source_layout = nothing)
+     sv, src = _sv_src(input, model_name)
+     entries = jacobian_bands(sv; wrt = wrt)
+-    _, _, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)
++    _, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
+     colslot, ncol, colnames = _colmap(vm0, p0, wrt)
+     n = length(vm0)
++    strict = source_layout !== nothing
+     I = Int[]; J = Int[]
+     for (_, rowname, colname, _) in _scatter_pairs(sv, entries)
+-        cs = colslot(colname); cs == 0 && continue   # ghost / out-of-layout column
+-        push!(I, vm0[rowname]); push!(J, cs)
++        cs = colslot(colname)
++        r = _rowslot(vm0, rowname, cs, strict)
++        cs == 0 && continue                          # ghost / out-of-layout column
++        push!(I, r); push!(J, cs)
+     end
+     pattern = sparse(I, J, trues(length(I)), n, ncol, |)
+     return (pattern = pattern,
+@@ -139,12 +217,32 @@ map on the fixed structural pattern. `build_kwargs` (a NamedTuple) is
+ forwarded to both `build_evaluator` calls — pass `(const_arrays = …,)` etc.
+ for models that need build-time bindings.
+ 
++The second of those two builds exists only to learn the source model's state
++layout — `length(u0)`, the parameter names and the name → slot map — and its
++RHS is thrown away. On a real grid it is about HALF this call's wall time (a
++share that grows with the grid, because the band build is grid-independent and
++the source build is not). A caller that has already built the source evaluator
++can delete that build by passing its layout:
++
++    # u0, p, var_map: build_evaluator's 2nd, 3rd and 5th returns
++    source_layout = (u0 = u0, p = p, var_map = var_map)
++
++!!! warning "Contract"
++    The layout MUST come from a `build_evaluator` of the SAME source (same
++    document / `FlattenedSystem`, same `model_name`) with the SAME
++    `build_kwargs`. Only the cheap parts of that are checked (the state count,
++    that the slots are a permutation, that every name resolves in the derived
++    band model); a layout from a build that merely *differs* — other
++    `const_arrays`, other `parameter_overrides`, another grid — would put
++    bands in the wrong cells with no visible symptom. `p` may be omitted
++    unless `wrt` selects parameter columns. The default, `nothing`, rebuilds.
++
+     jac = prepare_jacobian(file)
+     J = copy(jac.prototype)
+     jac(J, u, p, t)              # fills J in place; stored zeros stay
+ """
+ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
+-                          build_kwargs = NamedTuple(),
++                          build_kwargs = NamedTuple(), source_layout = nothing,
+                           eval_cse::Bool = true, eval_cse_min_nodes::Int = 12)
+     sv, src = _sv_src(input, model_name)
+     entries = jacobian_bands(sv; wrt = wrt)
+@@ -152,19 +250,21 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
+                                   cse_min_nodes = eval_cse_min_nodes)
+     fJ!, u0j, pj, _, vmj = build_evaluator(doc; model_name = "JacobianEval",
+                                            build_kwargs...)
+-    _, u00, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)
+-    n = length(u00)
++    n, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
+     colslot, ncol, colnames = _colmap(vm0, p0, wrt)
+ 
+     umap = zeros(Int, n)
+     for (name, i) in vm0
+-        umap[i] = vmj[name]
++        umap[i] = _slot(vmj, name, "band")
+     end
+ 
++    strict = source_layout !== nothing
+     items = Tuple{Int,Int,Int}[]     # (duj slot, row, col)
+     for (k, rowname, colname, jname) in _scatter_pairs(sv, entries)
+-        cs = colslot(colname); cs == 0 && continue
+-        push!(items, (vmj[jname], vm0[rowname], cs))
++        cs = colslot(colname)
++        r = _rowslot(vm0, rowname, cs, strict)
++        cs == 0 && continue
++        push!(items, (_slot(vmj, jname, "band"), r, cs))
+     end
+     I = [it[2] for it in items]; J = [it[3] for it in items]
+     pattern = sparse(I, J, trues(length(I)), n, ncol, |)
+@@ -220,10 +320,16 @@ Jacobian at a point (defaults: the document's initial state and parameters).
+ """
+ function assemble_jacobian(input; wrt::Symbol = :states, u = nothing, p = nothing,
+                            t::Real = 0.0, model_name = nothing,
+-                           build_kwargs = NamedTuple())
++                           build_kwargs = NamedTuple(), source_layout = nothing)
+     jac = prepare_jacobian(input; wrt = wrt, model_name = model_name,
+-                           build_kwargs = build_kwargs)
+-    _, u00, p0, _, _ = _build_eval(_sv_src(input, model_name)[2], model_name; build_kwargs...)
++                           build_kwargs = build_kwargs, source_layout = source_layout)
++    u00, p0 = if source_layout === nothing
++        b = _build_eval(_sv_src(input, model_name)[2], model_name; build_kwargs...)
++        (b[2], b[3])
++    else
++        (getproperty(source_layout, :u0),
++         hasproperty(source_layout, :p) ? getproperty(source_layout, :p) : nothing)
++    end
+     uu = u === nothing ? u00 : u
+     J = copy(jac.prototype)
+     jac(J, uu, p === nothing ? p0 : p, t)
+diff --git a/pkg/EarthSciASTDiff.jl/test/runtests.jl b/pkg/EarthSciASTDiff.jl/test/runtests.jl
+index ac7f45a..e719938 100644
+--- a/pkg/EarthSciASTDiff.jl/test/runtests.jl
++++ b/pkg/EarthSciASTDiff.jl/test/runtests.jl
+@@ -28,4 +28,5 @@ end
+     include("structure_test.jl")
+     include("factorization_test.jl")
+     include("ode_test.jl")
++    include("source_layout_test.jl")
+ end

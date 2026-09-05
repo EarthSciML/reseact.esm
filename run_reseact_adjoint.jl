@@ -583,13 +583,51 @@ say("  block Jacobian: $(ENV["RESEACT_ADJ_JAC"])" *
 say("  base point    : " * (ENV["RESEACT_ADJ_UJITTER"] == "0" ?
     "un-jittered (the real trajectory; jitter is for FD checks)" :
     "jittered $(ENV["RESEACT_ADJ_UJITTER"]) relative (PPM limiter; see header)"))
+say("  chem shards   : $(ENV["RESEACT_ADJ_SHARDS"])" *
+    (ENV["RESEACT_ADJ_SHARDS"] == "0" ? "  (single process)" : "  (worker processes, ~3 cores + ~4 GB each)"))
+# PROVENANCE. The Julia environment develops the EarthSci packages from sibling
+# checkouts (Manifest `path =` entries), so the code that runs is whatever those
+# working trees hold -- not a registered version. Record it, so a result can be
+# tied to commits (and so a dirty tree is visible in the log, not discovered
+# later). Cheap: a few `git` calls at startup.
+function _provenance()
+    rows = String[]
+    env = get(ENV, "RESEACT_RXENV", joinpath(REPO, "run-model-jl"))
+    mani = joinpath(env, "Manifest.toml")
+    push!(rows, "julia $(VERSION)  env $(env)")
+    if isfile(mani)
+        txt = read(mani, String)
+        for m in eachmatch(r"\[\[deps\.(\w+)\]\](.*?)(?=\n\[\[|\z)"s, txt)
+            name, body = m.captures
+            pm = match(r"^path = \"([^\"]+)\"", body, 1) === nothing ? match(r"path = \"([^\"]+)\"", body) : match(r"path = \"([^\"]+)\"", body)
+            vm = match(r"version = \"([^\"]+)\"", body)
+            if name in ("Reactant", "Enzyme") && vm !== nothing
+                push!(rows, "$name v$(vm.captures[1])")
+            elseif pm !== nothing
+                d = pm.captures[1]
+                g(args...) = try strip(read(setenv(`git -C $d $args`, dir = d), String)) catch; "?" end
+                dirty = g("status", "--porcelain")
+                push!(rows, "$name v$(vm === nothing ? "?" : vm.captures[1])  $(g("rev-parse", "--short", "HEAD")) ($(g("rev-parse", "--abbrev-ref", "HEAD")))" *
+                            (isempty(dirty) ? "" : "  DIRTY $(count(==('\n'), dirty) + 1) files") * "  $d")
+            end
+        end
+    end
+    rg = try strip(read(`git -C $REPO rev-parse --short HEAD`, String)) catch; "?" end
+    rd = try strip(read(`git -C $REPO status --porcelain --untracked-files=no`, String)) catch; "" end
+    pushfirst!(rows, "reseact.esm $rg" * (isempty(rd) ? "" : "  DIRTY $(count(==('\n'), rd) + 1) tracked files"))
+    return rows
+end
+say("  provenance    :")
+for r in _provenance(); say("    " * r); end
 say("")
 if GRIDSTR == "13x7x72" && WINDOW_H >= 24
     say("  NOTE This is a FULL-SCALE run, not the old demonstration preset. On the")
-    say("       measured 48 h CONUS numbers it is ~$(round(Int, 8 * WINDOW_H / 48)) h of wall time and ~40 GB of")
-    say("       RSS, so it belongs on a batch node -- an interactive Slurm cgroup")
-    say("       here is capped at 40 GiB. See tools/diag/adjoint_conus_5d.sbatch,")
-    say("       and this file's header for what has and has not been run before.")
+    say("       2026-09-05 CONUS numbers (8 shards, fast step: 48 h of loop in 47 min)")
+    say("       it is ~$(round(Int, 47 * WINDOW_H / 48)) min of loop plus ~20 min of setup on a WHOLE 40-core node,")
+    say("       so it belongs on a batch node -- an interactive Slurm cgroup here is")
+    say("       capped at 40 GiB and cannot host the shards. Submit")
+    say("       tools/diag/adjoint_conus_5d.sbatch; this file's header records what")
+    say("       has and has not been run before.")
 else
     say("  NOTE Reduced configuration: this is NOT the 5-day CONUS default. The")
     say("       environment is overriding it -- see the preset block in this file.")
