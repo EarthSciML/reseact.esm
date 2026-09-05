@@ -239,6 +239,29 @@ if BUCKETK > 0 && (want("adj") || want("fdtape"))
           "differentiate the recorded step sequence, and a bucketed window is K " *
           "interleaved sequences, not one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
 end
+# PROCESS-LEVEL SHARDING of the chemistry half (tools/shard_chem.jl): N worker
+# processes, each owning a capacity build of its contiguous slice of the cells,
+# serving the chemistry step AND the chemistry VJP; transport stays here. The
+# SAME global-dt controller, the same tape/replay/checkpoint format -- only the
+# executor of the chemistry programs changes, so fwd AND adj both work. DEFAULT
+# OFF, and off means every call below is the one it always was.
+# MEASURED (see tools/shard_chem.jl's header for the tables): the 48 h CONUS
+# gradient at N=8 (slurm 10372969) ran 1.202 s/window forward and 3.657 s/window
+# backward against 2.474 and 10.84 unsharded (10359755), with a byte-identical
+# accept/reject ladder, J to 13 digits and every nonzero gradient component
+# within 1.3e-11 -- 1 h 15 m all in. N=13 gains nothing over N=8 (per-call
+# floor). The gate is a TOLERANCE gate: the capacity build is roundoff-different
+# from the reference program, so digit identity of the CSV is not expected.
+const SHARDS = parse(Int, get(ENV, "RESEACT_ADJ_SHARDS", "0"))
+SHARDS >= 0 || error("RESEACT_ADJ_SHARDS must be >= 0 (0 = off), got $SHARDS")
+SHARDS > 0 && (SUBCYCLE || BUCKETK > 0) &&
+    error("RESEACT_ADJ_SHARDS=$SHARDS cannot combine with RESEACT_SUBCYCLE/RESEACT_BUCKET; " *
+          "all three replace the chemistry half's executor -- pick one.")
+if SHARDS > 0 && (want("ref") || want("fdtape"))
+    error("RESEACT_ADJ_SHARDS=$SHARDS supports stages fwd,adj (and ctl). The ref and " *
+          "fdtape stages vary theta through the driver's OWN chemistry programs, which " *
+          "the shards do not see -- run them unsharded.")
+end
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
                            nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
@@ -258,7 +281,7 @@ say("    stages: " * join(sort(collect(STAGES)), ", "))
 # 1. Build -- identical to run_reseact_reactant.jl / sensitivity_forward.jl.
 # --------------------------------------------------------------------------- #
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
-const BINSP = (SUBCYCLE || BUCKETK > 0) ? EA.BuildInspection() : nothing
+const BINSP = (SUBCYCLE || BUCKETK > 0 || SHARDS > 0) ? EA.BuildInspection() : nothing
 fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
@@ -303,7 +326,7 @@ Logging.with_logger(Logging.NullLogger()) do
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
             parameter_overrides = ov, const_arrays = merged_const,
             param_arrays = merged_param, materialize_out = dms[i],
-            inspect = ((SUBCYCLE || BUCKETK > 0) && i == 2) ? BINSP : nothing)
+            inspect = ((SUBCYCLE || BUCKETK > 0 || SHARDS > 0) && i == 2) ? BINSP : nothing)
         fo[i] = fi
         if i == 1
             u0, p, var_map = u0i, pi, vmi
@@ -596,10 +619,15 @@ say("\n---- compiling single-step programs (no while region in any of them) ----
 say("     XLA:CPU race workaround (blocker 4): " *
     (XLAFIX ? "ON  xla_cpu_prefer_vector_width=128" : "OFF -- expect intermittent NaN"))
 CSSP = timed_compile("ssp_step", () -> RX.@compile compile_options=COPTS ssp_step(U_R, THT, T_R, DTT_R))
-CROS = timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R))
+# Under sharding the driver's own full-grid chemistry programs are dead weight
+# (their compile is minutes and gigabytes at CONUS) unless the ctl stage, which
+# compares them against the traced loop, asked for them.
+const OWN_CHEM = SHARDS == 0 || want("ctl")
+CROS = OWN_CHEM ?
+    timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R)) : nothing
 CSSPV = want("adj") ?
     timed_compile("ssp_vjp", () -> RX.@compile compile_options=COPTS ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R)) : nothing
-CROSV = want("adj") ?
+CROSV = (want("adj") && OWN_CHEM) ?
     timed_compile("ros_vjp", () -> RX.@compile compile_options=COPTS ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
 
 # --- the LEVEL SUBCYCLE's own programs (RESEACT_SUBCYCLE=1 only) -----------
@@ -633,6 +661,105 @@ if BUCKETK > 0
     BLADDER = build_bucket_ladder(BINSP)
 end
 
+# --- the chemistry SHARDS (RESEACT_ADJ_SHARDS=N only) -----------------------
+SHARD = nothing
+if SHARDS > 0
+    include(joinpath(REPO, "tools", "shard_chem.jl"))
+    SHARD = build_shards(SHARDS)
+end
+# The chemistry EXECUTORS the time loop calls. With sharding off these are the
+# driver's own compiled programs, exactly as before; on, they are the shard set,
+# and `step_call`/`vjp_call` below dispatch on which one they were handed.
+const CROS_EXEC  = SHARDS > 0 ? SHARD : CROS
+const CROSV_EXEC = SHARDS > 0 ? SHARD : CROSV
+
+# The host-array entry points of one compiled step / VJP. The default methods
+# are the calls `host_adaptive!` / `replay_fixed` / `backward_stage!` made
+# inline until 2026-09-04, moved here unchanged so the sharded executor can be
+# substituted without touching the loops. `TH` is ignored by a shard set: the
+# workers hold their own theta, asserted equal to the driver's at setup.
+# Wall time and call count PER EXECUTOR, so the two halves' steps and VJPs are
+# measured directly rather than inferred from the sweep totals by subtraction
+# (which is how the transport VJP hid at ~2.5 s/call at CONUS behind the
+# chemistry numbers). Keyed "T"/"C" x "step"/"replay"/"vjp".
+const EXEC_T = Dict{String,Float64}(); const EXEC_N = Dict{String,Int}()
+_exec_tag(x) = (x === CSSP || x === CSSPV) ? "T" : "C"
+function _exec_add!(key::String, dt::Float64)
+    EXEC_T[key] = get(EXEC_T, key, 0.0) + dt
+    EXEC_N[key] = get(EXEC_N, key, 0) + 1
+    return nothing
+end
+"""
+    exec_report(title, total, nwin)
+
+The DECOMPOSITION of one phase's wall time: every executor's summed wall and
+call count (the outer timer wraps upload + execution + readback), the split of
+the driver's own compiled calls into device execution / readback (so the
+160-component p-gradient extraction and the state readback are visible), and
+"everything else" = `total` minus the executor sums -- host work between calls
+(tape copies, clamp masks, lambda masking, checkpoint comparison, forcing
+refresh, the sharded pack/unpack).
+"""
+# GC across a phase: `Base.gc_num()` at the phase start, the diff at the report.
+const GC0 = Ref(Base.gc_num())
+gc_mark!() = (GC0[] = Base.gc_num(); nothing)
+function exec_report(title::AbstractString, total::Float64, nwin::Int)
+    isempty(EXEC_T) && return
+    say("  ---- $title: DECOMPOSITION, $(nwin) windows, $(@sprintf("%.2f", total)) s ----")
+    outer = 0.0
+    for key in sort(collect(keys(EXEC_T)))
+        n = EXEC_N[key]
+        inner = occursin(".exec", key) || occursin(".read", key) || occursin(".upload", key)
+        inner || (outer += EXEC_T[key])
+        say(@sprintf("    %-16s %9.2f s over %6d calls = %8.2f ms/call  (%6.2f s/window)%s",
+                     key, EXEC_T[key], n, 1000 * EXEC_T[key] / max(n, 1), EXEC_T[key] / max(nwin, 1),
+                     inner ? "   [inside the call above]" : ""))
+    end
+    d = Base.GC_Diff(Base.gc_num(), GC0[])
+    say(@sprintf("    %-16s %9.2f s over %6d pauses, %.2f GB allocated  (%6.2f s/window)  [overlaps the lines above]",
+                 "GC", d.total_time / 1e9, d.pause, d.allocd / 1024^3, d.total_time / 1e9 / max(nwin, 1)))
+    say(@sprintf("    %-16s %9.2f s  (%6.2f s/window)  = total - every timed region above",
+                 "everything-else", total - outer, (total - outer) / max(nwin, 1)))
+    empty!(EXEC_T); empty!(EXEC_N)
+end
+
+function step_call(cstep, u::Vector{Float64}, TH, t::Float64, dt::Float64)
+    tag = _exec_tag(cstep)
+    tu = time()
+    UD = RX.ConcreteRArray(u); TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
+    t0 = time()
+    _exec_add!(tag * ".step.upload", t0 - tu)
+    r = cstep(UD, TH, TD, DD)
+    t1 = time()
+    raw = Array(r[1]); ee = Float64(r[2])
+    _exec_add!(tag * ".step.exec", t1 - t0); _exec_add!(tag * ".step.read", time() - t1)
+    return raw, ee
+end
+# returns (lambda_in, dJ/dp as a Vector aligned with PNAMES)
+function vjp_call(cvjp, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64)
+    tag = _exec_tag(cvjp)
+    tu = time()
+    UD = RX.ConcreteRArray(u); LD = RX.ConcreteRArray(lam)
+    TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
+    t0 = time()
+    _exec_add!(tag * ".vjp.upload", t0 - tu)
+    r = cvjp(UD, TH, LD, TD, DD)
+    t1 = time()
+    lin = Array(r[1])
+    t2 = time()
+    gp = r[2].p                              # r[2].bufs (if active) is dJ/d(GEOS-FP): discarded
+    g = Float64[Float64(getfield(gp, k)) for k in PNAMES]
+    t3 = time()
+    _exec_add!(tag * ".vjp.exec", t1 - t0); _exec_add!(tag * ".vjp.read.lam", t2 - t1)
+    _exec_add!(tag * ".vjp.read.p", t3 - t2)
+    return lin, g
+end
+if SHARDS > 0
+    step_call(S::ShardSet, u::Vector{Float64}, TH, t::Float64, dt::Float64) = shard_step(S, u, t, dt)
+    vjp_call(S::ShardSet, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64) =
+        shard_vjp(S, u, lam, t, dt)
+end
+
 # --------------------------------------------------------------------------- #
 # 5. The host adaptive loop -- a line-by-line transcription of
 #    RxTracedIntegrator.adaptive_solve. Stage `ctl` proves it is exact.
@@ -664,8 +791,10 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
     tlim = t1 - 1.0e-9
     while (t < tlim) && (iters < maxiters)
         dtc = min(dt, t1 - t)
-        r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(t), RX.ConcreteRNumber(dtc))
-        raw = Array(r[1]); ee = Float64(r[2])
+        tcall = time()
+        raw, ee = step_call(cstep, u, TH, t, dtc)
+        th0 = time()
+        _exec_add!(_exec_tag(cstep) * ".step", th0 - tcall)
         EEst = isnan(ee) ? 1.0e10 : ee
         q11 = max(EEst, 1.0e-35)^beta1
         q = q11 / qold^beta2
@@ -689,6 +818,7 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
             dt = dtc / min(invqmin, q11 / gamma)
             nrej += 1
         end
+        _exec_add!("host.ctrl+tape", time() - th0)
         iters += 1
     end
     iters >= maxiters && error("host_adaptive! hit maxiters at t=$t (t1=$t1)")
@@ -708,13 +838,28 @@ const STOPS  = sort!(unique!(vcat(collect((T0 + MACRO_DT):MACRO_DT:(T_END - 1e-9
 say(@sprintf("  %d macro stops over [%.0f, %.0f] s, %d of them GEOS-FP boundaries",
              length(STOPS), T0, T_END, length(FSTOPS)))
 
+const CUR_EPOCH = Ref(NaN)
 function refresh_forcing(t)
+    tr = time()
     for (k, prov) in discrete
         merged_param[k] .= EA._provider_const_field(EA.provider_sample(prov, t), k)
     end
     foreach(d -> d.materialize!(), dms)
     push_forcing!()
+    SHARDS > 0 && shard_refresh_all!(SHARD)
+    CUR_EPOCH[] = t
+    _exec_add!("refresh", time() - tr)
 end
+# The forcing at an epoch is a function of the epoch alone (`provider_sample`
+# at `t`), so re-sampling it when the epoch has not changed is pure cost -- and
+# it is NOT small: a refresh re-reads and re-materialises 15 GEOS-FP providers
+# and pushes ~40 buffers to the device, ~9 s at CONUS (slurm 10372581's
+# everything-else: 29 s of a 53 s sweep, 3 windows, 3 refreshes). The forward
+# pass refreshes only at the 64 epoch boundaries of a 48 h window; the backward
+# sweep used to refresh at EVERY macro step, i.e. 576 times, which was the
+# single largest term of the 48 h backward sweep. Consecutive macro steps
+# almost always share an epoch, walking backwards as much as forwards.
+refresh_forcing_if_needed(t) = (t == CUR_EPOCH[] || refresh_forcing(t); nothing)
 
 # One macro step, Lie-Trotter: transport over [t0,t1] THEN chemistry over the
 # same interval. Records the ACCEPTED (t, dt) sequence of each half -- 16 B per
@@ -757,7 +902,7 @@ function macro_step(u::Vector{Float64}, t0::Float64, t1::Float64,
         naC = st.calls; nrC = st.rejects; dtCe = dtC
         return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
     end
-    uC, _, dtCe, naC, nrC = host_adaptive!(CROS, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
+    uC, _, dtCe, naC, nrC = host_adaptive!(CROS_EXEC, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
                                            tape = tpC, seq = sC, clamp_nonneg = CLAMP[])
     return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
 end
@@ -792,13 +937,16 @@ function replay_fixed(u0::Vector{Float64}, seqT::StepSeq, seqC::StepSeq;
                       TH_T = THT, TH_C = THC, record::Bool = true)
     u = copy(u0)
     tpT = StepRec[]; tpC = StepRec[]
-    for (cstep, TH, sq, tp) in ((CSSP, TH_T, seqT, tpT), (CROS, TH_C, seqC, tpC))
+    for (cstep, TH, sq, tp) in ((CSSP, TH_T, seqT, tpT), (CROS_EXEC, TH_C, seqC, tpC))
         for (tt, dd) in sq
-            r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(tt), RX.ConcreteRNumber(dd))
-            raw = Array(r[1])
+            tcall = time()
+            raw, _ = step_call(cstep, u, TH, tt, dd)
+            th0 = time()
+            _exec_add!(_exec_tag(cstep) * ".replay", th0 - tcall)
             record && push!(tp, StepRec(copy(u), tt, dd,
                                         CLAMP[] ? BitVector(raw .> 0.0) : trues(length(raw))))
             u = CLAMP[] ? max.(raw, 0.0) : raw
+            _exec_add!("host.tape-replay", time() - th0)
         end
     end
     return u, tpT, tpC
@@ -816,7 +964,8 @@ function forward_pass(; record::Bool = false)
     refresh_forcing(T0); epoch = T0
     u = copy(UBASE); tcur = T0; dtT = DT0T; dtC = DT0C
     ckpts = Ckpt[]; tapes = Any[]; counts = NTuple{4,Int}[]
-    tstart = time()
+    empty!(EXEC_T); empty!(EXEC_N)   # the decomposition covers exactly the timed loop
+    gc_mark!(); tstart = time()
     for tnext in STOPS
         tnext <= tcur + 1e-9 && continue
         ustart = copy(u)
@@ -865,6 +1014,12 @@ if want("fwd")
         say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
                      st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
     end
+    exec_report("forward pass", T_FWD, length(CKPTS))
+    if SHARDS > 0
+        say("  ---- SHARDED CHEMISTRY, forward pass ----")
+        shard_report(SHARD)
+        SHARD.stats = ShardStats()           # the sweep is reported on its own
+    end
     all(isfinite, UEND) || error("non-finite state at the end of the window")
 end
 
@@ -890,15 +1045,16 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
                          label::AbstractString)
     for j in length(tape):-1:1
         e = tape[j]
+        th0 = time()
         global NCLAMPED += count(!, e.mask)
         lam = lam .* e.mask                      # adjoint of max.(u,0) after the step
         nin = count(!isfinite, lam)
-        UD = RX.ConcreteRArray(e.u); LD = RX.ConcreteRArray(lam)
-        TD = RX.ConcreteRNumber(e.t); DD = RX.ConcreteRNumber(e.dt)
-        r = cvjp(UD, TH, LD, TD, DD)
-        lout = Array(r[1])
-        gp = r[2].p                              # r[2].bufs is dJ/d(GEOS-FP): discarded
-        gbad = count(k -> !isfinite(Float64(getfield(gp, k))), PNAMES)
+        tcall = time()
+        _exec_add!("host.lam-mask", tcall - th0)
+        lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
+        _exec_add!(_exec_tag(cvjp) * ".vjp", time() - tcall)
+        th1 = time()
+        gbad = count(!isfinite, gp)
         # RE-ISSUING THE IDENTICAL CALL IS A LEGITIMATE FIX HERE, and only
         # because the fault is measured to be nondeterministic: the compiled
         # reverse program intermittently returns non-finite entries from a
@@ -910,9 +1066,8 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
         nretry = 0
         while (count(!isfinite, lout) > nin || gbad > 0) && nretry < VJP_MAXRETRY
             nretry += 1
-            r = cvjp(UD, TH, LD, TD, DD)
-            lout = Array(r[1]); gp = r[2].p
-            gbad = count(k -> !isfinite(Float64(getfield(gp, k))), PNAMES)
+            lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
+            gbad = count(!isfinite, gp)
         end
         global NVJP_RETRIES += nretry
         # A gradient that has gone non-finite is worthless from here on, and the
@@ -936,7 +1091,8 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
                          isempty(nzu) ? 0.0 : minimum(abs.(nzu)), maximum(abs.(e.u))))
         end
         lam = lout
-        for k in PNAMES; gacc[k] += Float64(getfield(gp, k)); end
+        for (i, k) in enumerate(PNAMES); gacc[k] += gp[i]; end
+        _exec_add!("host.finite+gacc", time() - th1)
     end
     return lam
 end
@@ -959,7 +1115,9 @@ function tapes_for(k::Int)
     el = time() - trep
     ref = k < length(CKPTS) ? CKPTS[k + 1].u : UEND
     if !isempty(ref)
+        tc = time()
         d = maximum(abs.(uend .- ref) ./ max.(abs.(ref), 1e-30))
+        _exec_add!("ckpt-check", time() - tc)
         global REPLAY_MAXREL = max(REPLAY_MAXREL, d)
         d < 1e-6 || error("fixed-sequence replay of macro step $k lands $(d) relative " *
                           "away from the checkpointed end state -- the tape is not the " *
@@ -973,10 +1131,10 @@ function backward_sweep(lam0::Vector{Float64})
     t_replay = 0.0; nvjp = 0
     for k in length(CKPTS):-1:1
         ck = CKPTS[k]
-        refresh_forcing(ck.epoch)                # forcing replayed from the checkpoint
+        refresh_forcing_if_needed(ck.epoch)      # forcing replayed from the checkpoint
         tpT, tpC, el = tapes_for(k)
         t_replay += el
-        lam = backward_stage!(CROSV, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
+        lam = backward_stage!(CROSV_EXEC, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
         lam = backward_stage!(CSSPV, tpT, lam, THT, "transport[macro $k]")
         nvjp += length(tpC) + length(tpT)
         # FLUSH, not decoration. Julia block-buffers a file stdout at 64 kB and
@@ -994,7 +1152,7 @@ end
 T_BWD = 0.0; T_REPLAY = 0.0; NVJP = 0
 if want("adj")
     say("\n---- ADJ: the backward sweep (ONE sweep, all $(length(PNAMES)) parameters) ----")
-    tstart = time()
+    gc_mark!(); tstart = time()
     LAM_END, T_REPLAY, NVJP = backward_sweep(WOBJ)
     T_BWD = time() - tstart
     nm_ = length(CKPTS)
@@ -1013,6 +1171,11 @@ if want("adj")
     T_FWD > 0 && say(@sprintf("  COST RATIO backward/forward = %.2f  (VJP-only %.2f)  [per macro step %.3f s vs %.3f s]",
                               T_BWD / T_FWD, (T_BWD - T_REPLAY) / T_FWD,
                               T_BWD / nm_, T_FWD / nm_))
+    exec_report("backward sweep", T_BWD, nm_)
+    if SHARDS > 0
+        say("  ---- SHARDED CHEMISTRY, backward sweep (replay + VJPs) ----")
+        shard_report(SHARD)
+    end
 end
 
 # --------------------------------------------------------------------------- #
@@ -1029,7 +1192,12 @@ end
 #         infinite derivative there -- plan section 4's clamp caveat, in its
 #         sharpest form)
 # --------------------------------------------------------------------------- #
-if want("adj") && BADREC[] !== nothing
+if want("adj") && BADREC[] !== nothing && SHARDS > 0 && CROSV === nothing
+    say("\n---- PROBE skipped: the first non-finite VJP happened under sharding and the " *
+        "driver's own chemistry programs were not compiled (add ctl to the stages, or " *
+        "run unsharded, to probe it) ----")
+end
+if want("adj") && BADREC[] !== nothing && !(SHARDS > 0 && CROSV === nothing)
     b = BADREC[]
     ischem = startswith(b.label, "chem")
     cvjp = ischem ? CROSV : CSSPV
@@ -1091,7 +1259,7 @@ if want("adj") && want("fwd") && BADREC[] !== nothing && CLAMP[]
                  T_FWD, steps_sig(COUNTS), dot(WOBJ, UEND)))
     all(isfinite, UEND) || error("non-finite state with the clamp off -- the " *
                                  "unclamped trajectory is not usable")
-    tstart = time()
+    gc_mark!(); tstart = time()
     _, T_REPLAY, NVJP = backward_sweep(WOBJ)
     T_BWD = time() - tstart
     nm_ = length(CKPTS)
@@ -1306,7 +1474,7 @@ if want("ref") && want("adj")
         du = zeros(Float64, N)
         ta = time()
         for kk in 1:length(CKPTS)
-            refresh_forcing(CKPTS[kk].epoch)
+            refresh_forcing_if_needed(CKPTS[kk].epoch)
             tpT, tpC, _ = tapes_for(kk)
             du = forward_stage(CSSPJ, tpT, du, THT, dTHT)   # transport first, forward order
             kk == 1 && @printf("    [%s] ||du|| after macro 1 transport = %.6e\n", nm, norm(du))
@@ -1347,7 +1515,7 @@ if want("fdtape") && want("adj")
     function replay_frozen(THT_, THC_)
         u = copy(UBASE)
         for ck in CKPTS
-            refresh_forcing(ck.epoch)
+            refresh_forcing_if_needed(ck.epoch)
             u, _, _ = replay_fixed(u, ck.seqT, ck.seqC; TH_T = THT_, TH_C = THC_, record = false)
         end
         return dot(WOBJ, u)

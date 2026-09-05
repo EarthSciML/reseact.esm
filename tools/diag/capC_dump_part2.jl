@@ -14,7 +14,7 @@ LON0 = parse(Int, get(ENV, "RESEACT_LON0", "11")); LAT0 = parse(Int, get(ENV, "R
 OUT  = get(ENV, "RESEACT_DUMP_OUT", "/tmp/part2.json")
 SLICE = native_slice(lon0 = LON0, lat0 = LAT0, nlon = NLON, nlat = NLAT, nlev = NLEV)
 t0 = time()
-file = EA.load_path(joinpath(REPO, "reseact.esm"); metaparameters = SLICE.metaparameters)
+file = EA.load_path(get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm")); metaparameters = SLICE.metaparameters)
 flat = EA.flatten(file)
 pre  = EA.algebraic_states_to_observeds(flat)
 flat = EA.promote_downstream_shapes(pre)
