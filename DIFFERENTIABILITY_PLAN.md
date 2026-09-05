@@ -855,9 +855,15 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
    route past N=8 is a cheaper per-call program, not more shards.
 2. Transport VJP (1.07 s/window, 331 ms/call): fusion count, inside how
    Enzyme differentiates the transport program.
-3. Forcing refresh (0.87 s/window): cache the 64 sampled epochs' buffers from
-   the forward pass and re-push them in the backward sweep.
-4. Replay (0.64 s/window): keep the inner tapes (~48 GB for five days).
+3. Forcing refresh (0.87 s/window, 3.9 s per refresh at CONUS). NOT by caching
+   the 64 sampled epochs: a cache of whole forcing fields grows with grid x run
+   length and the model must run far larger than CONUS (2026-09-05). Routes
+   that stay O(1) in memory: split the 3.9 s into sample / materialize / push
+   and shrink the largest; prefetch the next epoch on a helper thread while
+   the current one integrates (the backward sweep knows its epoch sequence in
+   advance).
+4. Replay (0.64 s/window). NOT by keeping the inner tapes (~48 GB for five
+   days at CONUS, worse at scale) -- same constraint as 3.
 5. Step count: the global controller pays ~6x the per-cell ideal in cell-steps,
    but every scheme tried so far lost to the per-call floor.
 

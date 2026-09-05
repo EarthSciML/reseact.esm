@@ -450,8 +450,12 @@ DEMO in ("adjoint", "forward", "both") ||
 #   order of size, the chemistry VJP's per-call floor (sharding saturates at
 #   N=8), the transport VJP (331 ms/call, its cost is fusion count, NOT the
 #   scatter-adds -- measured and refuted, see tools/diag/p6_*), the replay
-#   (removable by keeping the inner tapes, ~48 GB), and the refresh (removable
-#   by caching the 64 sampled epochs).
+#   and the refresh. For those last two the obvious fixes -- keep the inner
+#   tapes (~48 GB for five days at CONUS), cache the 64 sampled forcing epochs
+#   -- are OFF THE TABLE: both grow with grid x run length and the model has to
+#   run far larger than CONUS. Only O(1)-memory routes count: make one refresh
+#   cheaper, prefetch the next epoch while the current one integrates, and a
+#   cheaper VJP program.
 #
 # SO DO NOT RUN IT IN A SESSION. An interactive Slurm cgroup here is capped at
 # 40 GiB and this wants ~40 GB for the better part of a day. Submit it:
