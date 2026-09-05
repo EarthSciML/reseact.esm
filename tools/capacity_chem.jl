@@ -85,6 +85,10 @@ module CapacityChem
 using Printf
 
 const LANE_VARS = ("Cap.apc", "Cap.bpc", "Cap.lat", "Cap.lon", "Cap.lev")
+# `param_coords = true` (tools/shard_chem.jl) replaces `Cap.lat`/`Cap.lon` with
+# the lane's grid INDICES, so the coordinate stays an expression over the
+# parameters -- see `capacity_doc`.
+const LANE_VARS_PC = ("Cap.apc", "Cap.bpc", "Cap.jidx", "Cap.iidx", "Cap.lev")
 const EMIS_E    = ("NEIRegrid.E_CO", "NEIRegrid.E_NO", "NEIRegrid.E_NO2",
                    "NEIRegrid.E_ISOP", "NEIRegrid.E_FORM")
 const EMIS_EQS  = ("NEIRegrid.CO_emis", "NEIRegrid.NO_emis", "NEIRegrid.NO2_emis",
@@ -164,7 +168,19 @@ rewritten to a `C x 1 x 1` lane grid whose per-cell geometry arrives through
 runtime buffers, plus a `meta` NamedTuple naming the buffers the caller must
 fill (`lane_arrays`, `emis_arrays`, `lonc`) and the closure that survived.
 """
-function capacity_doc(doc::AbstractDict, C::Int; say = println)
+function capacity_doc(doc::AbstractDict, C::Int; say = println, param_coords::Bool = false)
+    # PARAMETER-PRESERVING COORDINATES (`param_coords = true`). The default
+    # surgery hands `cos_sza_c` its latitude and longitude as constant lane
+    # buffers, and turns `NEIRegrid.lonc` into one too. That is exact for the
+    # VALUES, but it cuts the derivative: in the reference build those arrays
+    # are `lat0_deg + (j-1)*dlat_deg` and `lon0_deg + (i-1/2)*dlon_deg`, so
+    # dJ/d(Transport3D.lat0_deg) and dJ/d(Transport3D.lon0_deg) carry a
+    # photolysis term through the solar zenith angle (both are NONZERO in the
+    # 48 h CONUS gradient, 1.8e-2 and 1.2e-3), and a buffer is a constant to
+    # Enzyme. An ADJOINT built on the capacity program therefore needs the lane
+    # to carry its grid INDICES (`Cap.jidx`, `Cap.iidx`) and the document to
+    # keep the coordinate FORMULA over the parameters. The forward-only
+    # subcycle/bucket paths keep the buffer form (default), byte for byte.
     d = deepcopy(doc)
     idx = d["index_sets"]
     for (k, v) in ("lon" => C, "lat" => 1, "lev" => 1, "lev_nodes" => 2,
@@ -183,7 +199,7 @@ function capacity_doc(doc::AbstractDict, C::Int; say = println)
               "the split or the model changed and the surgery below is stale")
 
     # --- new lane buffers ---------------------------------------------------
-    for nm in LANE_VARS
+    for nm in (param_coords ? LANE_VARS_PC : LANE_VARS)
         V[nm] = Dict{String,Any}("shape" => Any["lon"], "type" => "parameter",
             "units" => "1", "description" => "capacity-build lane input (capacity_chem.jl)")
     end
@@ -202,11 +218,41 @@ function capacity_doc(doc::AbstractDict, C::Int; say = println)
 
     # --- 2. cos_sza_c: solar geometry from the lat/lon INDEX ----------------
     let eq = E[_need("Transport3D.cos_sza_c")]
-        a = swap_index!(eq["rhs"], "Transport3D.latp", "gj", "Cap.lat", "gi")
-        b = swap_index!(eq["rhs"], "Transport3D.lonp", "gi", "Cap.lon", "gi")
-        a >= 1 && b >= 1 || error("capacity_doc: cos_sza_c no longer reads latp[gj]/lonp[gi] " *
-                                  "(got $a/$b); the solar chain changed")
-        eq["rhs"]["args"] = Any["Cap.lat", "Cap.lon"]
+        if param_coords
+            # lat_j = lat0_deg + (j-1)*dlat_deg and lon_i = lon0_deg + (i-1/2)*dlon_deg
+            # -- the lat_coord / lon_coord templates' formulas (the variable
+            # descriptions state them, and tools/subcycle_chem.jl's
+            # `reference_geometry` cross-checks them against the built arrays)
+            # -- with the lane's j and i read from the index buffers.
+            latx = Dict{String,Any}("op" => "+", "args" => Any["Transport3D.lat0_deg",
+                Dict{String,Any}("op" => "*", "args" => Any[
+                    Dict{String,Any}("op" => "-", "args" => Any[ix("Cap.jidx", "gi"), 1]),
+                    "Transport3D.dlat_deg"])])
+            lonx = Dict{String,Any}("op" => "+", "args" => Any["Transport3D.lon0_deg",
+                Dict{String,Any}("op" => "*", "args" => Any[
+                    Dict{String,Any}("op" => "-", "args" => Any[ix("Cap.iidx", "gi"), 0.5]),
+                    "Transport3D.dlon_deg"])])
+            a = Ref(0); b = Ref(0)
+            rewrite!(eq["rhs"], node -> begin
+                node isa AbstractDict && get(node, "op", "") == "index" || return nothing
+                ar = node["args"]; length(ar) == 2 || return nothing
+                if ar[1] == "Transport3D.latp" && ar[2] == "gj"
+                    a[] += 1; return deepcopy(latx)
+                elseif ar[1] == "Transport3D.lonp" && ar[2] == "gi"
+                    b[] += 1; return deepcopy(lonx)
+                end
+                return nothing
+            end)
+            a[] >= 1 && b[] >= 1 || error("capacity_doc: cos_sza_c no longer reads latp[gj]/lonp[gi] " *
+                                          "(got $(a[])/$(b[])); the solar chain changed")
+            eq["rhs"]["args"] = Any["Cap.jidx", "Cap.iidx"]
+        else
+            a = swap_index!(eq["rhs"], "Transport3D.latp", "gj", "Cap.lat", "gi")
+            b = swap_index!(eq["rhs"], "Transport3D.lonp", "gi", "Cap.lon", "gi")
+            a >= 1 && b >= 1 || error("capacity_doc: cos_sza_c no longer reads latp[gj]/lonp[gi] " *
+                                      "(got $a/$b); the solar chain changed")
+            eq["rhs"]["args"] = Any["Cap.lat", "Cap.lon"]
+        end
         nsurg += 1
     end
 
@@ -236,7 +282,25 @@ function capacity_doc(doc::AbstractDict, C::Int; say = println)
     # --- 5. lonc (the emissions time zone) and E_* (the NEI regrid) become
     #        runtime buffers; both are constant in t, so nothing is lost.
     drop = Set{String}()
-    for nm in ("NEIRegrid.lonc", EMIS_E...)
+    if param_coords
+        # keep `NEIRegrid.lonc = lon0_deg + (gi - 1/2)*dlon_deg` as an equation,
+        # with the loop index replaced by the lane's i, so the NEIRegrid
+        # parameters stay differentiable through it. (Its downstream is an
+        # integer time-zone offset, so the reference gradient through it is
+        # zero; the point is structural fidelity, not a value.)
+        let eq = E[_need("NEIRegrid.lonc")]
+            hit = Ref(0)
+            eq["rhs"]["expr"] = rewrite!(eq["rhs"]["expr"], node -> begin
+                node isa AbstractString && node == "gi" || return nothing
+                hit[] += 1
+                return ix("Cap.iidx", "gi")
+            end)
+            hit[] >= 1 || error("capacity_doc: NEIRegrid.lonc no longer uses the loop index `gi`")
+            eq["rhs"]["args"] = Any["Cap.iidx"]
+            nsurg += 1
+        end
+    end
+    for nm in (param_coords ? EMIS_E : ("NEIRegrid.lonc", EMIS_E...))
         push!(drop, nm)
         haskey(V, nm) || error("capacity_doc: no variable `$nm`")
         shp = get(V[nm], "shape", Any["lon"])
@@ -277,8 +341,10 @@ function capacity_doc(doc::AbstractDict, C::Int; say = println)
     say(@sprintf("  capacity doc: %d surgery sites, %d/%d equations kept, %d variables, C=%d",
                  nsurg, length(M["equations"]), nbefore, length(V), C))
     return d, (; C, closure = need,
-               lane_arrays = collect(LANE_VARS), emis_arrays = collect(EMIS_E),
-               lonc = "NEIRegrid.lonc", variables = keep)
+               lane_arrays = collect(param_coords ? LANE_VARS_PC : LANE_VARS),
+               emis_arrays = collect(EMIS_E),
+               # under `param_coords` lonc is an EQUATION again, not a buffer
+               lonc = param_coords ? "" : "NEIRegrid.lonc", variables = keep)
 end
 
 # --------------------------------------------------------------------------- #
@@ -311,15 +377,18 @@ function lane_buffers(meta, refparam::AbstractDict, C::Int)
     pa = Dict{String,Any}()
     for (k, v) in refparam
         ks = String(k); ks in meta.variables || continue
-        a = v isa AbstractArray ? v : continue
-        pa[ks] = ndims(a) == 4 ? zeros(Float64, size(a, 1), 1, 2, C + 1) :
-                 ndims(a) == 3 ? zeros(Float64, size(a, 1), 2, C + 1) :
-                 error("lane_buffers: $ks is $(ndims(a))-D; expected a 3-D or 4-D " *
+        # a shaped array, OR just its `size` tuple -- a sharding worker
+        # (tools/shard_worker.jl) is handed the shapes and never the arrays
+        dims = v isa AbstractArray ? size(v) : v isa Tuple ? v : continue
+        nd = length(dims)
+        pa[ks] = nd == 4 ? zeros(Float64, dims[1], 1, 2, C + 1) :
+                 nd == 3 ? zeros(Float64, dims[1], 2, C + 1) :
+                 error("lane_buffers: $ks is $nd-D; expected a 3-D or 4-D " *
                        "GEOS-FP forcing array")
     end
     for nm in meta.lane_arrays; pa[nm] = zeros(Float64, C); end
     for nm in meta.emis_arrays; pa[nm] = zeros(Float64, C); end
-    pa[meta.lonc] = zeros(Float64, C)
+    isempty(meta.lonc) || (pa[meta.lonc] = zeros(Float64, C))
     return pa
 end
 
@@ -379,13 +448,19 @@ the reference target-cell centre longitudes.
 """
 function gather_geometry!(capbufs, meta, cells::Vector{NTuple{3,Int}};
                           Ap, Bp, latp, lonp, E::AbstractDict, lonc, nlon::Int)
+    pc = haskey(capbufs, "Cap.jidx")          # the param_coords form of the doc
     for (l, (i, j, k)) in enumerate(_filled(cells))
         capbufs["Cap.apc"][l] = Ap[k] + Ap[k + 1]
         capbufs["Cap.bpc"][l] = Bp[k] + Bp[k + 1]
-        capbufs["Cap.lat"][l] = latp[j]
-        capbufs["Cap.lon"][l] = lonp[i]
+        if pc
+            capbufs["Cap.jidx"][l] = j
+            capbufs["Cap.iidx"][l] = i
+        else
+            capbufs["Cap.lat"][l] = latp[j]
+            capbufs["Cap.lon"][l] = lonp[i]
+            capbufs[meta.lonc][l] = lonc[i]
+        end
         capbufs["Cap.lev"][l] = k
-        capbufs[meta.lonc][l]  = lonc[i]
         for nm in meta.emis_arrays; capbufs[nm][l] = E[nm][(j - 1) * nlon + i]; end
     end
     return capbufs

@@ -239,6 +239,22 @@ if BUCKETK > 0 && (want("adj") || want("fdtape"))
           "differentiate the recorded step sequence, and a bucketed window is K " *
           "interleaved sequences, not one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
 end
+# PROCESS-LEVEL SHARDING of the chemistry half (tools/shard_chem.jl): N worker
+# processes, each owning a capacity build of its contiguous slice of the cells,
+# serving the chemistry step AND the chemistry VJP; transport stays here. The
+# SAME global-dt controller, the same tape/replay/checkpoint format -- only the
+# executor of the chemistry programs changes, so fwd AND adj both work. DEFAULT
+# OFF, and off means every call below is the one it always was.
+const SHARDS = parse(Int, get(ENV, "RESEACT_ADJ_SHARDS", "0"))
+SHARDS >= 0 || error("RESEACT_ADJ_SHARDS must be >= 0 (0 = off), got $SHARDS")
+SHARDS > 0 && (SUBCYCLE || BUCKETK > 0) &&
+    error("RESEACT_ADJ_SHARDS=$SHARDS cannot combine with RESEACT_SUBCYCLE/RESEACT_BUCKET; " *
+          "all three replace the chemistry half's executor -- pick one.")
+if SHARDS > 0 && (want("ref") || want("fdtape"))
+    error("RESEACT_ADJ_SHARDS=$SHARDS supports stages fwd,adj (and ctl). The ref and " *
+          "fdtape stages vary theta through the driver's OWN chemistry programs, which " *
+          "the shards do not see -- run them unsharded.")
+end
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
                            nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
@@ -258,7 +274,7 @@ say("    stages: " * join(sort(collect(STAGES)), ", "))
 # 1. Build -- identical to run_reseact_reactant.jl / sensitivity_forward.jl.
 # --------------------------------------------------------------------------- #
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
-const BINSP = (SUBCYCLE || BUCKETK > 0) ? EA.BuildInspection() : nothing
+const BINSP = (SUBCYCLE || BUCKETK > 0 || SHARDS > 0) ? EA.BuildInspection() : nothing
 fo = Vector{Any}(undef, 2); dms = Vector{Any}(undef, 2)
 u0 = p = var_map = nothing
 merged_param = Dict{String,Any}(); discrete = Dict{String,Any}()
@@ -303,7 +319,7 @@ Logging.with_logger(Logging.NullLogger()) do
         fi, u0i, pi, _, vmi = EA.build_evaluator(docs[i]; form = :oop,
             parameter_overrides = ov, const_arrays = merged_const,
             param_arrays = merged_param, materialize_out = dms[i],
-            inspect = ((SUBCYCLE || BUCKETK > 0) && i == 2) ? BINSP : nothing)
+            inspect = ((SUBCYCLE || BUCKETK > 0 || SHARDS > 0) && i == 2) ? BINSP : nothing)
         fo[i] = fi
         if i == 1
             u0, p, var_map = u0i, pi, vmi
@@ -596,10 +612,15 @@ say("\n---- compiling single-step programs (no while region in any of them) ----
 say("     XLA:CPU race workaround (blocker 4): " *
     (XLAFIX ? "ON  xla_cpu_prefer_vector_width=128" : "OFF -- expect intermittent NaN"))
 CSSP = timed_compile("ssp_step", () -> RX.@compile compile_options=COPTS ssp_step(U_R, THT, T_R, DTT_R))
-CROS = timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R))
+# Under sharding the driver's own full-grid chemistry programs are dead weight
+# (their compile is minutes and gigabytes at CONUS) unless the ctl stage, which
+# compares them against the traced loop, asked for them.
+const OWN_CHEM = SHARDS == 0 || want("ctl")
+CROS = OWN_CHEM ?
+    timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R)) : nothing
 CSSPV = want("adj") ?
     timed_compile("ssp_vjp", () -> RX.@compile compile_options=COPTS ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R)) : nothing
-CROSV = want("adj") ?
+CROSV = (want("adj") && OWN_CHEM) ?
     timed_compile("ros_vjp", () -> RX.@compile compile_options=COPTS ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
 
 # --- the LEVEL SUBCYCLE's own programs (RESEACT_SUBCYCLE=1 only) -----------
@@ -633,6 +654,40 @@ if BUCKETK > 0
     BLADDER = build_bucket_ladder(BINSP)
 end
 
+# --- the chemistry SHARDS (RESEACT_ADJ_SHARDS=N only) -----------------------
+SHARD = nothing
+if SHARDS > 0
+    include(joinpath(REPO, "tools", "shard_chem.jl"))
+    SHARD = build_shards(SHARDS)
+end
+# The chemistry EXECUTORS the time loop calls. With sharding off these are the
+# driver's own compiled programs, exactly as before; on, they are the shard set,
+# and `step_call`/`vjp_call` below dispatch on which one they were handed.
+const CROS_EXEC  = SHARDS > 0 ? SHARD : CROS
+const CROSV_EXEC = SHARDS > 0 ? SHARD : CROSV
+
+# The host-array entry points of one compiled step / VJP. The default methods
+# are the calls `host_adaptive!` / `replay_fixed` / `backward_stage!` made
+# inline until 2026-09-04, moved here unchanged so the sharded executor can be
+# substituted without touching the loops. `TH` is ignored by a shard set: the
+# workers hold their own theta, asserted equal to the driver's at setup.
+function step_call(cstep, u::Vector{Float64}, TH, t::Float64, dt::Float64)
+    r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(t), RX.ConcreteRNumber(dt))
+    return Array(r[1]), Float64(r[2])
+end
+# returns (lambda_in, dJ/dp as a Vector aligned with PNAMES)
+function vjp_call(cvjp, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64)
+    r = cvjp(RX.ConcreteRArray(u), TH, RX.ConcreteRArray(lam),
+             RX.ConcreteRNumber(t), RX.ConcreteRNumber(dt))
+    gp = r[2].p                              # r[2].bufs (if active) is dJ/d(GEOS-FP): discarded
+    return Array(r[1]), Float64[Float64(getfield(gp, k)) for k in PNAMES]
+end
+if SHARDS > 0
+    step_call(S::ShardSet, u::Vector{Float64}, TH, t::Float64, dt::Float64) = shard_step(S, u, t, dt)
+    vjp_call(S::ShardSet, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64) =
+        shard_vjp(S, u, lam, t, dt)
+end
+
 # --------------------------------------------------------------------------- #
 # 5. The host adaptive loop -- a line-by-line transcription of
 #    RxTracedIntegrator.adaptive_solve. Stage `ctl` proves it is exact.
@@ -664,8 +719,7 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
     tlim = t1 - 1.0e-9
     while (t < tlim) && (iters < maxiters)
         dtc = min(dt, t1 - t)
-        r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(t), RX.ConcreteRNumber(dtc))
-        raw = Array(r[1]); ee = Float64(r[2])
+        raw, ee = step_call(cstep, u, TH, t, dtc)
         EEst = isnan(ee) ? 1.0e10 : ee
         q11 = max(EEst, 1.0e-35)^beta1
         q = q11 / qold^beta2
@@ -714,6 +768,7 @@ function refresh_forcing(t)
     end
     foreach(d -> d.materialize!(), dms)
     push_forcing!()
+    SHARDS > 0 && shard_refresh_all!(SHARD)
 end
 
 # One macro step, Lie-Trotter: transport over [t0,t1] THEN chemistry over the
@@ -757,7 +812,7 @@ function macro_step(u::Vector{Float64}, t0::Float64, t1::Float64,
         naC = st.calls; nrC = st.rejects; dtCe = dtC
         return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
     end
-    uC, _, dtCe, naC, nrC = host_adaptive!(CROS, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
+    uC, _, dtCe, naC, nrC = host_adaptive!(CROS_EXEC, uT, t0, t1, dtC, RTI.pictrl_ros23(), THC;
                                            tape = tpC, seq = sC, clamp_nonneg = CLAMP[])
     return uC, dtTe, dtCe, (naT, nrT, naC, nrC), tpT, tpC, sT, sC
 end
@@ -792,10 +847,9 @@ function replay_fixed(u0::Vector{Float64}, seqT::StepSeq, seqC::StepSeq;
                       TH_T = THT, TH_C = THC, record::Bool = true)
     u = copy(u0)
     tpT = StepRec[]; tpC = StepRec[]
-    for (cstep, TH, sq, tp) in ((CSSP, TH_T, seqT, tpT), (CROS, TH_C, seqC, tpC))
+    for (cstep, TH, sq, tp) in ((CSSP, TH_T, seqT, tpT), (CROS_EXEC, TH_C, seqC, tpC))
         for (tt, dd) in sq
-            r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(tt), RX.ConcreteRNumber(dd))
-            raw = Array(r[1])
+            raw, _ = step_call(cstep, u, TH, tt, dd)
             record && push!(tp, StepRec(copy(u), tt, dd,
                                         CLAMP[] ? BitVector(raw .> 0.0) : trues(length(raw))))
             u = CLAMP[] ? max.(raw, 0.0) : raw
@@ -865,6 +919,11 @@ if want("fwd")
         say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
                      st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
     end
+    if SHARDS > 0
+        say("  ---- SHARDED CHEMISTRY, forward pass ----")
+        shard_report(SHARD)
+        SHARD.stats = ShardStats()           # the sweep is reported on its own
+    end
     all(isfinite, UEND) || error("non-finite state at the end of the window")
 end
 
@@ -893,12 +952,8 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
         global NCLAMPED += count(!, e.mask)
         lam = lam .* e.mask                      # adjoint of max.(u,0) after the step
         nin = count(!isfinite, lam)
-        UD = RX.ConcreteRArray(e.u); LD = RX.ConcreteRArray(lam)
-        TD = RX.ConcreteRNumber(e.t); DD = RX.ConcreteRNumber(e.dt)
-        r = cvjp(UD, TH, LD, TD, DD)
-        lout = Array(r[1])
-        gp = r[2].p                              # r[2].bufs is dJ/d(GEOS-FP): discarded
-        gbad = count(k -> !isfinite(Float64(getfield(gp, k))), PNAMES)
+        lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
+        gbad = count(!isfinite, gp)
         # RE-ISSUING THE IDENTICAL CALL IS A LEGITIMATE FIX HERE, and only
         # because the fault is measured to be nondeterministic: the compiled
         # reverse program intermittently returns non-finite entries from a
@@ -910,9 +965,8 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
         nretry = 0
         while (count(!isfinite, lout) > nin || gbad > 0) && nretry < VJP_MAXRETRY
             nretry += 1
-            r = cvjp(UD, TH, LD, TD, DD)
-            lout = Array(r[1]); gp = r[2].p
-            gbad = count(k -> !isfinite(Float64(getfield(gp, k))), PNAMES)
+            lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
+            gbad = count(!isfinite, gp)
         end
         global NVJP_RETRIES += nretry
         # A gradient that has gone non-finite is worthless from here on, and the
@@ -936,7 +990,7 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
                          isempty(nzu) ? 0.0 : minimum(abs.(nzu)), maximum(abs.(e.u))))
         end
         lam = lout
-        for k in PNAMES; gacc[k] += Float64(getfield(gp, k)); end
+        for (i, k) in enumerate(PNAMES); gacc[k] += gp[i]; end
     end
     return lam
 end
@@ -976,7 +1030,7 @@ function backward_sweep(lam0::Vector{Float64})
         refresh_forcing(ck.epoch)                # forcing replayed from the checkpoint
         tpT, tpC, el = tapes_for(k)
         t_replay += el
-        lam = backward_stage!(CROSV, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
+        lam = backward_stage!(CROSV_EXEC, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
         lam = backward_stage!(CSSPV, tpT, lam, THT, "transport[macro $k]")
         nvjp += length(tpC) + length(tpT)
         # FLUSH, not decoration. Julia block-buffers a file stdout at 64 kB and
@@ -1013,6 +1067,10 @@ if want("adj")
     T_FWD > 0 && say(@sprintf("  COST RATIO backward/forward = %.2f  (VJP-only %.2f)  [per macro step %.3f s vs %.3f s]",
                               T_BWD / T_FWD, (T_BWD - T_REPLAY) / T_FWD,
                               T_BWD / nm_, T_FWD / nm_))
+    if SHARDS > 0
+        say("  ---- SHARDED CHEMISTRY, backward sweep (replay + VJPs) ----")
+        shard_report(SHARD)
+    end
 end
 
 # --------------------------------------------------------------------------- #
@@ -1029,7 +1087,12 @@ end
 #         infinite derivative there -- plan section 4's clamp caveat, in its
 #         sharpest form)
 # --------------------------------------------------------------------------- #
-if want("adj") && BADREC[] !== nothing
+if want("adj") && BADREC[] !== nothing && SHARDS > 0 && CROSV === nothing
+    say("\n---- PROBE skipped: the first non-finite VJP happened under sharding and the " *
+        "driver's own chemistry programs were not compiled (add ctl to the stages, or " *
+        "run unsharded, to probe it) ----")
+end
+if want("adj") && BADREC[] !== nothing && !(SHARDS > 0 && CROSV === nothing)
     b = BADREC[]
     ischem = startswith(b.label, "chem")
     cvjp = ischem ? CROSV : CSSPV
