@@ -671,6 +671,28 @@ const CROSV_EXEC = SHARDS > 0 ? SHARD : CROSV
 # inline until 2026-09-04, moved here unchanged so the sharded executor can be
 # substituted without touching the loops. `TH` is ignored by a shard set: the
 # workers hold their own theta, asserted equal to the driver's at setup.
+# Wall time and call count PER EXECUTOR, so the two halves' steps and VJPs are
+# measured directly rather than inferred from the sweep totals by subtraction
+# (which is how the transport VJP hid at ~2.5 s/call at CONUS behind the
+# chemistry numbers). Keyed "T"/"C" x "step"/"replay"/"vjp".
+const EXEC_T = Dict{String,Float64}(); const EXEC_N = Dict{String,Int}()
+_exec_tag(x) = (x === CSSP || x === CSSPV) ? "T" : "C"
+function _exec_add!(key::String, dt::Float64)
+    EXEC_T[key] = get(EXEC_T, key, 0.0) + dt
+    EXEC_N[key] = get(EXEC_N, key, 0) + 1
+    return nothing
+end
+function exec_report(title::AbstractString)
+    isempty(EXEC_T) && return
+    say("  ---- $title: wall per executor ----")
+    for key in sort(collect(keys(EXEC_T)))
+        n = EXEC_N[key]
+        say(@sprintf("    %-9s %9.2f s over %6d calls  = %8.2f ms/call", key, EXEC_T[key], n,
+                     1000 * EXEC_T[key] / max(n, 1)))
+    end
+    empty!(EXEC_T); empty!(EXEC_N)
+end
+
 function step_call(cstep, u::Vector{Float64}, TH, t::Float64, dt::Float64)
     r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(t), RX.ConcreteRNumber(dt))
     return Array(r[1]), Float64(r[2])
@@ -719,7 +741,9 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
     tlim = t1 - 1.0e-9
     while (t < tlim) && (iters < maxiters)
         dtc = min(dt, t1 - t)
+        tcall = time()
         raw, ee = step_call(cstep, u, TH, t, dtc)
+        _exec_add!(_exec_tag(cstep) * ".step", time() - tcall)
         EEst = isnan(ee) ? 1.0e10 : ee
         q11 = max(EEst, 1.0e-35)^beta1
         q = q11 / qold^beta2
@@ -849,7 +873,9 @@ function replay_fixed(u0::Vector{Float64}, seqT::StepSeq, seqC::StepSeq;
     tpT = StepRec[]; tpC = StepRec[]
     for (cstep, TH, sq, tp) in ((CSSP, TH_T, seqT, tpT), (CROS_EXEC, TH_C, seqC, tpC))
         for (tt, dd) in sq
+            tcall = time()
             raw, _ = step_call(cstep, u, TH, tt, dd)
+            _exec_add!(_exec_tag(cstep) * ".replay", time() - tcall)
             record && push!(tp, StepRec(copy(u), tt, dd,
                                         CLAMP[] ? BitVector(raw .> 0.0) : trues(length(raw))))
             u = CLAMP[] ? max.(raw, 0.0) : raw
@@ -919,6 +945,7 @@ if want("fwd")
         say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
                      st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
     end
+    exec_report("forward pass")
     if SHARDS > 0
         say("  ---- SHARDED CHEMISTRY, forward pass ----")
         shard_report(SHARD)
@@ -952,7 +979,9 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
         global NCLAMPED += count(!, e.mask)
         lam = lam .* e.mask                      # adjoint of max.(u,0) after the step
         nin = count(!isfinite, lam)
+        tcall = time()
         lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
+        _exec_add!(_exec_tag(cvjp) * ".vjp", time() - tcall)
         gbad = count(!isfinite, gp)
         # RE-ISSUING THE IDENTICAL CALL IS A LEGITIMATE FIX HERE, and only
         # because the fault is measured to be nondeterministic: the compiled
@@ -1067,6 +1096,7 @@ if want("adj")
     T_FWD > 0 && say(@sprintf("  COST RATIO backward/forward = %.2f  (VJP-only %.2f)  [per macro step %.3f s vs %.3f s]",
                               T_BWD / T_FWD, (T_BWD - T_REPLAY) / T_FWD,
                               T_BWD / nm_, T_FWD / nm_))
+    exec_report("backward sweep")
     if SHARDS > 0
         say("  ---- SHARDED CHEMISTRY, backward sweep (replay + VJPs) ----")
         shard_report(SHARD)
