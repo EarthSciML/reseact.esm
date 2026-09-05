@@ -50,9 +50,12 @@ the runner's default and projects to about 2 h of loop.
 
   The runner's provenance block prints exactly these for any run, so compare against
   it rather than this table when in doubt. `tools/diag/provenance/` keeps the patch
-  that was uncommitted in EarthSciASTDiff at the time of the 48 h runs (now `7f83c11`).
+  that was uncommitted in EarthSciASTDiff at the time of the 48 h runs (now `7f83c11`, compat widened in `0bd517f`).
 
-  The Manifest pins Reactant v0.2.280 and Enzyme v0.13.199. Other Reactant versions
+  The Manifest pins Reactant v0.2.280 and Enzyme v0.13.199. It still RECORDS
+  EarthSciAST as v0.1.1 while the checkout's Project.toml says 0.2.0; path-developed
+  packages load from the path regardless, and the `Pkg.develop` step below re-resolves
+  the record. (EarthSciASTDiff's compat was widened to `0.1, 0.2` for the same reason.) Other Reactant versions
   have not been validated; 0.2.274–0.2.284 have all shown the checkpointing bug noted
   in the plan, and the race workaround is required on every one of them.
 

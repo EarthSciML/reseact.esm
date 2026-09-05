@@ -13,5 +13,7 @@
 set -uo pipefail
 cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm
 echo "started $(date -Is) on $(hostname)"
-julia --project=run-model-jl -e 'using Pkg; Pkg.test("EarthSciASTDiff")'
+# Run the suite directly in the developing environment rather than through
+# Pkg.test, whose sandbox re-resolves against the Manifest's recorded versions.
+julia --project=run-model-jl /projects/illinois/eng/cee/ctessum/ctessum/code/EarthSciASTDiff/pkg/EarthSciASTDiff.jl/test/runtests.jl
 echo "rc=$? finished $(date -Is)"
