@@ -682,27 +682,60 @@ function _exec_add!(key::String, dt::Float64)
     EXEC_N[key] = get(EXEC_N, key, 0) + 1
     return nothing
 end
-function exec_report(title::AbstractString)
+"""
+    exec_report(title, total, nwin)
+
+The DECOMPOSITION of one phase's wall time: every executor's summed wall and
+call count (the outer timer wraps upload + execution + readback), the split of
+the driver's own compiled calls into device execution / readback (so the
+160-component p-gradient extraction and the state readback are visible), and
+"everything else" = `total` minus the executor sums -- host work between calls
+(tape copies, clamp masks, lambda masking, checkpoint comparison, forcing
+refresh, the sharded pack/unpack).
+"""
+function exec_report(title::AbstractString, total::Float64, nwin::Int)
     isempty(EXEC_T) && return
-    say("  ---- $title: wall per executor ----")
+    say("  ---- $title: DECOMPOSITION, $(nwin) windows, $(@sprintf("%.2f", total)) s ----")
+    outer = 0.0
     for key in sort(collect(keys(EXEC_T)))
         n = EXEC_N[key]
-        say(@sprintf("    %-9s %9.2f s over %6d calls  = %8.2f ms/call", key, EXEC_T[key], n,
-                     1000 * EXEC_T[key] / max(n, 1)))
+        inner = occursin(".exec", key) || occursin(".read", key)
+        inner || (outer += EXEC_T[key])
+        say(@sprintf("    %-13s %9.2f s over %6d calls = %8.2f ms/call  (%6.2f s/window)%s",
+                     key, EXEC_T[key], n, 1000 * EXEC_T[key] / max(n, 1), EXEC_T[key] / max(nwin, 1),
+                     inner ? "   [inside the call above]" : ""))
     end
+    say(@sprintf("    %-13s %9.2f s  (%6.2f s/window)  = total - all executor calls",
+                 "everything-else", total - outer, (total - outer) / max(nwin, 1)))
     empty!(EXEC_T); empty!(EXEC_N)
 end
 
 function step_call(cstep, u::Vector{Float64}, TH, t::Float64, dt::Float64)
-    r = cstep(RX.ConcreteRArray(u), TH, RX.ConcreteRNumber(t), RX.ConcreteRNumber(dt))
-    return Array(r[1]), Float64(r[2])
+    tag = _exec_tag(cstep)
+    UD = RX.ConcreteRArray(u); TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
+    t0 = time()
+    r = cstep(UD, TH, TD, DD)
+    t1 = time()
+    raw = Array(r[1]); ee = Float64(r[2])
+    _exec_add!(tag * ".step.exec", t1 - t0); _exec_add!(tag * ".step.read", time() - t1)
+    return raw, ee
 end
 # returns (lambda_in, dJ/dp as a Vector aligned with PNAMES)
 function vjp_call(cvjp, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64)
-    r = cvjp(RX.ConcreteRArray(u), TH, RX.ConcreteRArray(lam),
-             RX.ConcreteRNumber(t), RX.ConcreteRNumber(dt))
+    tag = _exec_tag(cvjp)
+    UD = RX.ConcreteRArray(u); LD = RX.ConcreteRArray(lam)
+    TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
+    t0 = time()
+    r = cvjp(UD, TH, LD, TD, DD)
+    t1 = time()
+    lin = Array(r[1])
+    t2 = time()
     gp = r[2].p                              # r[2].bufs (if active) is dJ/d(GEOS-FP): discarded
-    return Array(r[1]), Float64[Float64(getfield(gp, k)) for k in PNAMES]
+    g = Float64[Float64(getfield(gp, k)) for k in PNAMES]
+    t3 = time()
+    _exec_add!(tag * ".vjp.exec", t1 - t0); _exec_add!(tag * ".vjp.read.lam", t2 - t1)
+    _exec_add!(tag * ".vjp.read.p", t3 - t2)
+    return lin, g
 end
 if SHARDS > 0
     step_call(S::ShardSet, u::Vector{Float64}, TH, t::Float64, dt::Float64) = shard_step(S, u, t, dt)
@@ -945,7 +978,7 @@ if want("fwd")
         say(@sprintf("  chemistry wall %.2f s of the %.2f s forward pass (%.1f%%)",
                      st.t_total, T_FWD, 100 * st.t_total / max(T_FWD, eps())))
     end
-    exec_report("forward pass")
+    exec_report("forward pass", T_FWD, length(CKPTS))
     if SHARDS > 0
         say("  ---- SHARDED CHEMISTRY, forward pass ----")
         shard_report(SHARD)
@@ -1096,7 +1129,7 @@ if want("adj")
     T_FWD > 0 && say(@sprintf("  COST RATIO backward/forward = %.2f  (VJP-only %.2f)  [per macro step %.3f s vs %.3f s]",
                               T_BWD / T_FWD, (T_BWD - T_REPLAY) / T_FWD,
                               T_BWD / nm_, T_FWD / nm_))
-    exec_report("backward sweep")
+    exec_report("backward sweep", T_BWD, nm_)
     if SHARDS > 0
         say("  ---- SHARDED CHEMISTRY, backward sweep (replay + VJPs) ----")
         shard_report(SHARD)
