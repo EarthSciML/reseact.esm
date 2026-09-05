@@ -619,15 +619,52 @@ end
 # the FD difference quotient inside the step makes the step map ill-conditioned
 # in u, and the dot-product identity degrades from 1.8e-16 to 6.2e-14 on the toy
 # and to 1.1e-6 on ReSEACT. See plan section 4 item 4.
+# `active_bufs=false` makes everything in `theta` EXCEPT `theta.p` a Const --
+# measured to matter, a lot. With the whole `(p, bufs[, bufsJ])` NamedTuple
+# active, reverse mode allocates, zero-fills, scatter-accumulates and copies
+# out a gradient for every FORCING buffer (the GEOS-FP fields and the band
+# model's inputs) on every call: at 6x6x8 that is 22 whole extended-buffer
+# copies per chemistry VJP (67 MB, vs 0.1 MB in the primal step; XLA
+# copy-insertion, tools/diag/p5_vjp_dump.jl) and it scales with the grid, ~1.5 GB
+# per VJP at CONUS -- for a gradient the adjoint driver discards (`r[2].bufs`).
+# Meteorology is input data, not a function of the parameters. The gradient of
+# `p` is unchanged; the second return keeps the `(p = ...,)` shape so a caller
+# reading `.p` sees the same thing. The kwarg defaults to the OLD behaviour so
+# callers that pass a bare parameter object as `theta` (rx_adjoint_toy.jl) or
+# want dJ/d(bufs) are untouched; the adjoint driver passes `false`.
+_theta_rest(theta::NamedTuple) = Base.structdiff(theta, NamedTuple{(:p,)})
+_ros23_ldotu_pc(g, u, p, rest, lambda, t, dt, NS, NC, masks, abstol, reltol, jac, gj) =
+    _ros23_ldotu(g, u, merge((p = p,), rest), lambda, t, dt, NS, NC, masks, abstol, reltol, jac, gj)
+_ssprk43_ldotu_pc(g, u, p, rest, lambda, t, dt, abstol, reltol) =
+    _ssprk43_ldotu(g, u, merge((p = p,), rest), lambda, t, dt, abstol, reltol)
+_splittable(theta) = theta isa NamedTuple && haskey(theta, :p) && length(theta) > 1
+
 function ros23_step_vjp(g, u, theta, t, dt, lambda, NS::Int, NC::Int, masks,
-                        abstol::Float64, reltol::Float64; jac::Symbol=:fd, gj=nothing)
+                        abstol::Float64, reltol::Float64; jac::Symbol=:fd, gj=nothing,
+                        active_bufs::Bool=true)
+    if !active_bufs && _splittable(theta)
+        r = EZ.gradient(EZ.Reverse, _ros23_ldotu_pc, EZ.Const(g), u, theta.p,
+                        EZ.Const(_theta_rest(theta)),
+                        EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
+                        EZ.Const(NS), EZ.Const(NC), EZ.Const(masks),
+                        EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac), EZ.Const(gj))
+        return r[2], (p = r[3],)
+    end
     r = EZ.gradient(EZ.Reverse, _ros23_ldotu, EZ.Const(g), u, theta,
                     EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
                     EZ.Const(NS), EZ.Const(NC), EZ.Const(masks),
                     EZ.Const(abstol), EZ.Const(reltol), EZ.Const(jac), EZ.Const(gj))
     return r[2], r[3]
 end
-function ssprk43_step_vjp(g, u, theta, t, dt, lambda, abstol::Float64, reltol::Float64)
+function ssprk43_step_vjp(g, u, theta, t, dt, lambda, abstol::Float64, reltol::Float64;
+                          active_bufs::Bool=true)
+    if !active_bufs && _splittable(theta)
+        r = EZ.gradient(EZ.Reverse, _ssprk43_ldotu_pc, EZ.Const(g), u, theta.p,
+                        EZ.Const(_theta_rest(theta)),
+                        EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
+                        EZ.Const(abstol), EZ.Const(reltol))
+        return r[2], (p = r[3],)
+    end
     r = EZ.gradient(EZ.Reverse, _ssprk43_ldotu, EZ.Const(g), u, theta,
                     EZ.Const(lambda), EZ.Const(t), EZ.Const(dt),
                     EZ.Const(abstol), EZ.Const(reltol))
