@@ -11,10 +11,12 @@
 # ITS DEFAULT IS A FULL-SCALE RUN: CONUS at 13x7x72 for 1,440 macro steps of
 # 300 s = FIVE DAYS of simulation, with `clamp_nonneg` on and no jitter, i.e. a
 # gradient of the trajectory the production runner actually integrates. The 48 h
-# gradient recorded below was the staging post for exactly this. On those
-# measured numbers it is ~20 h of wall time and ~40 GB of RSS, so it is a BATCH
-# JOB and not something to start inside a session (an interactive Slurm cgroup
-# here is capped at 40 GiB):
+# gradient recorded below was the staging post for exactly this. Under the
+# current defaults (fast step + 8 chemistry shards, 2026-09-05) the 48 h loop
+# runs in 47 min and five days project to ~2 h of loop plus ~20 min of setup on
+# a WHOLE 40-core node (8 worker processes at ~4 GB each), so it is a BATCH JOB
+# and not something to start inside a session (an interactive Slurm cgroup here
+# is capped at 40 GiB, and a 16-core one cannot host the shards):
 #
 #   mkdir -p logs && sbatch tools/diag/adjoint_conus_5d.sbatch
 #
@@ -36,9 +38,16 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
-# * THE 48-HOUR CONUS GRADIENT (slurm 10055533, 2026-08-21, 8 h 02 m, MaxRSS
-#   38.4 GB). This is what the blockers section below used to say was out of
-#   reach, and it is now the headline result rather than a projection.
+# * THE 48-HOUR CONUS GRADIENT IN 47 MINUTES OF LOOP (slurm 10372969,
+#   2026-09-05, 1 h 15 m all in): forward 692.6 s, backward 2,106.7 s, with
+#   8 chemistry shards, the SSA emitter, the excluded-passes pipeline and the
+#   backward-sweep refresh fix -- the SAME trajectory as the August run below
+#   (byte-identical accept/reject ladder, J = 30.1943301698531, every nonzero
+#   gradient component within 1.3e-11), 9.4x faster. The per-window budget
+#   and what remains toward the 30-minute target are in the preset block.
+# * THE 48-HOUR CONUS GRADIENT, FIRST TIME (slurm 10055533, 2026-08-21, 8 h 02 m,
+#   MaxRSS 38.4 GB). This is what the blockers section below used to say was out
+#   of reach, and it became the headline result rather than a projection.
 #   13x7x72, 85,176 states, 576 macro steps, `clamp_nonneg` ON, un-jittered,
 #   jac=:sym, every runtime scalar in the model in ONE backward sweep:
 #     J        = 30.1943301698564 ppb mean surface O3 over 48 h
@@ -423,16 +432,26 @@ DEMO in ("adjoint", "forward", "both") ||
 # scaling is if anything pessimistic -- 24 h -> 48 h cost 1.64x, not 2x, because
 # the spin-up day is the stiff one.
 #
-# THOSE NUMBERS PREDATE THE FAST STEP. Since 2026-08-25 the driver defaults to
-# `ESS_OOP_SSA=1` and `RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,
-# sub_const_prop`, which together take one CONUS ROS23 step from 259.8 ms to
-# 60.9 ms (4.27x, bit-identical state; slurm 10154418) and were validated through
-# the adjoint at 6x6x8 (all 160 gradient components identical, slurm 10155819).
-# Chemistry is ~90% of the forward pass and the VJP is built from the same
-# emitter, so the 20 h projection above is an upper bound and the transport
-# half -- untouched by either default -- is now a larger share. No window-length
-# run has been timed with the fast step yet; the next 48 h run is that
-# measurement.
+# THOSE NUMBERS ARE HISTORY. Three things landed between 2026-08-25 and
+# 2026-09-05, all measured on the SAME 48 h window with a byte-identical
+# accept/reject ladder, J to 13 digits and every nonzero gradient component
+# within 1.3e-11 of the August run:
+#   * the fast chemistry step (ESS_OOP_SSA=1 + RESEACT_EXCLUDED_PASSES, 4.27x
+#     on the CONUS ROS23 step): 48 h loop 7,668 s (slurm 10359755);
+#   * 8-way PROCESS SHARDING of the chemistry half (RESEACT_ADJ_SHARDS=8, the
+#     default set below) and the backward-sweep forcing-refresh fix (the sweep
+#     used to re-sample GEOS-FP at every macro step, 576x instead of 64x):
+#     48 h loop 2,799 s = 47 min, 1 h 15 m all in (slurm 10372969).
+#   That is 9.4x on the loop against the 26,222 s of August. Per window on the
+#   48 h average: chemistry step 0.69 s, chemistry replay 0.64, chemistry VJP
+#   1.36, transport VJP 1.07, forcing refresh 0.87, transport step 0.14, GC 0.17
+#   -- 4.86 s, so FIVE DAYS projects to ~1 h 57 m of loop plus ~20 min of
+#   setup. The stated target is 30 min of loop; the remaining ~3.9x is, in
+#   order of size, the chemistry VJP's per-call floor (sharding saturates at
+#   N=8), the transport VJP (331 ms/call, its cost is fusion count, NOT the
+#   scatter-adds -- measured and refuted, see tools/diag/p6_*), the replay
+#   (removable by keeping the inner tapes, ~48 GB), and the refresh (removable
+#   by caching the 64 sampled epochs).
 #
 # SO DO NOT RUN IT IN A SESSION. An interactive Slurm cgroup here is capped at
 # 40 GiB and this wants ~40 GB for the better part of a day. Submit it:
@@ -482,6 +501,14 @@ get!(ENV, "RESEACT_ADJ_JAC", "sym")
 # is named here because a 1,440-step run makes ~70,000 compiled calls and a ~1%
 # per-call fault rate is not something a window this long survives.
 get!(ENV, "RESEACT_ADJ_XLAFIX", "1")
+
+# EIGHT CHEMISTRY SHARDS: the chemistry step and VJP run on 8 worker processes,
+# each owning a capacity build of 819 cells; transport stays on the driver.
+# Measured 2.5-3.0x on the chemistry part at CONUS with the gradient within
+# 1.3e-11; N=13 gains nothing (per-call floor). Needs a whole node: the sbatch
+# asks for 40 cpus and 160 GB (worker RSS ~4 GB each). RESEACT_ADJ_SHARDS=0
+# restores the single-process path, byte for byte.
+get!(ENV, "RESEACT_ADJ_SHARDS", "8")
 
 # NO JITTER, and that is a change of purpose, not of taste. The jitter exists to
 # lift the base point off the PPM limiter's switching surface so that FINITE

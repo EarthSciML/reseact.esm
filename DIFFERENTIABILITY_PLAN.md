@@ -799,3 +799,67 @@ uncontrolled run varied, so confirm before diagnosing. And the adaptive controll
 convert ulp-level differences into different accept/reject counts, so never read a
 changed step count as changed solver quality without checking the state difference
 behind it.
+
+
+## 6. Wall time — the 30-minute target (status 2026-09-05)
+
+**Goal:** the five-day CONUS gradient (`run_reseact_adjoint.jl`'s default) in
+30 minutes of loop on CPU, compile excluded. **Status:** ~1 h 57 m projected;
+~3.9x remains.
+
+Measured on the SAME 48 h window (576 macro steps, 27,973 inner steps), every
+run reproducing the August accept/reject ladder byte for byte, J to 13 digits
+and all 19 nonzero gradient components to ≤ 1.3e-11:
+
+| 48 h CONUS, loop only | forward | backward | total | job |
+|---|---|---|---|---|
+| August, single process, stock emitter | 7,460 s | 18,762 s | 7 h 17 m | 10055533 |
+| + SSA emitter + excluded passes (4.27x step) | 1,425 s | 6,243 s | 2 h 08 m | 10359755 |
+| + 8 chemistry shards + backward refresh fix | 693 s | 2,107 s | 47 min | 10372969 |
+
+Per window at the last row: chemistry step 0.69 s, chemistry replay 0.64,
+chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
+0.14, GC 0.17 → 4.86 s. Target: 1.25 s.
+
+**What landed (all on main, all default-on unless said):**
+* `RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop` — the
+  Enzyme-JAX pattern pair rewrote 298 in-place updates into 79 whole-buffer
+  concatenates; 3.32x on the CONUS step.
+* `ESS_OOP_SSA=1` (EarthSciAST) — composes to 4.27x.
+* `RESEACT_ADJ_SHARDS=8` — N worker processes each own a capacity build of a
+  contiguous cell slice and serve the chemistry step AND VJP; transport stays on
+  the driver. Chemistry 2.5–3.0x at N=8; N=13 gains nothing (each call is near
+  the ~3 ms per-call floor, round-trip 30%). Tolerance gate: the capacity build
+  is roundoff-different from the reference program.
+* Backward-sweep refresh fix — the sweep re-sampled the GEOS-FP forcing at
+  EVERY macro step (576x vs 64x forward), ~4 s/window at CONUS.
+* `active_bufs=false` in the VJPs — the forcing-buffer gradient was computed
+  and discarded; 1.06x on the chemistry VJP.
+
+**Measured negatives (do not retry without a new idea):**
+* Pass bisect on the VJP modules: nothing to remove; the primal's exclusion
+  already reaches them.
+* Stencil shifts as slices (EarthSciAST `ESS_OOP_SHIFT_SLICE`, default OFF):
+  correct, converts 67% of transport reads, removes two thirds of the transport
+  VJP's scatter-adds — and the transport VJP is 0.97x. Its 22x-over-primal cost
+  is NOT the scatter-adds; the remaining suspect is its ~4,600 loop fusions, each
+  a whole-state pass. Chemistry loses under the flag (transposes).
+* Dyadic level subcycle (0.02x wall) and per-bucket adaptive stepping (0.66x
+  wall at CONUS, priced ceiling 1.69x) — both forward-only and paused.
+* XLA:CPU flags (vector width, concurrency scheduler): ≤ 7%.
+* The driver's call pattern costs 1–7% over standalone for all four programs;
+  "in-driver is 10x slower" inferences were wrong twice — measure in place.
+
+**Remaining levers, priced:**
+1. Chemistry VJP per-call floor (1.36 s/window): the largest term; the only
+   route past N=8 is a cheaper per-call program, not more shards.
+2. Transport VJP (1.07 s/window, 331 ms/call): fusion count, inside how
+   Enzyme differentiates the transport program.
+3. Forcing refresh (0.87 s/window): cache the 64 sampled epochs' buffers from
+   the forward pass and re-push them in the backward sweep.
+4. Replay (0.64 s/window): keep the inner tapes (~48 GB for five days).
+5. Step count: the global controller pays ~6x the per-cell ideal in cell-steps,
+   but every scheme tried so far lost to the per-call floor.
+
+Operational: never run CONUS builds in the interactive 40 GiB cgroup (Lustre
+page-fault thrash, hours); everything above ran through sbatch.
