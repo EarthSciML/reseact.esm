@@ -693,27 +693,35 @@ the driver's own compiled calls into device execution / readback (so the
 (tape copies, clamp masks, lambda masking, checkpoint comparison, forcing
 refresh, the sharded pack/unpack).
 """
+# GC across a phase: `Base.gc_num()` at the phase start, the diff at the report.
+const GC0 = Ref(Base.gc_num())
+gc_mark!() = (GC0[] = Base.gc_num(); nothing)
 function exec_report(title::AbstractString, total::Float64, nwin::Int)
     isempty(EXEC_T) && return
     say("  ---- $title: DECOMPOSITION, $(nwin) windows, $(@sprintf("%.2f", total)) s ----")
     outer = 0.0
     for key in sort(collect(keys(EXEC_T)))
         n = EXEC_N[key]
-        inner = occursin(".exec", key) || occursin(".read", key)
+        inner = occursin(".exec", key) || occursin(".read", key) || occursin(".upload", key)
         inner || (outer += EXEC_T[key])
-        say(@sprintf("    %-13s %9.2f s over %6d calls = %8.2f ms/call  (%6.2f s/window)%s",
+        say(@sprintf("    %-16s %9.2f s over %6d calls = %8.2f ms/call  (%6.2f s/window)%s",
                      key, EXEC_T[key], n, 1000 * EXEC_T[key] / max(n, 1), EXEC_T[key] / max(nwin, 1),
                      inner ? "   [inside the call above]" : ""))
     end
-    say(@sprintf("    %-13s %9.2f s  (%6.2f s/window)  = total - all executor calls",
+    d = Base.GC_Diff(Base.gc_num(), GC0[])
+    say(@sprintf("    %-16s %9.2f s over %6d pauses, %.2f GB allocated  (%6.2f s/window)  [overlaps the lines above]",
+                 "GC", d.total_time / 1e9, d.pause, d.allocd / 1024^3, d.total_time / 1e9 / max(nwin, 1)))
+    say(@sprintf("    %-16s %9.2f s  (%6.2f s/window)  = total - every timed region above",
                  "everything-else", total - outer, (total - outer) / max(nwin, 1)))
     empty!(EXEC_T); empty!(EXEC_N)
 end
 
 function step_call(cstep, u::Vector{Float64}, TH, t::Float64, dt::Float64)
     tag = _exec_tag(cstep)
+    tu = time()
     UD = RX.ConcreteRArray(u); TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
     t0 = time()
+    _exec_add!(tag * ".step.upload", t0 - tu)
     r = cstep(UD, TH, TD, DD)
     t1 = time()
     raw = Array(r[1]); ee = Float64(r[2])
@@ -723,9 +731,11 @@ end
 # returns (lambda_in, dJ/dp as a Vector aligned with PNAMES)
 function vjp_call(cvjp, u::Vector{Float64}, lam::Vector{Float64}, TH, t::Float64, dt::Float64)
     tag = _exec_tag(cvjp)
+    tu = time()
     UD = RX.ConcreteRArray(u); LD = RX.ConcreteRArray(lam)
     TD = RX.ConcreteRNumber(t); DD = RX.ConcreteRNumber(dt)
     t0 = time()
+    _exec_add!(tag * ".vjp.upload", t0 - tu)
     r = cvjp(UD, TH, LD, TD, DD)
     t1 = time()
     lin = Array(r[1])
@@ -776,7 +786,8 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
         dtc = min(dt, t1 - t)
         tcall = time()
         raw, ee = step_call(cstep, u, TH, t, dtc)
-        _exec_add!(_exec_tag(cstep) * ".step", time() - tcall)
+        th0 = time()
+        _exec_add!(_exec_tag(cstep) * ".step", th0 - tcall)
         EEst = isnan(ee) ? 1.0e10 : ee
         q11 = max(EEst, 1.0e-35)^beta1
         q = q11 / qold^beta2
@@ -800,6 +811,7 @@ function host_adaptive!(cstep, uh::Vector{Float64}, t0::Float64, t1::Float64,
             dt = dtc / min(invqmin, q11 / gamma)
             nrej += 1
         end
+        _exec_add!("host.ctrl+tape", time() - th0)
         iters += 1
     end
     iters >= maxiters && error("host_adaptive! hit maxiters at t=$t (t1=$t1)")
@@ -922,10 +934,12 @@ function replay_fixed(u0::Vector{Float64}, seqT::StepSeq, seqC::StepSeq;
         for (tt, dd) in sq
             tcall = time()
             raw, _ = step_call(cstep, u, TH, tt, dd)
-            _exec_add!(_exec_tag(cstep) * ".replay", time() - tcall)
+            th0 = time()
+            _exec_add!(_exec_tag(cstep) * ".replay", th0 - tcall)
             record && push!(tp, StepRec(copy(u), tt, dd,
                                         CLAMP[] ? BitVector(raw .> 0.0) : trues(length(raw))))
             u = CLAMP[] ? max.(raw, 0.0) : raw
+            _exec_add!("host.tape-replay", time() - th0)
         end
     end
     return u, tpT, tpC
@@ -944,7 +958,7 @@ function forward_pass(; record::Bool = false)
     u = copy(UBASE); tcur = T0; dtT = DT0T; dtC = DT0C
     ckpts = Ckpt[]; tapes = Any[]; counts = NTuple{4,Int}[]
     empty!(EXEC_T); empty!(EXEC_N)   # the decomposition covers exactly the timed loop
-    tstart = time()
+    gc_mark!(); tstart = time()
     for tnext in STOPS
         tnext <= tcur + 1e-9 && continue
         ustart = copy(u)
@@ -1024,12 +1038,15 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
                          label::AbstractString)
     for j in length(tape):-1:1
         e = tape[j]
+        th0 = time()
         global NCLAMPED += count(!, e.mask)
         lam = lam .* e.mask                      # adjoint of max.(u,0) after the step
         nin = count(!isfinite, lam)
         tcall = time()
+        _exec_add!("host.lam-mask", tcall - th0)
         lout, gp = vjp_call(cvjp, e.u, lam, TH, e.t, e.dt)
         _exec_add!(_exec_tag(cvjp) * ".vjp", time() - tcall)
+        th1 = time()
         gbad = count(!isfinite, gp)
         # RE-ISSUING THE IDENTICAL CALL IS A LEGITIMATE FIX HERE, and only
         # because the fault is measured to be nondeterministic: the compiled
@@ -1068,6 +1085,7 @@ function backward_stage!(cvjp, tape::Vector{StepRec}, lam::Vector{Float64}, TH,
         end
         lam = lout
         for (i, k) in enumerate(PNAMES); gacc[k] += gp[i]; end
+        _exec_add!("host.finite+gacc", time() - th1)
     end
     return lam
 end
@@ -1127,7 +1145,7 @@ end
 T_BWD = 0.0; T_REPLAY = 0.0; NVJP = 0
 if want("adj")
     say("\n---- ADJ: the backward sweep (ONE sweep, all $(length(PNAMES)) parameters) ----")
-    tstart = time()
+    gc_mark!(); tstart = time()
     LAM_END, T_REPLAY, NVJP = backward_sweep(WOBJ)
     T_BWD = time() - tstart
     nm_ = length(CKPTS)
@@ -1234,7 +1252,7 @@ if want("adj") && want("fwd") && BADREC[] !== nothing && CLAMP[]
                  T_FWD, steps_sig(COUNTS), dot(WOBJ, UEND)))
     all(isfinite, UEND) || error("non-finite state with the clamp off -- the " *
                                  "unclamped trajectory is not usable")
-    tstart = time()
+    gc_mark!(); tstart = time()
     _, T_REPLAY, NVJP = backward_sweep(WOBJ)
     T_BWD = time() - tstart
     nm_ = length(CKPTS)
