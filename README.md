@@ -29,6 +29,7 @@ the runner's default and projects to about 2 h of loop.
 | `DIFFERENTIABILITY_PLAN.md` | The adjoint plan, blockers, and §6: the wall-time campaign toward the 30-minute target, with every measured lever and negative result. |
 | `HELPERS.md` | What each runner depends on and where the helpers should eventually live upstream. |
 | `tools/diag/README-nondet.md` | The XLA:CPU nondeterminism (race) and its workaround, on by default. |
+| `UPSTREAM_ISSUES.md` | The six issues filed upstream from this work, what has been fixed, and which Reactant version carries the fixes. |
 
 ## Prerequisites
 
@@ -51,6 +52,12 @@ the runner's default and projects to about 2 h of loop.
   The runner's provenance block prints exactly these for any run, so compare against
   it rather than this table when in doubt. `tools/diag/provenance/` keeps the patch
   that was uncommitted in EarthSciASTDiff at the time of the 48 h runs (now `7f83c11`, compat widened in `0bd517f`).
+
+  **On the version pin:** two of the upstream bugs found here are fixed in
+  **Reactant ≥ 0.2.283 / Reactant_jll 0.0.407** and are therefore NOT in the
+  environment these results ran on — see `UPSTREAM_ISSUES.md`. Nothing on the
+  critical path is blocked by either, so 0.2.280 remains the record; clear the
+  6×6×8 gate before moving the CONUS baseline.
 
   The Manifest pins Reactant v0.2.280 and Enzyme v0.13.199. It still RECORDS
   EarthSciAST as v0.1.1 while the checkout's Project.toml says 0.2.0; path-developed

@@ -366,6 +366,13 @@
 # E. File the `:ad` reverse-over-forward segfault upstream (write-up ready in
 #    tools/diag/UPSTREAM_reverse_over_forward.md). Lower priority now that
 #    `jac=:sym` means nothing here depends on it.
+#    **FILED 2026-08-24 as EnzymeAD/Enzyme #3169 and CLOSED by PR #3172** (in
+#    Reactant >= 0.2.283 / jll 0.0.407; this env pins 0.2.280). The fix is the
+#    null check that was asked for, so the crash is now a DIAGNOSTIC naming the
+#    callee CreateReverseDiff failed on -- the reverse-over-forward failure
+#    itself is untouched. What remains of E: re-run `jacrev` at NCOL=1 on
+#    >= 0.2.283, read the callee name, and file the real bug. Status of all six
+#    issues filed from this work: UPSTREAM_ISSUES.md.
 #
 # ---------------------------------------------------------------------------
 # READ THIS BEFORE CHANGING THE BASE POINT

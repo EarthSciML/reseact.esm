@@ -203,7 +203,10 @@ faster (rejected chem steps 23 → 5).
   EarthSciAST-specific), so the true home is upstream Reactant (the `elem_apply`
   fast paths, cf. issue #1616). Until that lands, carry it in the ext as a
   documented stopgap, guarded so it no-ops on a Reactant version that already
-  lowers natively.
+  lowers natively. Two adjacent emission defects on the same seam were filed
+  from here on 2026-08-24 and are still open — Reactant.jl #3215 (scalar
+  `Ops.constant` is not memoized) and #3216 (`broadcast_to_size` broadcasts
+  already-matching shapes); see `UPSTREAM_ISSUES.md`.
 
 ### New lightweight package — the traced integrator
 `rx_traced_integrator.jl` is a self-contained traced adaptive ODE stepper with no

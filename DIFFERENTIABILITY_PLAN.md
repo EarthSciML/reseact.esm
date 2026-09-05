@@ -302,6 +302,20 @@ reverse-over-`while` report.
 > JVP. It was a memcg OOM-kill from running five ReSEACT builds in one 40 GiB cgroup,
 > compounded by reading node-wide `/sys/fs/cgroup/memory.stat` instead of the step
 > cgroup. Not a signal.
+>
+> **Both were filed on 2026-08-24 and both are fixed upstream (status:
+> `UPSTREAM_ISSUES.md`).** The `concat_broadcast_slice` miscompile is
+> [Enzyme-JAX #2938](https://github.com/EnzymeAD/Enzyme-JAX/issues/2938), closed by
+> PR #2953 — `mergeConcatSlicedElems` now checks the slice axis against `concatDim`,
+> so `excluded_passes=["concat_broadcast_slice"]` is no longer needed. The segfault is
+> [Enzyme #3169](https://github.com/EnzymeAD/Enzyme/issues/3169), closed by PR #3172,
+> which adds exactly the requested null check. **That does not lift the wall** — it
+> makes it diagnosable: the callee `CreateReverseDiff` failed on, which "is not
+> determinable from outside the process" above, now names itself in an `emitError`.
+> Both fixes reach Julia in **Reactant ≥ 0.2.283 / Reactant_jll 0.0.407**; this repo
+> pins 0.2.280. Re-running `jacrev` at NCOL=1 on 0.2.283 to read that name is the
+> next step, and the only thing standing between Bug A and a real reverse-over-forward
+> bug report.
 
 Also measured, and it changes an expectation: at 6×6×8 over one 300 s macro step
 the exact Jacobian is compile-neutral (89.3 s vs 87.3 s) and **step-count

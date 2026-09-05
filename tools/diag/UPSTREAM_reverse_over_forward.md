@@ -1,16 +1,25 @@
 # Upstream report: reverse-over-forward AD in Reactant/Enzyme-MLIR
 
-Written to be filed by a human, as **two separate issues** (plus a third, minor,
-if wanted). They were all found trying to put an exact (AD) block Jacobian
-inside a reverse-mode adjoint, but they are independent bugs with different
-owners, and each section below is self-contained enough to paste on its own —
-copy the Environment block into each.
+**FILED 2026-08-24; two of the three are already fixed upstream.** Status is
+tracked in `../../UPSTREAM_ISSUES.md` — read that first. The text below is the
+report as it was written and pasted, kept verbatim as the provenance for the
+measurements; it is no longer the status.
 
-| | what | file to | isolated? |
+All three were found trying to put an exact (AD) block Jacobian inside a
+reverse-mode adjoint, but they are independent bugs with different owners, and
+each section below is self-contained.
+
+| | what | filed as | state (2026-09-05) |
 |---|---|---|---|
-| **Bug B** | `concat_broadcast_slice` merges `concatenate` operands along the wrong axis and emits a malformed module | EnzymeAD/**Enzyme-JAX** | **yes** — five-line reproducer, no autodiff, root cause quotable |
-| **Bug A** | reverse-over-forward segfaults on a NULL `FuncOp` in `AutoDiffCallRev::createReverseModeAdjoint` | EnzymeAD/**Enzyme** | **crash mechanism yes, trigger no** — reproduces only on a real model |
-| Bug C | batched forward mode does not lower, by either available route | EnzymeAD/**Reactant.jl** | yes, but minor |
+| **Bug B** | `concat_broadcast_slice` merges `concatenate` operands along the wrong axis and emits a malformed module | [Enzyme-JAX #2938](https://github.com/EnzymeAD/Enzyme-JAX/issues/2938) | **CLOSED** — fixed by PR #2953, in Reactant ≥ 0.2.283 |
+| **Bug A** | reverse-over-forward segfaults on a NULL `FuncOp` in `AutoDiffCallRev::createReverseModeAdjoint` | [Enzyme #3169](https://github.com/EnzymeAD/Enzyme/issues/3169) | **CLOSED** — PR #3172 adds the null check, so the failing callee now NAMES ITSELF instead of segfaulting. The underlying reverse-over-forward failure is untouched |
+| Bug C | batched forward mode does not lower, by either available route | [Reactant.jl #3217](https://github.com/EnzymeAD/Reactant.jl/issues/3217) | open, no PR |
+
+Two further issues were filed the same day from `reactant_emission_repro.jl`
+(Reactant.jl [#3215](https://github.com/EnzymeAD/Reactant.jl/issues/3215),
+[#3216](https://github.com/EnzymeAD/Reactant.jl/issues/3216)) and one from
+`mwe_case_reverse.jl` (Enzyme-JAX
+[#2939](https://github.com/EnzymeAD/Enzyme-JAX/issues/2939)); all three are open.
 
 Everything attributed to *this machine* is measured, not inferred. Where
 something is a hypothesis it says so.
