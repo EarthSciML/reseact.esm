@@ -201,8 +201,18 @@ function build_shards(n::Int)
     nsh = length(unique(vcat(pmap...)))
     say(@sprintf("  parameters: %d of the driver's %d scalars reach the chemistry shards (values checked)",
                  nsh, length(PNAMES)))
+    S = ShardSet(pids, ranges, Cs, metas, pas, cells, geom, pmap, ShardStats())
+    # WARM UP both RPC paths once, so the first-call JIT (the driver's fan-out
+    # closures, the workers' execution wrappers) is paid here and not inside
+    # the timed forward pass / backward sweep. Measured at 6x6x8: ~5 s of the
+    # first window's wall was this. The results are discarded.
+    tw = time()
+    shard_step(S, copy(UBASE), T0, DT0C)
+    want("adj") && shard_vjp(S, copy(UBASE), copy(WOBJ), T0, DT0C)
+    S.stats = ShardStats()
+    say(@sprintf("  warm-up step%s %.1f s", want("adj") ? " + VJP" : "", time() - tw))
     say(@sprintf("  SHARDS READY in %.1f s", time() - tsp))
-    return ShardSet(pids, ranges, Cs, metas, pas, cells, geom, pmap, ShardStats())
+    return S
 end
 
 function _allowed_cpus()
