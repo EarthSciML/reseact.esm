@@ -870,7 +870,8 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
    NEGATIVE: no_nan+all_finite (1.06x, perturbs the p-gradient at 1.5e-6),
    batching passes off (1.00x), stock passes / sub_const_prop back (0.53x /
    0.67x), optimization_barrier (removed by XLA:CPU; no Enzyme reverse rule),
-   the algebraic form of the limiter. What would work is structural: an
+   the algebraic form of the limiter, XLA copy-insertion region analysis
+   (1.02x at CONUS) and fast min/max (0.99x). The flag knob is exhausted. What would work is structural: an
    emitter that does not route stencil reads through `ue` (kills b), and a
    face-major adjoint with several outputs — XLA:CPU does materialise an
    expensive shared producer with multiple consumers (5-output probe 1.57x,

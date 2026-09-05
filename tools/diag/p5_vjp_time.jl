@@ -61,6 +61,11 @@
 #     max-rel gate deltas on near-zero components (the metric is relative);
 #     the full 48 h gradient already agrees with the pre-exclusion run to
 #     1.3e-11, so this is not a correctness signal, and both are slower anyway.
+#   * 2026-09-05 XLA:CPU debug options at CONUS (slurm 10376908, ccc0234, a
+#     busier node: ssp_vjp 393 ms baseline): xla_cpu_copy_insertion_use_region_
+#     analysis=true ssp_vjp 1.02x (the 394 extended-buffer copies are not
+#     removable by region analysis), xla_cpu_enable_fast_min_max=true 0.99x;
+#     both bit-for-bit. The flag knob is exhausted for the transport VJP.
 #     So at CONUS the forcing-buffer gradient is ~6% of the chemistry VJP and
 #     nothing of the transport VJP: the 6x6x8 copy census does not scale with
 #     the buffers the way the byte count suggested (a CONUS dump would say
