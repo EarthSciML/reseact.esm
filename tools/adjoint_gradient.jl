@@ -943,6 +943,7 @@ function forward_pass(; record::Bool = false)
     refresh_forcing(T0); epoch = T0
     u = copy(UBASE); tcur = T0; dtT = DT0T; dtC = DT0C
     ckpts = Ckpt[]; tapes = Any[]; counts = NTuple{4,Int}[]
+    empty!(EXEC_T); empty!(EXEC_N)   # the decomposition covers exactly the timed loop
     tstart = time()
     for tnext in STOPS
         tnext <= tcur + 1e-9 && continue
