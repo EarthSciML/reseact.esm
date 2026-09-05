@@ -3,7 +3,7 @@
 # shard_run.sh log and its Slurm state until every job has left the queue.
 cd "$(dirname "$0")/../.."
 declare -A seen; declare -A state
-PAT='^BUILD|SHARDS|shard sizes|shard builds|SHARDS READY|parameters:|forward pass|accept/reject|J = |backward sweep|of which|fan-out|sum of shard|worker RSS|STRUCTURAL|wrote|ERROR|Error|error:|Killed|OOM|finished rc|On worker'
+PAT='^BUILD|SHARDS|shard sizes|shard builds|SHARDS READY|parameters:|forward pass|accept/reject|J = |backward sweep|of which|fan-out|sum of shard|worker RSS|STRUCTURAL|wrote|ERROR|Error|error:|Killed|OOM|finished rc|On worker|DECOMPOSITION|\.step |\.replay |\.vjp |everything-else|\.exec|\.read'
 while true; do
   left=0
   for J in "$@"; do

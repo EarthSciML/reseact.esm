@@ -44,6 +44,67 @@
 # pruned is one the chemistry does not depend on and contributes zero. Worker
 # parameter VALUES are asserted equal to the driver's `p` at setup.
 #
+# ---------------------------------------------------------------------------
+# MEASURED (2026-09-05, all via sbatch on partition ctessum; the interactive
+# cgroup stalls Julia builds in Lustre page faults and is not usable for this).
+#
+# GATE, 6x6x8, fwd,adj, 3 windows, un-jittered, clamp on (slurm 10366675/6/7 =
+# N 0/2/4): the accept/reject ladder 3/0,116/3 2/1,92/2 3/0,30/0 is
+# BYTE-IDENTICAL; J = 39.6832930037426 in all three (the CSV's 16th digit moves
+# by one); 141/160 (N=2) and 142/160 (N=4) gradient components identical to
+# every printed digit, all 19 nonzero components within 9.9e-13 relative, no
+# component changes between zero and nonzero; structural identity 6.9e-16 /
+# 1.7e-15 / 1.4e-15. At CONUS (below) the same holds at 3.9e-12.
+#
+# CONUS 13x7x72, 3 windows (T0 = 5400, spin-up), whole node (40 cpus, 160G),
+# per window, from the driver's own DECOMPOSITION (ms/call in brackets):
+#
+#   N   fwd    C.step        bwd     C.replay      C.vjp         T.vjp    everything-else
+#   0   3.19   2.39 [43.7]  17.83*  2.21 [41.7]   4.95 [93.4]   0.92 [347]   9.68* (refresh)
+#   0   3.26   2.37 [43.4]  11.59   2.21 [41.8]   4.90 [92.5]   0.92 [345]   3.33  (JIT, see below)
+#   4   2.14   1.18 [21.6]   9.90   1.09 [20.7]   2.36 [44.6]   0.92 [346]   5.46* (refresh)
+#   8   1.94   0.95 [17.4]   5.72   0.82 [15.5]   1.64 [30.9]   0.93 [349]   2.20  (JIT)
+#   13  1.85   0.95 [17.4]   9.14*  0.84         ~1.7          0.9        (refresh, pre-fix)
+#   (* = before the epoch-cached refresh, commit 74bdc82; jobs 10371241-4,
+#    10372581/2, 10372724/5, 10372885)
+#   Chemistry at N=8: step 2.5x, replay 2.7x, VJP 3.0x. N=13 buys NOTHING over
+#   N=8: the slowest shard's device time is 12 ms/call at 504 cells against
+#   the ~3 ms per-call floor, and host round-trip + imbalance rises to 30%.
+#
+# TWO THINGS THE DECOMPOSITION FOUND THAT ARE NOT SHARDING:
+#   * refresh_forcing cost 6.9 s/call at CONUS and the backward sweep called
+#     it on EVERY macro step (576x over 48 h) where the forward pass calls it
+#     at the 64 epoch boundaries -- the largest single term of the 48 h sweep.
+#     Fixed (refresh only when the epoch changes; identical numbers).
+#   * the residual "everything-else" of a 3-window run (10 s at N=0, 6.6 s at
+#     N=8) is a CONSTANT, not per step: uploads 0.4 ms, lambda mask 0.3 ms,
+#     gacc 0.2 ms, tape construction 1.2 ms per step, GC 0.14 s over the whole
+#     sweep -- and over 576 windows it is 8.4 s total (0.01 s/window). It is
+#     the first-call JIT of the sweep's own functions.
+#   The transport VJP costs 331-349 ms/call AS THE DRIVER CALLS IT, i.e. the
+#   standalone probe's number; the driver adds nothing to it.
+#
+# THE 48 h CONUS GRADIENT AT N=8 (slurm 10372969, 1 h 15 m all in, setup
+# ~11 min: build 224 s, shards 674 s incl. spawn):
+#   forward  692.6 s = 1.202 s/window   (was 1,425 s = 2.474 in 10359755)
+#     C.step 0.69 [13.7 ms x 29,055]  T.step 0.07 [20.2]  refresh 0.43 [64 x 3.9 s]  GC 0.06
+#   backward 2,106.7 s = 3.657 s/window (was 6,243 s = 10.84)
+#     C.replay 0.64 [14.2]  C.vjp 1.36 [30.1 x 26,114]  T.replay 0.07  T.vjp 1.07 [331 x 1,859]
+#     refresh 0.44 [64 calls]  GC 0.11 (1,193 pauses, 336 GB allocated)  everything-else 0.01
+#   accept/reject ladder BYTE-IDENTICAL to 10359755; J = 30.1943301698531 (13
+#   digits); all 19 nonzero gradient components within 1.3e-11; replay 0.0 at
+#   every checkpoint; 0 flaky-reverse retries; structural identity 4.8e-15.
+#   Shard fan-out: host round-trip + imbalance 10.4% (fwd) / 9.4% (bwd);
+#   worker RSS 3.8-4.1 GB each, 29-31 GB total.
+#   => 4.86 s/window all in; FIVE DAYS projects to ~1.9 h (compile excluded),
+#   against ~5.3 h on the same accounting before this work. What remains per
+#   window: chemistry 2.69 s (at N=8's per-call floor), transport VJP 1.07 s
+#   (the emitter lever), refresh 0.87 s (cacheable: the forward pass already
+#   sampled every epoch), replay 0.71 s (RESEACT_ADJ_KEEPTAPE=1 removes it:
+#   ~19 GB for 48 h, ~48 GB for 5 days, which a 160G node with 31 GB of
+#   workers can hold), transport steps 0.14 s.
+# ---------------------------------------------------------------------------
+#
 # Plain include into the driver's scope (like subcycle_chem.jl), gated by
 # RESEACT_ADJ_SHARDS > 0; with the knob off nothing here is loaded.
 #

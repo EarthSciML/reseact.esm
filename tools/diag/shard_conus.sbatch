@@ -13,6 +13,13 @@
 #
 # SHARD_REPO selects the checkout (a git worktree by default -- the model's
 # ../EarthSciModels refs are resolved through RESEACT_MODEL, see shard_run.sh).
+#
+# MEASURED 2026-09-05 (3 windows, per window): N=0 fwd 3.19 s / bwd 17.83 s
+# (11.59 with the epoch-cached refresh); N=4 2.14 / 9.90; N=8 1.94 / 5.72;
+# N=13 1.85 / 9.14 (pre-fix, no gain over N=8). Jobs 10371241-4, 10372581/2,
+# 10372724/5, 10372885. The 48 h window at N=8 (RESEACT_ADJ_NMACRO=576,
+# --time=08:00:00, slurm 10372969): 1 h 15 m, 1.202 / 3.657 s per window.
+# Full tables in tools/shard_chem.jl.
 # ===========================================================================
 #SBATCH --job-name=shconus
 #SBATCH --partition=ctessum

@@ -245,6 +245,13 @@ end
 # SAME global-dt controller, the same tape/replay/checkpoint format -- only the
 # executor of the chemistry programs changes, so fwd AND adj both work. DEFAULT
 # OFF, and off means every call below is the one it always was.
+# MEASURED (see tools/shard_chem.jl's header for the tables): the 48 h CONUS
+# gradient at N=8 (slurm 10372969) ran 1.202 s/window forward and 3.657 s/window
+# backward against 2.474 and 10.84 unsharded (10359755), with a byte-identical
+# accept/reject ladder, J to 13 digits and every nonzero gradient component
+# within 1.3e-11 -- 1 h 15 m all in. N=13 gains nothing over N=8 (per-call
+# floor). The gate is a TOLERANCE gate: the capacity build is roundoff-different
+# from the reference program, so digit identity of the CSV is not expected.
 const SHARDS = parse(Int, get(ENV, "RESEACT_ADJ_SHARDS", "0"))
 SHARDS >= 0 || error("RESEACT_ADJ_SHARDS must be >= 0 (0 = off), got $SHARDS")
 SHARDS > 0 && (SUBCYCLE || BUCKETK > 0) &&
