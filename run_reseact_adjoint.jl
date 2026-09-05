@@ -448,8 +448,10 @@ DEMO in ("adjoint", "forward", "both") ||
 #   -- 4.86 s, so FIVE DAYS projects to ~1 h 57 m of loop plus ~20 min of
 #   setup. The stated target is 30 min of loop; the remaining ~3.9x is, in
 #   order of size, the chemistry VJP's per-call floor (sharding saturates at
-#   N=8), the transport VJP (331 ms/call, its cost is fusion count, NOT the
-#   scatter-adds -- measured and refuted, see tools/diag/p6_*), the replay
+#   N=8), the transport VJP (331 ms/call: XLA:CPU loop fusion re-derives the
+#   PPM face chain once per shifted adjoint contribution, plus the extended
+#   buffer's zeroing/copy chain -- see DIFFERENTIABILITY_PLAN.md section 6 and
+#   tools/diag/p7_*, p8_*; NOT the scatter-adds, NOT a pass), the replay
 #   and the refresh. For those last two the obvious fixes -- keep the inner
 #   tapes (~48 GB for five days at CONUS), cache the 64 sampled forcing epochs
 #   -- are OFF THE TABLE: both grow with grid x run length and the model has to

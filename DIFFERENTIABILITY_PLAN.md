@@ -853,8 +853,31 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
 **Remaining levers, priced:**
 1. Chemistry VJP per-call floor (1.36 s/window): the largest term; the only
    route past N=8 is a cheaper per-call program, not more shards.
-2. Transport VJP (1.07 s/window, 331 ms/call): fusion count, inside how
-   Enzyme differentiates the transport program.
+2. Transport VJP (1.07 s/window, 331 ms/call). ROOT CAUSE FOUND 2026-09-05
+   (tools/diag/p7_rhs_vjp.jl, p8_ppm_reverse.jl, p8_mof_probe.jl,
+   p5_fusion_census.py): one RHS evaluation costs 5.4 ms and its reverse
+   105.6 ms (19.6x), so the anomaly is inside Enzyme's reverse of the emitted
+   PPM RHS, not the SSPRK43 composition, and it is XLA:CPU codegen, not Enzyme
+   algebra. (a) A 1-D PPM flux written from the templates verbatim: forward
+   0.14 ms, reverse 2.5 ms = 17x with only 2.1x the instructions, one fusion
+   each — loop fusion evaluates every output element from scratch, and the six
+   shifted contributions of the adjoint each re-derive the whole face chain at
+   a different face. The sign/min limiter form is identical. (b) The extended
+   observed buffer (2 MB) is assembled by 90 in-place slab writes per RHS;
+   their adjoint is 362 full-buffer zeroing writes plus 394 copy-insertion
+   copies per step VJP, ~1.5 GB of memory traffic. Refined census of the RHS
+   reverse: 23.5x the primal's elementwise arithmetic, 45x its bytes read.
+   NEGATIVE: no_nan+all_finite (1.06x, perturbs the p-gradient at 1.5e-6),
+   batching passes off (1.00x), stock passes / sub_const_prop back (0.53x /
+   0.67x), optimization_barrier (removed by XLA:CPU; no Enzyme reverse rule),
+   the algebraic form of the limiter. What would work is structural: an
+   emitter that does not route stencil reads through `ue` (kills b), and a
+   face-major adjoint with several outputs — XLA:CPU does materialise an
+   expensive shared producer with multiple consumers (5-output probe 1.57x,
+   not 5x) but duplicates the cheap PPM sub-chains (kills a, needs a custom
+   reverse rule or emitter support). Concatenate-root fusions are pathological
+   on XLA:CPU (a 5-way concat of one chain costs 10x the chain), which is also
+   why `dynamic_update_to_concat` stays excluded.
 3. Forcing refresh (0.87 s/window, 3.9 s per refresh at CONUS). NOT by caching
    the 64 sampled epochs: a cache of whole forcing fields grows with grid x run
    length and the model must run far larger than CONUS (2026-09-05). Routes

@@ -53,6 +53,14 @@
 #     CONUS arm (slurm 10364305, ccc0232, busier than 10363325's ccc0234):
 #       ros_vjp  98.8 -> 93.0 ms  (1.06x)  lambda AND p-gradient bit-for-bit
 #       ssp_vjp 393.1 -> 397.2 ms (0.99x)  p-gradient max rel 1.7e-16
+#   * 2026-09-05 compile-option arms at 6x6x8 (slurm 10376416, P5_COPTS /
+#     P5_BASEX_B): no_nan+all_finite ssp_vjp 1.06x but p-gradient max rel
+#     1.5e-6 (rejected); disable_slice/concat_to_batch 1.00x bit-for-bit;
+#     STOCK passes (nothing excluded) ssp_step 1.12x but ssp_vjp 0.53x;
+#     sub_const_prop back alone ssp_vjp 0.67x. The two pass arms show large
+#     max-rel gate deltas on near-zero components (the metric is relative);
+#     the full 48 h gradient already agrees with the pre-exclusion run to
+#     1.3e-11, so this is not a correctness signal, and both are slower anyway.
 #     So at CONUS the forcing-buffer gradient is ~6% of the chemistry VJP and
 #     nothing of the transport VJP: the 6x6x8 copy census does not scale with
 #     the buffers the way the byte count suggested (a CONUS dump would say
@@ -102,10 +110,19 @@ function parse_xlaopt(s)
     return kv
 end
 const XLAOPT = parse_xlaopt(get(ENV, "P5_XLAOPT", ""))
-say("P5_VJP_TIME grid=$(D.NC) cells   default excl=[" * join(BASEX, ",") * "]   +extra=[" * join(EXTRA, ",") * "]   +xlaopt=" * repr(XLAOPT))
-copts_excl(excl; xlaopt = Pair{Symbol,Any}[]) = RX.CompileOptions(; sync = true,
+# Arm B may also carry extra Reactant CompileOptions kwargs (same syntax):
+# P5_COPTS="no_nan=true;all_finite=true". And P5_BASEX_B="a,b" REPLACES arm B's
+# excluded-pass list (so a pass the driver excludes can be put back for arm B;
+# "none" = exclude nothing).
+const COPTS_B = parse_xlaopt(get(ENV, "P5_COPTS", ""))
+const BASEX_B = haskey(ENV, "P5_BASEX_B") ?
+    (ENV["P5_BASEX_B"] == "none" ? String[] : String.(filter(!isempty, strip.(split(ENV["P5_BASEX_B"], ','))))) : nothing
+const ARMB_DIFFERS = !isempty(EXTRA) || !isempty(XLAOPT) || !isempty(COPTS_B) || BASEX_B !== nothing
+say("P5_VJP_TIME grid=$(D.NC) cells   default excl=[" * join(BASEX, ",") * "]   +extra=[" * join(EXTRA, ",") * "]   +xlaopt=" * repr(XLAOPT) *
+    "   +copts=" * repr(COPTS_B) * "   basex_b=" * repr(BASEX_B))
+copts_excl(excl; xlaopt = Pair{Symbol,Any}[], copts = Pair{Symbol,Any}[]) = RX.CompileOptions(; sync = true,
     xla_debug_options = (; xla_cpu_prefer_vector_width = 128, xlaopt...),
-    (isempty(excl) ? (;) : (; excluded_passes = collect(String, excl)))...)
+    (isempty(excl) ? (;) : (; excluded_passes = collect(String, excl)))..., copts...)
 
 fresh_u() = RX.ConcreteRArray(copy(D.UBASE))
 fresh_l() = RX.ConcreteRArray(copy(D.WOBJ))
@@ -182,10 +199,11 @@ for prog in PROGS
     say(@sprintf("  @compile default %.1f s", time() - t0))
     CB = if ARMB == "bufgrad"
         t0 = time(); c = compile_prog_variant(prog, copts_excl(BASEX), :p); say(@sprintf("  @compile p-only  %.1f s", time() - t0)); c
-    elseif isempty(EXTRA) && isempty(XLAOPT)
+    elseif !ARMB_DIFFERS
         CA      # no extra set: time the driver default alone (both arms identical)
     else
-        t0 = time(); c = compile_prog(prog, copts_excl(FULLX; xlaopt = XLAOPT)); say(@sprintf("  @compile +extra  %.1f s", time() - t0)); c
+        xb = BASEX_B === nothing ? FULLX : unique(vcat(BASEX_B, EXTRA))
+        t0 = time(); c = compile_prog(prog, copts_excl(xb; xlaopt = XLAOPT, copts = COPTS_B)); say(@sprintf("  @compile +extra  %.1f s", time() - t0)); c
     end
     a1 = time_calls(prog, CA, REPS); b1 = time_calls(prog, CB, REPS)
     a2 = time_calls(prog, CA, REPS); b2 = time_calls(prog, CB, REPS)
