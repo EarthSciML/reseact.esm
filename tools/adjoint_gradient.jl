@@ -819,14 +819,28 @@ const STOPS  = sort!(unique!(vcat(collect((T0 + MACRO_DT):MACRO_DT:(T_END - 1e-9
 say(@sprintf("  %d macro stops over [%.0f, %.0f] s, %d of them GEOS-FP boundaries",
              length(STOPS), T0, T_END, length(FSTOPS)))
 
+const CUR_EPOCH = Ref(NaN)
 function refresh_forcing(t)
+    tr = time()
     for (k, prov) in discrete
         merged_param[k] .= EA._provider_const_field(EA.provider_sample(prov, t), k)
     end
     foreach(d -> d.materialize!(), dms)
     push_forcing!()
     SHARDS > 0 && shard_refresh_all!(SHARD)
+    CUR_EPOCH[] = t
+    _exec_add!("refresh", time() - tr)
 end
+# The forcing at an epoch is a function of the epoch alone (`provider_sample`
+# at `t`), so re-sampling it when the epoch has not changed is pure cost -- and
+# it is NOT small: a refresh re-reads and re-materialises 15 GEOS-FP providers
+# and pushes ~40 buffers to the device, ~9 s at CONUS (slurm 10372581's
+# everything-else: 29 s of a 53 s sweep, 3 windows, 3 refreshes). The forward
+# pass refreshes only at the 64 epoch boundaries of a 48 h window; the backward
+# sweep used to refresh at EVERY macro step, i.e. 576 times, which was the
+# single largest term of the 48 h backward sweep. Consecutive macro steps
+# almost always share an epoch, walking backwards as much as forwards.
+refresh_forcing_if_needed(t) = (t == CUR_EPOCH[] || refresh_forcing(t); nothing)
 
 # One macro step, Lie-Trotter: transport over [t0,t1] THEN chemistry over the
 # same interval. Records the ACCEPTED (t, dt) sequence of each half -- 16 B per
@@ -1075,7 +1089,9 @@ function tapes_for(k::Int)
     el = time() - trep
     ref = k < length(CKPTS) ? CKPTS[k + 1].u : UEND
     if !isempty(ref)
+        tc = time()
         d = maximum(abs.(uend .- ref) ./ max.(abs.(ref), 1e-30))
+        _exec_add!("ckpt-check", time() - tc)
         global REPLAY_MAXREL = max(REPLAY_MAXREL, d)
         d < 1e-6 || error("fixed-sequence replay of macro step $k lands $(d) relative " *
                           "away from the checkpointed end state -- the tape is not the " *
@@ -1089,7 +1105,7 @@ function backward_sweep(lam0::Vector{Float64})
     t_replay = 0.0; nvjp = 0
     for k in length(CKPTS):-1:1
         ck = CKPTS[k]
-        refresh_forcing(ck.epoch)                # forcing replayed from the checkpoint
+        refresh_forcing_if_needed(ck.epoch)      # forcing replayed from the checkpoint
         tpT, tpC, el = tapes_for(k)
         t_replay += el
         lam = backward_stage!(CROSV_EXEC, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
@@ -1432,7 +1448,7 @@ if want("ref") && want("adj")
         du = zeros(Float64, N)
         ta = time()
         for kk in 1:length(CKPTS)
-            refresh_forcing(CKPTS[kk].epoch)
+            refresh_forcing_if_needed(CKPTS[kk].epoch)
             tpT, tpC, _ = tapes_for(kk)
             du = forward_stage(CSSPJ, tpT, du, THT, dTHT)   # transport first, forward order
             kk == 1 && @printf("    [%s] ||du|| after macro 1 transport = %.6e\n", nm, norm(du))
@@ -1473,7 +1489,7 @@ if want("fdtape") && want("adj")
     function replay_frozen(THT_, THC_)
         u = copy(UBASE)
         for ck in CKPTS
-            refresh_forcing(ck.epoch)
+            refresh_forcing_if_needed(ck.epoch)
             u, _, _ = replay_fixed(u, ck.seqT, ck.seqC; TH_T = THT_, TH_C = THC_, record = false)
         end
         return dot(WOBJ, u)
