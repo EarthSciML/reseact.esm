@@ -44,12 +44,19 @@ nothing else (`tools/diag/decode_cost.jl`):
 | 4x5 | **6.95 s** | 31.0 MB |
 | 2x2.5 | **18.04 s** | 122.7 MB |
 
-Over a 48 h window at `macro_dt = 300` the cadences fire ~432 provider samples
-(A1 hourly × 6 providers, A3 3-hourly × 7, I3 3-hourly × 2), i.e. **~0.35 s per
-macro step at 4x5 and ~0.90 s at 2x2.5** — against a 4x5 window budget of 4.86 s
-whose measured `refresh` line is 0.87 s. So this is not only a memory question
-at 0.25°: it is already a single-digit-percent tax at 4x5 and roughly a fifth of
-a window at 2x2.5, paid to decode data the model then ignores.
+And in the runs themselves, the driver times its own `refresh` line — 64
+forcing-boundary refreshes over a 48 h window (slurm 10386109 / 10386111):
+
+| | per refresh | per macro step | share of the loop |
+|---|---|---|---|
+| 4x5 | 3.74 s | 0.42 s | **8.6%** |
+| 2x2.5 | 13.5 s | 1.50 s | **9.1%** |
+
+So this is not only a memory question at 0.25°: **~9% of a CONUS gradient is
+already spent decoding forcing data the model then ignores**, at both
+resolutions measured, and the share is flat because the waste scales with the
+grid exactly as the useful work does. The five-day arms pay the same rate over
+160 refreshes (585.6 s at 4x5).
 
 What the model actually needs is the **halo-inclusive window**: lon
 `LON0 .. LON0+NLON+1`, lat `LAT0+1 .. LAT0+NLAT`, all levels, the two bracketing
