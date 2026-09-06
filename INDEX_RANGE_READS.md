@@ -34,9 +34,22 @@ decode is Float64, so double the on-disk float32):
 Each provider decodes its file **whole** — every variable, all 8 records — and
 keeps two records of one variable. That is ~840 MB of decode per cadence tick at
 4x5 to retain a few MB, and it scales with the native grid: **×4.0 at 2x2.5**
-(~3.3 GB/tick) and **×251 at 0.25x0.3125** (~211 GB/tick). The forcing refresh
-is already 0.87 s of the 4.86 s 48-h CONUS window budget (18%) at 4x5, where the
-files are small.
+(~3.3 GB/tick) and **×251 at 0.25x0.3125** (~211 GB/tick).
+
+Timed directly, with every file already in the cache so this is decode and
+nothing else (`tools/diag/decode_cost.jl`):
+
+| | one sample of all 15 discrete providers | kept |
+|---|---|---|
+| 4x5 | **6.95 s** | 31.0 MB |
+| 2x2.5 | **18.04 s** | 122.7 MB |
+
+Over a 48 h window at `macro_dt = 300` the cadences fire ~432 provider samples
+(A1 hourly × 6 providers, A3 3-hourly × 7, I3 3-hourly × 2), i.e. **~0.35 s per
+macro step at 4x5 and ~0.90 s at 2x2.5** — against a 4x5 window budget of 4.86 s
+whose measured `refresh` line is 0.87 s. So this is not only a memory question
+at 0.25°: it is already a single-digit-percent tax at 4x5 and roughly a fifth of
+a window at 2x2.5, paid to decode data the model then ignores.
 
 What the model actually needs is the **halo-inclusive window**: lon
 `LON0 .. LON0+NLON+1`, lat `LAT0+1 .. LAT0+NLAT`, all levels, the two bracketing
