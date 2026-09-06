@@ -121,9 +121,11 @@ The vertical is 72 hybrid levels in all of them, so `NLEV` and the `dA`/`dB`/
 | 4x5, 48 h | 1.160 s/window | 3.657 s/window | 46 min | 1 h 11 m |
 | 4x5, 5 day | 1.147 s/window | 3.647 s/window | 1 h 55 m | 2 h 21 m |
 | 2x2.5, 48 h | 4.088 s/window | 12.419 s/window | 2 h 38 m | 3 h 21 m |
+| 2x2.5, 5 day | 4.185 s/window | 12.509 s/window | 6 h 41 m | 7 h 25 m |
 
 Cost is **linear in cells, slightly sublinear**: 2x2.5 has 3.57× the columns and
-costs 3.43× the loop. Halving the cell width did *not* force more substeps — the
+costs 3.43× the 48 h loop and 3.48× the five-day loop. The window is linear too
+— each five-day arm is 2.5× its own 48 h, with no degradation over 120 h. Halving the cell width did *not* force more substeps — the
 adaptive controller took 28,384 inner steps against 27,973, because at 300 s
 macro steps the substep count is set by accuracy, not CFL. Setup scales
 sublinearly too (build 226 → 330 s). Full breakdown, including which per-window

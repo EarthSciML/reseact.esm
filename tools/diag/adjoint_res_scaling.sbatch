@@ -19,11 +19,17 @@
 #   4x5   48 h        1.160       3.657    46 m 15 s   1 h 11 m  30.1943301698523
 #   4x5    5 d        1.147       3.647   1 h 55 m     2 h 21 m  27.0756235696808
 #   2x2.5 48 h        4.088      12.419   2 h 38 m     3 h 21 m  30.5139290179448
-#   2x2.5  5 d        4.185         TBD       TBD         TBD    27.8190596524603
+#   2x2.5  5 d        4.185      12.509   6 h 41 m     7 h 25 m  27.8190596524603
+#
+# ALL FOUR: replay 0.000e+00 at every checkpoint, 0 flaky-reverse retries
+# (70,401 and 71,472 VJP calls in the five-day arms). Driver MaxRSS 42.9 /
+# 45.5 / 78.6 / 83.4 GB in the order above.
 #
 # THE HEADLINE: cost is LINEAR IN CELLS, and slightly sublinear at that. 2x2.5
 # is 3.57x the columns (91 -> 325) and costs 3.52x the forward, 3.40x the
-# backward, 3.43x the loop. The pre-run sizing above guessed ~7x for transport
+# backward, 3.43x the 48 h loop and 3.48x the five-day loop. Both windows scale
+# the same way, and the five-day arm is 2.53x its own 48 h -- i.e. the window
+# is linear too, with no drift or degradation over 120 h. The pre-run sizing above guessed ~7x for transport
 # on the theory that half the cell width would force ~2x the substeps; it does
 # not. The adaptive controller took 28,384 inner steps at 2x2.5 against 27,973
 # at 4x5 -- +1.5%, of which transport is 1,977 vs 1,859 -- because at 300 s
@@ -56,8 +62,10 @@
 #   NEIRegrid.g0           -0.2156 -> -0.2251   +4.4%
 #   Transport3D.tau_pblmix -4.13e-4 -> -4.35e-4 +5.3%
 #
-# so the emissions and dry-deposition sensitivities an inversion would actually
-# use are converged to within ~6% at 4x5. The outliers are the two GEOMETRY
+# and over five days they agree BETTER, not worse -- NEIRegrid.scale -2.4%,
+# kappa +4.2%, g_const -5.4%, g0 -2.4% -- so the emissions and dry-deposition
+# sensitivities an inversion would actually use are converged to within ~6% at
+# 4x5, and refining the grid is not where the next digit comes from. The outliers are the two GEOMETRY
 # derivatives (dlon_deg 2.8x, dlat_deg 2.2x), which is what they should do --
 # they measure the discretisation, and the discretisation is exactly what
 # changed. J itself moves 30.194 -> 30.514 ppb (+1.1%) over 48 h and
