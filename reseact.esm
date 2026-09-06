@@ -12598,10 +12598,10 @@
     {
       "type": "operator_compose",
       "systems": [
-        "SuperFastDepositionSink",
-        "SuperFast"
+        "SuperFast",
+        "SuperFastDepositionSink"
       ],
-      "description": "Add the deposition sink terms onto the SuperFast species ODEs. SuperFastDepositionSink carries D(SuperFast.X) ~ -(k_dry + k_wet)*SuperFast.X equations; operator_compose sums RHS contributions that share a dependent variable, so each species' chemistry tendency gains its loss term (dc/dt += -k*c). Placed BEFORE the SuperFast/Transport3D pointwise compose so the sink is already merged into D(SuperFast.X) when the lift array-ifies it. Per the component's own note this MUST be operator_compose, not a couple/additive connector -- the flatten pipeline silently discards the latter."
+      "description": "Add the deposition sink terms onto the SuperFast species ODEs. SuperFastDepositionSink carries one -(k_dry + k_wet)*X equation per species; operator_compose sums RHS contributions that share a dependent variable, so each species' chemistry tendency gains its loss term (dc/dt += -k*c). Placed BEFORE the SuperFast/Transport3D pointwise compose so the sink is already merged into D(SuperFast.X) when the lift array-ifies it. ORDER IS LOAD-BEARING: `systems[0]` is the merge TARGET and `systems[1:]` are the operators merged into it -- a match that has to RENAME the operator's dependent variable retargets it onto systems[0]'s spelling, deletes the other name from the state set, and rewrites every equation in the document off it (EarthSciAST `_apply_operator_compose!` / `_retarget_merged_names`). So the CHEMISTRY must be listed first. With the sink first, a sink written over its own species unknowns (rather than over scoped SuperFast.X references) matches only through the bare-name fallback, which renames SuperFast.O3 .. SuperFast.CH3OOH to SuperFastDepositionSink.* -- silently moving 7 of the 12 chemistry states out from under the transport and emission composes below, and out from under the runners' SuperFast.O3 lookups. This order is equivalent to the reverse for a sink written over scoped SuperFast.X references (verified: identical states and identical merged RHS), so it is correct against both spellings of the component. Per the component's own note this MUST be operator_compose, not a couple/additive connector -- the flatten pipeline silently discards the latter."
     },
     {
       "type": "variable_map",
