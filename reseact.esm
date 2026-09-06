@@ -41,6 +41,16 @@
       "default": 29,
       "description": "Meridional origin of the slice: local lat point j is native point LAT0+j, so at 4x5 LAT0=29 puts j=1 at native 30 (26 degN). Bound at load. Must satisfy LAT0 >= 1 (the south flank reads native LAT0) and LAT0+NLAT <= NLAT_native -- 46 at 4x5, 91 at 2x2.5, 721 at 0.25x0.3125. The `Transport3D.lat0_deg` PARAMETER carries the same origin in degrees and must be overridden to match: lat0_deg = lat_first + dlat_deg*LAT0 (-90 + 4*LAT0 at 4x5)."
     },
+    "GF_NLON": {
+      "type": "integer",
+      "default": 72,
+      "description": "Zonal extent of the NATIVE GEOS-FP arrays the forcing parameters are delivered at: 72 at 4x5, 144 at 2x2.5, 1152 at 0.25x0.3125, 225 at 0.25x0.3125_CH. Sizes the gf_lon index set, which appears ONLY as a shape dim of the F_* forcing parameters -- never as an aggregate range -- so it is a DECLARATION of what the loader hands over, not something the emitted indexing depends on (verified: masking every native cell outside the model's halo window leaves the RHS bit-identical at both 4x5 and 2x2.5, tools/diag/native_window_probe.jl). It was the literal 72 until 2026-09-05, which was simply false at any other resolution. `native_slice(res=...)` sets it from the same row that picks the URL."
+    },
+    "GF_NLAT": {
+      "type": "integer",
+      "default": 46,
+      "description": "Meridional extent of the native GEOS-FP arrays: 46 at 4x5, 91 at 2x2.5, 721 at 0.25x0.3125, 161 at 0.25x0.3125_CH. Sizes gf_lat; see GF_NLON."
+    },
     "NEI_NX": {
       "type": "integer",
       "default": 459,
@@ -12221,11 +12231,11 @@
     },
     "gf_lat": {
       "kind": "interval",
-      "size": 46
+      "size": "GF_NLAT"
     },
     "gf_lon": {
       "kind": "interval",
-      "size": 72
+      "size": "GF_NLON"
     },
     "nei_t": {
       "kind": "interval",

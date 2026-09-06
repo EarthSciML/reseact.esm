@@ -423,9 +423,18 @@ function native_slice(; res::AbstractString = "4x5",
     # Southern-most lat POINT = native point lat0+1.
     lat0_deg = g.lat_first + g.dlat * lat0
     return (; res = String(res), grid = g, lon0 = lon0, lat0 = lat0,
+            # GF_NLON/GF_NLAT declare the NATIVE extent of the arrays the
+            # loader hands over (the gf_lon/gf_lat index sets, which are shape
+            # dims of the F_* forcing parameters and nothing else). They were
+            # the literals 72/46 in the .esm, i.e. false at every resolution but
+            # 4x5. The emitted indexing does not depend on them -- the runtime
+            # array shape drives it, verified by tools/diag/native_window_probe.jl
+            # -- but a declaration that contradicts the data is exactly the kind
+            # of seam this function exists to close.
             metaparameters = Dict("NLON" => nlon, "NLAT" => nlat,
                                   "NLEV" => Int(nlev),
-                                  "LON0" => lon0, "LAT0" => lat0),
+                                  "LON0" => lon0, "LAT0" => lat0,
+                                  "GF_NLON" => g.nlon, "GF_NLAT" => g.nlat),
             # NEIRegrid is the FOURTH consumer of this origin (see the note
             # above): it builds the target polygon rings the emissions are
             # clipped onto, and if its copy disagreed the inventory would land

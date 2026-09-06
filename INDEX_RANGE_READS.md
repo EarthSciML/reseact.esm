@@ -43,6 +43,14 @@ What the model actually needs is the **halo-inclusive window**: lon
 records. As a fraction of the native grid that is 120/3,312 = **3.6% at 4x5** and
 19,110/830,592 = **2.3% at 0.25x0.3125**.
 
+That it needs *nothing else* is measured, not assumed:
+`tools/diag/native_window_probe.jl` writes NaN into every native cell outside
+that window and the transport RHS comes back **bit-identical** — at 4x5 (3.8 M
+cells masked) and at 2x2.5 (15.2 M masked). The same probe answers the question
+that has to be settled before any windowed read: the emitted indexing is driven
+by the runtime array shape, not by the declared `gf_lon`/`gf_lat` index-set
+sizes, so a pre-sliced array is a rebasing problem and nothing more.
+
 Two independent costs follow, and they need different fixes:
 
 * **decode + resident memory** — fixed by a selection the *reader* honours
