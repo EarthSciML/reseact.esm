@@ -136,10 +136,26 @@ ShardStats() = ShardStats(0, 0, 0.0, 0.0, 0.0, 0.0)
 
 # Call a WORKER-side function by NAME. Both sides define `shard_step` /
 # `shard_vjp` (different signatures), so a driver function object must not be
-# shipped; the closure below is serialized with its code and resolves the name
-# in the worker's own Main.
+# shipped; the applicator below is serialized with its code and resolves the
+# name in the worker's own Main.
+#
+# IT IS BUILT IN `Main` ON PURPOSE, and that is not a style choice. Serializing
+# an anonymous function ships its code plus its DEFINING MODULE, and the worker
+# resolves that module by name before it can reconstruct the function. This file
+# is `include`d into whatever scope the driver runs in -- which is `Main` when
+# tools/adjoint_gradient.jl is run directly, and the module `_AdjointArm` when
+# run_reseact_adjoint.jl runs it (it wraps each arm in its own module so the two
+# drivers' top-level constants cannot collide). A closure defined there dies on
+# the worker with
+#     UndefVarError: `_AdjointArm` not defined in `Main`
+# during deserialization, at the FIRST rpc -- i.e. the sharded path worked only
+# via the direct driver, and the repo's own documented five-day command
+# (adjoint_conus_5d.sbatch -> run_reseact_adjoint.jl with RESEACT_ADJ_SHARDS=8)
+# could not spawn a shard. `Core.eval(Main, ...)` gives the applicator a module
+# every worker has by construction, so both entry points work.
+const _RPC_APPLY = Core.eval(Main, :((f, a...) -> getfield(Main, f)(a...)))
 _rpc(pid::Int, fname::Symbol, args...) =
-    remotecall_fetch((f, a...) -> getfield(Main, f)(a...), pid, fname, args...)
+    remotecall_fetch(_RPC_APPLY, pid, fname, args...)
 
 mutable struct ShardSet
     pids::Vector{Int}
