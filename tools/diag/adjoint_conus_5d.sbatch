@@ -29,6 +29,15 @@
 # 120 h has still NOT been run end to end; days 3-5 are unpaid-for rather than
 # known-bad (the 36.2 h forward death was missing PBL mixing, since fixed).
 #
+# AND, until 2026-09-06, this file COULD NOT HAVE RUN AT ALL as written. Every
+# sharded gradient on record was launched through tools/adjoint_gradient.jl
+# directly; this one goes through run_reseact_adjoint.jl, which wraps each arm
+# in its own module, and tools/shard_chem.jl's rpc applicator was an anonymous
+# closure carrying that module name. Worker 2 died deserializing it --
+# `UndefVarError: _AdjointArm not defined in Main` -- at the first rpc, before a
+# single shard was built. Fixed by building the applicator in `Main`; the path
+# is now exercised end to end (slurm 10386108, 6x6x8, 2 shards, replay 0.0).
+#
 #   mkdir -p logs && sbatch tools/diag/adjoint_conus_5d.sbatch
 #   squeue -u $USER ; tail -f logs/adj5d-<jobid>.out
 #
