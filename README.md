@@ -112,7 +112,22 @@ spacings, the native extent and the **CONUS index box**, so the same geography
 | `0.25x0.3125_CH` | 225 × 161 × 72 | (China domain) | — |
 
 The vertical is 72 hybrid levels in all of them, so `NLEV` and the `dA`/`dB`/
-`Ap`/`Bp` tables never change with the horizontal. The nested North-America,
+`Ap`/`Bp` tables never change with the horizontal.
+
+**Measured scaling** (2026-09-06, one whole node per arm, 8 chemistry shards):
+
+| arm | forward | backward | loop | all in |
+|---|---|---|---|---|
+| 4x5, 48 h | 1.160 s/window | 3.657 s/window | 46 min | 1 h 11 m |
+| 4x5, 5 day | 1.147 s/window | 3.647 s/window | 1 h 55 m | 2 h 21 m |
+| 2x2.5, 48 h | 4.088 s/window | 12.419 s/window | 2 h 38 m | 3 h 21 m |
+
+Cost is **linear in cells, slightly sublinear**: 2x2.5 has 3.57× the columns and
+costs 3.43× the loop. Halving the cell width did *not* force more substeps — the
+adaptive controller took 28,384 inner steps against 27,973, because at 300 s
+macro steps the substep count is set by accuracy, not CFL. Setup scales
+sublinearly too (build 226 → 330 s). Full breakdown, including which per-window
+line grew by how much, in `tools/diag/adjoint_res_scaling.sbatch`'s header. The nested North-America,
 Europe and Asia domains are **not** offered: both mirrors carry only their
 `soil` files, no meteorology, at every year sampled — high resolution over CONUS
 means slicing the global 0.25° files, which the whole-file reader cannot yet do

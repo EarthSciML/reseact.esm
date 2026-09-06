@@ -12,14 +12,45 @@
 # objective, the same 8 chemistry shards, the same solver tolerances and the
 # same node shape. The only physical difference is cell size.
 #
-# WHAT TO EXPECT (pre-run sizing, to be replaced by measurements):
-#   columns   4x5 91 -> 2x2.5 325, i.e. 3.57x the cells;
-#   transport substeps ~2x more at half the cell width (CFL), so the transport
-#   half should cost ~7x and the chemistry half ~3.6x;
-#   build and compile scale with the grid too (235 s build at 4x5 CONUS).
-# A 48 h window took 2,799 s of loop at 4x5 on 2026-09-05 (slurm 10372969), so
-# the 2x2.5 48 h arm is expected somewhere near 4-6x that, and the five-day arm
-# 2.5x its own 48 h.
+# MEASURED 2026-09-06 (slurm 10386109 / 10386110 / 10386111 / 10386112, one
+# whole node each, 40 cpus / 180 GB, 8 chemistry shards, jac=:sym, clamp on):
+#
+#   arm            fwd s/win   bwd s/win     loop      all in   J (ppb)
+#   4x5   48 h        1.160       3.657    46 m 15 s   1 h 11 m  30.1943301698523
+#   4x5    5 d        1.147       3.647   1 h 55 m     2 h 21 m  27.0756235696808
+#   2x2.5 48 h        4.088      12.419   2 h 38 m     3 h 21 m  30.5139290179448
+#   2x2.5  5 d        4.185         TBD       TBD         TBD    27.8190596524603
+#
+# THE HEADLINE: cost is LINEAR IN CELLS, and slightly sublinear at that. 2x2.5
+# is 3.57x the columns (91 -> 325) and costs 3.52x the forward, 3.40x the
+# backward, 3.43x the loop. The pre-run sizing above guessed ~7x for transport
+# on the theory that half the cell width would force ~2x the substeps; it does
+# not. The adaptive controller took 28,384 inner steps at 2x2.5 against 27,973
+# at 4x5 -- +1.5%, of which transport is 1,977 vs 1,859 -- because at 300 s
+# macro steps and ~220 km cells the substep count is set by ACCURACY, not by
+# CFL. Everything else follows the cell count:
+#
+#   per window, 48 h      4x5     2x2.5    ratio
+#   C.vjp                1.42 s   4.55 s    3.2
+#   T.vjp                1.07 s   3.68 s    3.4
+#   C.replay             0.61 s   2.07 s    3.4
+#   T.replay             0.06 s   0.31 s    5.2
+#   refresh              0.42 s   1.50 s    3.6   (forcing decode; see
+#                                                  INDEX_RANGE_READS.md)
+#   driver MaxRSS       42.9 GB  78.6 GB    1.8
+#
+# SETUP scales SUBLINEARLY and is a smaller share at 2x2.5: build 226 -> 330 s,
+# prepare_jacobian 64 -> 142 s, ssp_step compile 129 -> 228 s, ssp_vjp compile
+# 315 -> 933 s, shards ready 577 -> 711 s.
+#
+# The five-day 4x5 arm is the FIRST end-to-end 120 h gradient: 1,440 macro
+# steps, 70,401 accepted inner steps, replay 0.0 at every checkpoint, 0 retries.
+#
+# TWO NEW NONZERO GRADIENT COMPONENTS, and they are a side effect of this work
+# rather than new physics: dlon_deg/dlat_deg were literal equations and are now
+# parameters, so the sweep returns dJ/d(cell size) (-1.33 ppb/deg for dlat over
+# five days). Read it as the derivative of the DISCRETISATION -- bigger cells,
+# same meteorology -- not of anything in the atmosphere.
 #
 #   mkdir -p logs
 #   sbatch --job-name=adjres-4x5-48h  --time=06:00:00 \
