@@ -150,11 +150,17 @@ The forward-only runners: `julia --project=run-model-jl -t 8 run_reseact.jl` (na
 
 | | |
 |---|---|
-| setup (build ~4 min, Jacobian prep ~1 min, four compiles ~15 min) | ~20 min |
-| 48 h loop: forward 1.20 s/window, backward 3.66 s/window | 47 min |
-| 5-day loop (projected, not yet run end to end) | ~2 h |
-| memory | ~4 GB per worker + driver peak ~40 GB |
-| gradient checks | replay lands 0.0 at every checkpoint, J to 13 digits, components to 1.3e-11 vs the single-process run |
+| setup (build ~4 min, Jacobian prep ~1 min, four compiles ~10 min, 8 shards ~10 min) | ~20 min |
+| 48 h loop: forward 1.16 s/window, backward 3.66 s/window | 46 min (1 h 11 m all in) |
+| **5-day loop: forward 1.15 s/window, backward 3.65 s/window** | **1 h 55 m (2 h 21 m all in)** |
+| memory | ~3.5 GB per worker, driver peak ~45 GB |
+| gradient checks | replay lands 0.0 at every one of 1,440 checkpoints, 0 retries over 70,401 VJP calls, J to 13 digits vs the 48 h runs |
+
+The five-day window **has now been run end to end** (slurm 10386110, 2026-09-06):
+1,440 macro steps, 70,401 accepted inner steps, J = 27.0756235696808 ppb. Days
+3–5 are no longer unpaid-for. The same run at 2x2.5 is in
+`tools/diag/adjoint_res_scaling.sbatch`, whose header carries the resolution
+scaling.
 
 The per-window budget, the remaining levers toward the 30-minute target, and the
 measured negatives (including why the transport VJP costs 22x its step and what would
