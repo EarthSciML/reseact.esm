@@ -477,8 +477,19 @@ DEMO in ("adjoint", "forward", "both") ||
 #   RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 \
 #   RESEACT_ADJ_STAGES=fwd,adj,ref,fdtape \
 #   julia --project=run-model-jl run_reseact_adjoint.jl
-get!(ENV, "RESEACT_NLON", "13")
-get!(ENV, "RESEACT_NLAT", "7")
+# RESOLUTION FIRST: it decides what the index box even means. The row carries
+# the CONUS footprint at that resolution -- 13x7 at 4x5, 25x13 at 2x2.5,
+# 193x97 at 0.25x0.3125 -- so the preset below sets the box FROM the row
+# instead of hard-coding 4x5's, and `RESEACT_RES=2x2.5` alone moves the whole
+# run to the same geography on the finer grid. Still `get!` throughout, so an
+# explicit RESEACT_NLON/LON0/... in the environment wins over the row.
+get!(ENV, "RESEACT_RES", "4x5")
+include(joinpath(REPO, "prototypes", "reseact_3d_chem", "geosfp_grids.jl"))
+const GRID_ROW = geosfp_grid(ENV["RESEACT_RES"])
+get!(ENV, "RESEACT_LON0", string(GRID_ROW.conus[1]))
+get!(ENV, "RESEACT_LAT0", string(GRID_ROW.conus[2]))
+get!(ENV, "RESEACT_NLON", string(GRID_ROW.conus[3]))
+get!(ENV, "RESEACT_NLAT", string(GRID_ROW.conus[4]))
 get!(ENV, "RESEACT_NLEV", "72")
 
 # 1,440 * 300 s = 432,000 s = 5 days. The driver derives the GEOS-FP forcing span
@@ -565,13 +576,22 @@ const MACRO_DT_S = parse(Float64, get(ENV, "RESEACT_MACRO_DT", "300"))
 const NMACRO_ADJ = parse(Int, ENV["RESEACT_ADJ_NMACRO"])
 const WINDOW_H   = NMACRO_ADJ * MACRO_DT_S / 3600
 const GRIDSTR    = "$(ENV["RESEACT_NLON"])x$(ENV["RESEACT_NLAT"])x$(ENV["RESEACT_NLEV"])"
+# The production grid is "the CONUS box of whatever resolution row is selected",
+# not the literal 13x7x72 -- otherwise every 2x2.5 run would announce itself as
+# a reduced configuration.
+const CONUSSTR   = "$(GRID_ROW.conus[3])x$(GRID_ROW.conus[4])x72"
+const NCOLS      = parse(Int, ENV["RESEACT_NLON"]) * parse(Int, ENV["RESEACT_NLAT"])
 
 say("="^75)
 say("run_reseact_adjoint.jl -- simulation gradient")
 say("="^75)
 say("  mode          : $DEMO")
-say("  grid          : $GRIDSTR" * (GRIDSTR == "13x7x72" ? "   (CONUS, production)" :
-                                    "   (production is 13x7x72 -- CONUS)"))
+say("  resolution    : $(ENV["RESEACT_RES"])  " *
+    "(GEOS-FP $(GRID_ROW.dlon)x$(GRID_ROW.dlat) deg cells, native $(GRID_ROW.nlon)x$(GRID_ROW.nlat); " *
+    "origin LON0=$(ENV["RESEACT_LON0"]) LAT0=$(ENV["RESEACT_LAT0"]))")
+say("  grid          : $GRIDSTR  ($NCOLS columns)" *
+    (GRIDSTR == CONUSSTR ? "   (CONUS, production)" :
+                           "   (CONUS at this resolution is $CONUSSTR)"))
 say("  window        : $NMACRO_ADJ macro steps x $(round(Int, MACRO_DT_S)) s = " *
     "$(round(WINDOW_H; digits = 2)) h of simulation " *
     "($(round(WINDOW_H / 24; digits = 2)) days)")

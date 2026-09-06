@@ -59,7 +59,12 @@ say(s) = (println(s); flush(stdout))
 const MODEL = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const T0    = parse(Float64, get(ENV, "RESEACT_T0", "5400"))
 _env(k, d)  = parse(Int, get(ENV, "RESEACT_$k", string(d)))
-const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
+_envi(k)    = haskey(ENV, "RESEACT_$k") ? parse(Int, ENV["RESEACT_$k"]) : nothing
+# The 6x6x8 box is this check's whole point (it is the small grid the adjoint
+# identities are cheap on), so NLON/NLAT/NLEV keep literal defaults; only the
+# ORIGIN follows the resolution row, which at 4x5 is the 11/29 it always was.
+const RES   = get(ENV, "RESEACT_RES", "4x5")
+const SLICE = native_slice(res = RES, lon0 = _envi("LON0"), lat0 = _envi("LAT0"),
                            nlon = _env("NLON", 6), nlat = _env("NLAT", 6),
                            nlev = _env("NLEV", 8))
 const GRID_MP  = SLICE.metaparameters
@@ -108,7 +113,7 @@ Logging.with_logger(Logging.NullLogger()) do
     promoted = EA.promoted_array_names(pre, flat)
     parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in parts]
-    f0 = reseact_forcing(CHEMDIR; ndays = 1)
+    f0 = reseact_forcing(CHEMDIR; ndays = 1, res = SLICE.res)
     ff = merge(f0, (; const_arrays = GridResize.slice_hybrid_coefs(f0.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
     for (rawk, prov) in ff.providers

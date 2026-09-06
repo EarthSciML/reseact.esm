@@ -134,8 +134,16 @@ const FLUSH_EVERY = parse(Int, get(ENV, "RESEACT_FLUSH_EVERY", "12"))
 const DT0T       = parse(Float64, get(ENV, "RESEACT_DT0T", "15.0"))
 const DT0C       = parse(Float64, get(ENV, "RESEACT_DT0C", "0.5"))
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
-const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
-                           nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
+_envi(k)   = haskey(ENV, "RESEACT_$k") ? parse(Int, ENV["RESEACT_$k"]) : nothing
+# RESEACT_RES picks the GEOS-FP grid row (GEOSFP_GRIDS in split_common.jl:
+# 4x5, 2x2.5, 0.25x0.3125, 0.25x0.3125_CH). The row carries the URL, the cell
+# spacings, the native extent the halo bounds are checked against AND the CONUS
+# index box, so LON0/LAT0/NLON/NLAT only need setting to depart from that box --
+# hence `nothing` rather than the old 4x5 literals, which would have meant a
+# different domain at every other resolution.
+const RES   = get(ENV, "RESEACT_RES", "4x5")
+const SLICE = native_slice(res = RES, lon0 = _envi("LON0"), lat0 = _envi("LAT0"),
+                           nlon = _envi("NLON"), nlat = _envi("NLAT"),
                            nlev = _env("NLEV", 72))
 const GRID_MP  = SLICE.metaparameters
 const NLEV_EFF = GRID_MP["NLEV"]
@@ -190,7 +198,7 @@ Logging.with_logger(Logging.NullLogger()) do
     splitparts = split_system(flat, stencil_following_rule(flat); nparts = 2)
     docs  = [index_promoted_refs_by_loop!(EA.flattened_to_esm(pt), promoted) for pt in splitparts]
     docs1 = docs[1]
-    f0 = reseact_forcing(CHEMDIR; ndays = NDAYS)
+    f0 = reseact_forcing(CHEMDIR; ndays = NDAYS, res = SLICE.res)
     ff = merge(f0, (; const_arrays = GridResize.slice_hybrid_coefs(f0.const_arrays, NLEV_EFF)))
     merged_const = Dict{String,Any}(String(k) => v for (k, v) in ff.const_arrays)
     for (rawk, prov) in ff.providers

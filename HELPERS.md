@@ -79,15 +79,31 @@ metaparameter, so the file cannot derive one from the other, and a run with the
 two disagreeing is *completely silent*: it produces a full, plausible trajectory
 with the meteorology of one place and the sunlight of another.
 
-`native_slice(; lon0, lat0, nlon, nlat, nlev)` is the single source of truth —
-it returns the metaparameters, the degree parameters, the raw index origin, and
-the domain extent, and bounds-checks the halos against the native 72×46 grid.
+`native_slice(; res, lon0, lat0, nlon, nlat, nlev)` is the single source of
+truth — it returns the metaparameters, the degree parameters (including the cell
+spacings `dlon_deg`/`dlat_deg`, which were literal equations in the `.esm` until
+2026-09-05 and are now parameters for exactly this reason), the raw index
+origin, and the domain extent, and bounds-checks the halos against the native
+extent of the chosen grid.
+
+**Resolution is part of the slice.** `res` names a row of `GEOSFP_GRIDS`
+(`prototypes/reseact_3d_chem/geosfp_grids.jl`) — `4x5`, `2x2.5`,
+`0.25x0.3125`, `0.25x0.3125_CH` — and that row carries the GEOS-FP URL tokens,
+the cell spacings, the native extent and the CONUS index box together, so
+`native_slice(res = "2x2.5")` simulates the same geography (lon −125..−65, lat
+26..50) on 325 columns instead of 91. Hand the **same** `res` to
+`reseact_forcing(dir; ndays, res)` — `slice.res` exists so a caller can pass it
+straight through, and every runner does. Mixing them (4x5 files, 2x2.5
+spacings) is the one failure this design cannot detect: the indices stay in
+bounds and the numbers stay finite. The runners take `RESEACT_RES`; the vertical
+is 72 hybrid levels at every resolution, so `NLEV`, `dA`/`dB` and `Ap`/`Bp`
+never change with the horizontal.
 `build_split_run` takes it as `slice=` and **applies the degree parameters
 itself** (they win over `parameters=`), then echoes it back as `run.slice` for
 `hydrostatic_dp(...; slice = run.slice)` and any diagnostic that reads the native
 arrays. Do not write `29 + j` / `14 + i` at a call site again.
 
-**Multi-day forcing.** `reseact_forcing(dir; ndays)` hands each provider a
+**Multi-day forcing.** `reseact_forcing(dir; ndays, res)` hands each provider a
 `t -> url` resolver over GEOS-FP's one-file-per-day layout instead of a fixed
 URL, so a run is no longer capped at the 19.5 h a single day of files could
 bracket. Size `ndays` with `forcing_days_for(t0, tf)`, which adds the extra day

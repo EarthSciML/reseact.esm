@@ -24,10 +24,12 @@ the runner's default and projects to about 2 h of loop.
 | `tools/shard_chem.jl`, `tools/shard_worker.jl`, `tools/capacity_chem.jl` | Process-level chemistry sharding (`RESEACT_ADJ_SHARDS`). |
 | `tools/reactant_handoff/` | Traced integrator (`rx_traced_integrator.jl`), operator-split loop, Reactant patches. |
 | `prototypes/reseact_3d_chem/` | Split/build machinery shared by the runners (`split_common.jl`), block Jacobian, hybrid-coordinate coefficients. |
+| `prototypes/reseact_3d_chem/geosfp_grids.jl` | The GEOS-FP **resolution table** — URL tokens, cell spacings, native extents, per-resolution CONUS box. Dependency-free, so the launcher and the drivers read the same rows. |
 | `tools/diag/` | ~140 measurement probes and their sbatch files. Each probe's header records its measured result; they are the provenance for every number in the docs. |
 | `run-model-jl/` | The Julia environment (Project + Manifest). |
 | `DIFFERENTIABILITY_PLAN.md` | The adjoint plan, blockers, and §6: the wall-time campaign toward the 30-minute target, with every measured lever and negative result. |
 | `HELPERS.md` | What each runner depends on and where the helpers should eventually live upstream. |
+| `INDEX_RANGE_READS.md` | Plan for reading only the model's window out of the GEOS-FP files — what the pushdown seam already provides, the one missing reader capability, and what each step buys. |
 | `tools/diag/README-nondet.md` | The XLA:CPU nondeterminism (race) and its workaround, on by default. |
 
 ## Prerequisites
@@ -96,6 +98,32 @@ sbatch tools/diag/adjoint_conus_5d.sbatch          # 5-day CONUS gradient (the d
 sbatch --export=ALL,RESEACT_ADJ_NMACRO=576 tools/diag/adjoint_conus_5d.sbatch   # 48 h
 ```
 
+### Resolution
+
+`RESEACT_RES` selects the GEOS-FP grid; the row carries the URL, the cell
+spacings, the native extent and the **CONUS index box**, so the same geography
+(lon −125..−65, lat 26..50) is simulated at whichever resolution is asked for:
+
+| `RESEACT_RES` | native grid | CONUS columns | A3dyn per day |
+|---|---|---|---|
+| `4x5` (default) | 72 × 46 × 72 | 13 × 7 = 91 | 28 MB |
+| `2x2.5` | 144 × 91 × 72 | 25 × 13 = 325 | 111 MB |
+| `0.25x0.3125` | 1152 × 721 × 72 | 193 × 97 = 18,721 | 3.8 GB |
+| `0.25x0.3125_CH` | 225 × 161 × 72 | (China domain) | — |
+
+The vertical is 72 hybrid levels in all of them, so `NLEV` and the `dA`/`dB`/
+`Ap`/`Bp` tables never change with the horizontal. The nested North-America,
+Europe and Asia domains are **not** offered: both mirrors carry only their
+`soil` files, no meteorology, at every year sampled — high resolution over CONUS
+means slicing the global 0.25° files, which the whole-file reader cannot yet do
+economically (see `INDEX_RANGE_READS.md`).
+
+```bash
+sbatch --job-name=adjres-2x25-48h --time=12:00:00 \
+       --export=ALL,RESEACT_RES=2x2.5,RESEACT_ADJ_NMACRO=576 \
+       tools/diag/adjoint_res_scaling.sbatch
+```
+
 Small demonstration (minutes, any machine, all four validation stages):
 
 ```bash
@@ -105,7 +133,9 @@ julia --project=run-model-jl run_reseact_adjoint.jl
 ```
 
 Every default in the runner is a `get!`, so the environment wins. The knobs that
-matter: `RESEACT_NLON/NLAT/NLEV` (grid), `RESEACT_ADJ_NMACRO` (300 s macro steps),
+matter: `RESEACT_RES` (GEOS-FP resolution), `RESEACT_NLON/NLAT/NLEV` and
+`RESEACT_LON0/LAT0` (grid box, defaulting to the resolution's CONUS footprint),
+`RESEACT_ADJ_NMACRO` (300 s macro steps),
 `RESEACT_ADJ_SHARDS` (chemistry worker processes, default 8, 0 = single process),
 `RESEACT_ADJ_JAC` (`sym`), `RESEACT_ADJ_STAGES` (`fwd,adj[,ref,fdtape]`),
 `RESEACT_ADJ_OBJ` (objective, default `SuperFast.O3:surf`), `RESEACT_LABEL`,

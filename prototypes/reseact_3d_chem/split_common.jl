@@ -249,19 +249,27 @@ end
 # --------------------------------------------------------------------------- #
 const EPOCH_DATE = Dates.Date(2016, 1, 1)
 
+# The resolution table lives in its own dependency-free file so that
+# run_reseact_adjoint.jl -- a LAUNCHER, which must know the CONUS index box for
+# the chosen resolution before it includes any driver -- can read the same rows
+# without pulling EarthSciAST and the rest of this file's `using` list into the
+# launcher process.
+include(joinpath(@__DIR__, "geosfp_grids.jl"))
+
 """Daily GEOS-FP files needed to cover `[t0, tf]` in model seconds, including
 the one extra day the last bracket's successor may land in."""
 forcing_days_for(t0, tf) = Int(floor(tf / 86400)) + 2
 
-function reseact_forcing(dir; ndays::Integer = 1,
+function reseact_forcing(dir; ndays::Integer = 1, res::AbstractString = "4x5",
                          nei_sector::AbstractString = "mrggrid_withbeis_withrwc")
     ndays >= 1 || throw(ArgumentError("ndays must be >= 1, got $ndays"))
+    g = geosfp_grid(res)
     cache = EarthSciIO.Cache()
     function url(coll, t)
         d = EPOCH_DATE + Dates.Day(floor(Int, t / 86400))
-        return string("https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        return string("https://geos-chem.s3-us-west-2.amazonaws.com/", g.dir, "/GEOS_FP/",
                       Dates.format(d, "yyyy/mm"), "/GEOSFP.", Dates.format(d, "yyyymmdd"),
-                      ".", coll, ".4x5.nc")
+                      ".", coll, ".", g.suffix, ".nc")
     end
     # `n` is the record count PER DAY; the cadence repeats it for each day.
     mk(coll, var, phase, dt, n) = EarthSciIO.discrete_provider(
@@ -339,62 +347,103 @@ function reseact_forcing(dir; ndays::Integer = 1,
 end
 
 # --------------------------------------------------------------------------- #
-# 2a. The native slice: ONE origin, four places that have to agree.
+# 2a. The native slice: ONE origin, six places that have to agree.
 #
 # The slice is described twice over, in two different currencies, and neither
 # derives the other:
 #   * LON0 / LAT0    -- METAPARAMETERS, folded into the index expressions that
 #                       read the GEOS-FP arrays (local i -> native LON0+i).
 #   * lon0_deg /
-#     lat0_deg       -- PARAMETERS in degrees, which the model's own solar chain
-#                       uses to place the sun over each cell.
+#     lat0_deg /
+#     dlon_deg /
+#     dlat_deg       -- PARAMETERS in degrees, which the model's own geometry
+#                       (cell edges, areas) and solar chain use to place each
+#                       cell and the sun over it.
 # An .esm parameter default cannot be an expression over a metaparameter, so the
 # .esm cannot tie them together; a caller that sets only the metaparameters gets
 # meteorology from one place and SUNLIGHT from another, with nothing to complain.
-# `hydrostatic_dp` (below) is a third consumer of the same origin, and the .esm's
-# own bounds a fourth.
+# `hydrostatic_dp` (below) is a third consumer of the same origin, NEIRegrid's
+# own copy of all four a fourth, the .esm's parameter defaults a fifth, and the
+# GEOS-FP URL -- which decides what the index origin even MEANS -- a sixth.
 #
-# So derive all of them here, from one (lon0, lat0), and never write the
+# So derive all of them here, from one (res, lon0, lat0), and never write the
 # literals at a call site again.
 #
-#   native_slice()                       -> CONUS, lon -125..-65, 13x7x72
-#   native_slice(lon0 = 14, nlon = 7)    -> the old 7x7x72 central-US box
+#   native_slice()                          -> CONUS at 4x5,   13x7x72
+#   native_slice(res = "2x2.5")             -> the SAME footprint, 25x13x72
+#   native_slice(lon0 = 14, nlon = 7)       -> the old 7x7x72 central-US box
 #
-# The DEFAULT is CONUS, and it agrees with `reseact.esm`'s own metaparameter
-# defaults (NLON=13, LON0=11) and its `lon0_deg` parameter default (-127.5). All
-# three have to say the same thing: this function is the only place that derives
-# the degree-space twins from the index origin, but the .esm defaults are what a
-# bare `EA.load_path(model)` gets, so a disagreement between them would put a
-# metaparameter-free load on a different domain than a slice-driven one -- the
-# same silent class of failure the degree/index seam already invites.
+# RESOLUTION IS PART OF THE SLICE, not of the forcing alone. `res` selects a row
+# of GEOSFP_GRIDS, and that row fixes (a) which files `reseact_forcing` fetches,
+# (b) the degree twins and the cell spacings this returns, (c) the native extent
+# the halo bounds are checked against, and (d) the default index box. Pass the
+# SAME `res` to `reseact_forcing` -- `slice.res` is carried in the returned
+# NamedTuple precisely so a caller can hand it straight over, and every runner
+# in this repo does. Mixing them (4x5 files, 2x2.5 spacings) is the one failure
+# this refactor cannot detect for you: the arrays would still be in bounds and
+# the numbers would still be finite.
 #
-# GEOS-FP 4x5 geometry: lon CENTRES are -180 + 5*(i-1) with cell edges 2.5 deg
-# either side; lat POINTS are -90 + 4*(j-1) (the two polar rows are half cells,
-# which is caveat (3) in the model description, not something this fixes).
-function native_slice(; lon0::Integer = 11, lat0::Integer = 29,
-                        nlon::Integer = 13, nlat::Integer = 7, nlev::Integer = 72)
+# The 4x5 DEFAULT is CONUS, and it agrees with `reseact.esm`'s own metaparameter
+# defaults (NLON=13, LON0=11) and its lon0_deg/dlon_deg parameter defaults
+# (-127.5, 5.0). All three have to say the same thing: this function is the only
+# place that derives the degree-space twins from the index origin, but the .esm
+# defaults are what a bare `EA.load_path(model)` gets, so a disagreement between
+# them would put a metaparameter-free load on a different domain than a
+# slice-driven one -- the same silent class of failure the degree/index seam
+# already invites. A NON-default `res` therefore MUST go through this function:
+# the .esm defaults are 4x5 and nothing in the file can derive anything else.
+#
+# Grid geometry, per row: lon CENTRES are lon_first + dlon*(i-1) with cell edges
+# half a width either side; lat POINTS are lat_first + dlat*(j-1) (the polar rows
+# are half cells, which is caveat (3) in the model description, not something
+# this fixes).
+function native_slice(; res::AbstractString = "4x5",
+                        lon0::Union{Integer,Nothing} = nothing,
+                        lat0::Union{Integer,Nothing} = nothing,
+                        nlon::Union{Integer,Nothing} = nothing,
+                        nlat::Union{Integer,Nothing} = nothing,
+                        nlev::Integer = 72)
+    g = geosfp_grid(res)
+    clon0, clat0, cnlon, cnlat = g.conus
+    lon0 = lon0 === nothing ? clon0 : Int(lon0)
+    lat0 = lat0 === nothing ? clat0 : Int(lat0)
+    nlon = nlon === nothing ? cnlon : Int(nlon)
+    nlat = nlat === nothing ? cnlat : Int(nlat)
     lon0 >= 1 || throw(ArgumentError("lon0 >= 1: the west halo reads native cell lon0"))
     lat0 >= 1 || throw(ArgumentError("lat0 >= 1: the south flank reads native point lat0"))
-    lon0 + nlon + 1 <= 72 || throw(ArgumentError(
-        "lon0+nlon+1 = $(lon0+nlon+1) > 72: the east halo runs off the native grid"))
-    lat0 + nlat <= 46 || throw(ArgumentError(
-        "lat0+nlat = $(lat0+nlat) > 46: the top lat point runs off the native grid"))
+    lon0 + nlon + 1 <= g.nlon || throw(ArgumentError(
+        "lon0+nlon+1 = $(lon0+nlon+1) > $(g.nlon): the east halo runs off the " *
+        "native $res grid"))
+    lat0 + nlat <= g.nlat || throw(ArgumentError(
+        "lat0+nlat = $(lat0+nlat) > $(g.nlat): the top lat point runs off the " *
+        "native $res grid"))
     1 <= nlev <= 72 || throw(ArgumentError("nlev in 1..72 (hybrid-coef table length)"))
-    return (; lon0 = Int(lon0), lat0 = Int(lat0),
-            metaparameters = Dict("NLON" => Int(nlon), "NLAT" => Int(nlat),
+    # West EDGE of local cell 1 = centre of native cell lon0+1, minus half a cell.
+    lon0_deg = g.lon_first + g.dlon * lon0 - g.dlon / 2
+    # Southern-most lat POINT = native point lat0+1.
+    lat0_deg = g.lat_first + g.dlat * lat0
+    return (; res = String(res), grid = g, lon0 = lon0, lat0 = lat0,
+            metaparameters = Dict("NLON" => nlon, "NLAT" => nlat,
                                   "NLEV" => Int(nlev),
-                                  "LON0" => Int(lon0), "LAT0" => Int(lat0)),
-            # NEIRegrid is the FIFTH consumer of this origin (see the note above):
-            # it builds the target polygon rings the emissions are clipped onto,
-            # and if its copy disagreed the inventory would land on a grid offset
-            # from the meteorology -- again with nothing to complain.
-            parameters = Dict("Transport3D.lon0_deg" => -182.5 + 5.0 * lon0,
-                              "Transport3D.lat0_deg" => -90.0 + 4.0 * lat0,
-                              "NEIRegrid.lon0_deg" => -182.5 + 5.0 * lon0,
-                              "NEIRegrid.lat0_deg" => -90.0 + 4.0 * lat0),
+                                  "LON0" => lon0, "LAT0" => lat0),
+            # NEIRegrid is the FOURTH consumer of this origin (see the note
+            # above): it builds the target polygon rings the emissions are
+            # clipped onto, and if its copy disagreed the inventory would land
+            # on a grid offset from -- or a different size than -- the
+            # meteorology, again with nothing to complain.
+            parameters = Dict("Transport3D.lon0_deg" => lon0_deg,
+                              "Transport3D.lat0_deg" => lat0_deg,
+                              "Transport3D.dlon_deg" => g.dlon,
+                              "Transport3D.dlat_deg" => g.dlat,
+                              "NEIRegrid.lon0_deg" => lon0_deg,
+                              "NEIRegrid.lat0_deg" => lat0_deg,
+                              "NEIRegrid.dlon_deg" => g.dlon,
+                              "NEIRegrid.dlat_deg" => g.dlat),
             # human-readable extent, for logging a run's actual footprint
-            lon_deg = (-180.0 + 5.0 * lon0, -180.0 + 5.0 * (lon0 + nlon - 1)),
-            lat_deg = (-90.0 + 4.0 * lat0, -90.0 + 4.0 * (lat0 + nlat - 1)))
+            lon_deg = (g.lon_first + g.dlon * lon0,
+                       g.lon_first + g.dlon * (lon0 + nlon - 1)),
+            lat_deg = (g.lat_first + g.dlat * lat0,
+                       g.lat_first + g.dlat * (lat0 + nlat - 1)))
 end
 
 # --------------------------------------------------------------------------- #

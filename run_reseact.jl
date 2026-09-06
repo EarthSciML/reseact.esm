@@ -146,11 +146,19 @@ const STATEDUMP  = get(ENV, "RESEACT_STATEDUMP", "")   # raw state written iff t
 # steps shorter than this has a different problem, and should fail loudly.
 const MIN_MACRO_DT = parse(Float64, get(ENV, "RESEACT_MIN_MACRO_DT", "9.0"))
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
+_envi(k)   = haskey(ENV, "RESEACT_$k") ? parse(Int, ENV["RESEACT_$k"]) : nothing
 # One origin -> metaparameters + the degree-space parameters + the index base
 # hydrostatic_dp and continuity_drift read. See `native_slice`: the .esm cannot
 # tie the two currencies together, so nothing else may spell them out.
-const SLICE = native_slice(lon0 = _env("LON0", 11), lat0 = _env("LAT0", 29),
-                           nlon = _env("NLON", 13), nlat = _env("NLAT", 7),
+# RESEACT_RES picks the GEOS-FP grid row (GEOSFP_GRIDS in split_common.jl:
+# 4x5, 2x2.5, 0.25x0.3125, 0.25x0.3125_CH). The row carries the URL, the cell
+# spacings, the native extent the halo bounds are checked against AND the CONUS
+# index box, so LON0/LAT0/NLON/NLAT only need setting to depart from that box --
+# hence `nothing` rather than the old 4x5 literals, which would have meant a
+# different domain at every other resolution.
+const RES   = get(ENV, "RESEACT_RES", "4x5")
+const SLICE = native_slice(res = RES, lon0 = _envi("LON0"), lat0 = _envi("LAT0"),
+                           nlon = _envi("NLON"), nlat = _envi("NLAT"),
                            nlev = _env("NLEV", 72))
 const GRID_MP  = SLICE.metaparameters
 const NLEV_EFF = GRID_MP["NLEV"]
@@ -194,7 +202,7 @@ let nt = Threads.nthreads(),
 end
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
 docs = prepare_split_docs(MODEL; metaparameters = GRID_MP)
-ff = reseact_forcing(CHEMDIR; ndays = NDAYS)
+ff = reseact_forcing(CHEMDIR; ndays = NDAYS, res = SLICE.res)
 # When NLEV<72 the `lev` axis is shorter than the 72-entry hybrid table; slice the
 # vertical coefs to match (a truncated column, k=1 = surface).
 ff = merge(ff, (; const_arrays = GridResize.slice_hybrid_coefs(ff.const_arrays, NLEV_EFF)))
