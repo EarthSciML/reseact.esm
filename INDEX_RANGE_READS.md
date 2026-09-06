@@ -140,6 +140,12 @@ API and the cache-key convention are all in place. What is missing is a
 
 ## 3. The plan
 
+**Status, 2026-09-06: steps 1 and 2 are implemented and open for review** as
+EarthSciML/EarthSciIO PRs #1 (`variables` projection pushdown) and #2
+(decode-time `select`, stacked on #1). Steps 3 and 4 are not started. The
+sections below are the specification those PRs were written against; where the
+implementation decided something differently, §5 says so.
+
 Four steps. Each is independently useful and independently gate-able; only
 step 4 depends on more than the step before it.
 
@@ -280,11 +286,18 @@ Download per five-day run is unchanged by steps 1–2 (~170 MB at 4x5, ~2 GB at
   own bounds check is `lon0+nlon+1 <= nlon_native` and `lat0+nlat <= nlat_native`;
   a window that forgets the halo produces a model that runs and is wrong at the
   boundary only.
-* **1-based vs 0-based, twice.** AST-side selections are 1-based, the zarr
-  reader's `slice` is 0-based, and the `gated_select` `range` form is 0-based
-  half-open. A netCDF `select` should follow the AST side (1-based, inclusive)
-  and say so in its own docstring, because the reader is the layer where both
-  conventions meet.
+* **1-based vs 0-based, twice — SETTLED, and not the way this line first
+  guessed.** AST-side selections are 1-based, the zarr reader's `slice` is
+  0-based, and the `gated_select` `range` form is 0-based half-open. This file
+  originally proposed making a netCDF `select` 1-based to match the AST side.
+  The implementation went the other way and is right to have: the reader-level
+  vocabulary is the zarr reader's, **0-based**, so there is ONE `select`
+  spelling across every reader and all three tracks. Nothing is lost at the AST
+  seam because `_neutral_selection_to_native` in EarthSciAST's EarthSciIO
+  extension already translates its 1-based neutral selection down to that
+  spelling — for any reader, not just zarr — so a 1-based reader would have
+  needed a per-reader exception in the translator. Each reader's docstring and
+  both spec files state the base.
 * **Coords, `attrs` and CF decode must survive the window.** Whatever the reader
   returns for a windowed read has to CF-decode identically to the same cells
   read whole — `scale_factor`/`add_offset` in float64, `_FillValue`→NaN, time
