@@ -46,6 +46,23 @@
 # The five-day 4x5 arm is the FIRST end-to-end 120 h gradient: 1,440 macro
 # steps, 70,401 accepted inner steps, replay 0.0 at every checkpoint, 0 retries.
 #
+# DOES THE GRADIENT ITSELF SURVIVE THE REFINEMENT? Mostly, and that is the
+# scientific point of running two grids. Over the same 48 h, the dominant
+# physical components move a few percent between 4x5 and 2x2.5:
+#
+#   NEIRegrid.scale        -2.1144 -> -2.2073   +4.4%
+#   DryDepositionGas.kappa -1.6165 -> -1.7114   +5.9%
+#   DryDepositionGas.g_const -0.5129 -> -0.4896  -4.5%
+#   NEIRegrid.g0           -0.2156 -> -0.2251   +4.4%
+#   Transport3D.tau_pblmix -4.13e-4 -> -4.35e-4 +5.3%
+#
+# so the emissions and dry-deposition sensitivities an inversion would actually
+# use are converged to within ~6% at 4x5. The outliers are the two GEOMETRY
+# derivatives (dlon_deg 2.8x, dlat_deg 2.2x), which is what they should do --
+# they measure the discretisation, and the discretisation is exactly what
+# changed. J itself moves 30.194 -> 30.514 ppb (+1.1%) over 48 h and
+# 27.076 -> 27.819 (+2.7%) over five days.
+#
 # TWO NEW NONZERO GRADIENT COMPONENTS, and they are a side effect of this work
 # rather than new physics: dlon_deg/dlat_deg were literal equations and are now
 # parameters, so the sweep returns dJ/d(cell size) (-1.33 ppb/deg for dlat over
