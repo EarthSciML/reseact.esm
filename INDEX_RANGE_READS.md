@@ -218,7 +218,29 @@ Design points that need deciding **before** any code:
   **bit-for-bit** — same gradient CSV, same accept/reject ladder. The arrays are
   indexed identically; anything else is an off-by-one.
 
-### Step 3 — stop downloading the globe
+### Step 3 — get past the file's own chunk layout (and stop downloading the globe)
+
+**Measured 2026-09-06, and it changes why this step exists.** A decode-time
+hyperslab can only read whole HDF5 chunks, so the archive's chunking sets a
+floor under step 2. The GEOS-FP products are chunked as follows (`U`, A3dyn):
+
+| product | array | chunks | what the CONUS window costs |
+|---|---|---|---|
+| 4x5 | (8, 72, 46, 72) | [4, 36, 23, 36] | 2 of 16 chunks — **~8x saved** |
+| 2x2.5 | (8, 72, 91, 144) | [4, 36, 46, 72] | 2 of 16 chunks — **~8x saved** |
+| 0.25x0.3125 | (8, 72, 721, 1152) | **[1, 1, 721, 1152]** | every chunk it touches is a WHOLE GLOBAL SLICE |
+
+So at the two coarse resolutions step 2 does the job on disk as well as in
+memory. At 0.25x0.3125 it does not: one chunk is one global 721x1152 level, so
+reading any 195x98 patch of a level means inflating all 3.3 MB of it. A refresh
+of one 3-D variable (2 records x 72 levels) must therefore decompress ~478 MB to
+keep 22 MB, and ~3.8 GB across the eight 3-D fields — no matter how the reader
+asks. Resident memory is fixed by step 2; the decompression is not.
+
+Rechunking is the only way past that, and rechunking is what a transcode IS.
+This step is therefore NOT redundant with step 2, but it IS conditional: skip it
+at 4x5 and 2x2.5, where step 2 already wins, and reach for it when the target is
+the global 0.25 product.
 
 Two routes, and they are not equivalent:
 
@@ -238,8 +260,16 @@ Two routes, and they are not equivalent:
 
 **Recommend 3a first** — it reuses a landed, conformance-proven path and turns
 "can we run at 0.25°?" into a question about disk rather than about a new
-binary-format reader. 3b is the right long-run answer for a cloud-hosted run and
+binary-format reader. It is also the only one of the two that fixes the CHUNKING
+problem above: a byte-range reader still fetches whole chunks, so against
+[1, 1, 721, 1152] it would range-request entire global slices and save nothing
+on decompression. 3b is the right long-run answer for a cloud-hosted run and
 should stay on the charter, not on this critical path.
+
+Neither route is worth anything at 4x5 or 2x2.5. Say so when the time comes: a
+transcode costs one full download plus a rewrite per file, so it pays only where
+the same files are read many times, or where the chunk layout defeats the
+hyperslab — which, so far, means exactly the global 0.25 product.
 
 ### Step 4 — wire the window in this repo
 
