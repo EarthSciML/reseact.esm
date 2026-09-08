@@ -1,16 +1,32 @@
 # ===========================================================================
-# shard_chem.jl -- PROCESS-LEVEL SHARDING of the chemistry half (driver side).
+# shard_chem.jl -- the DECOMPOSITION of the chemistry half (driver side).
 # ===========================================================================
 # `RESEACT_ADJ_SHARDS=N` splits the NC cells of the chemistry half into N
-# contiguous equal-count shards, each owned by its OWN Julia process
-# (Distributed.jl worker, tools/shard_worker.jl) holding a capacity build of the
-# chemistry half at exactly its cell count. Every chemistry step of the forward
-# pass, the fixed-sequence replay and every chemistry VJP of the backward sweep
-# then fan out over the N processes and are gathered back here. The transport
-# half is untouched: one full-domain program on this process, as before.
+# contiguous equal-count shards, each holding a capacity build of the chemistry
+# half at exactly its cell count. Every chemistry step of the forward pass, the
+# fixed-sequence replay and every chemistry VJP of the backward sweep then fan
+# out over the N shards and are gathered back here. The transport half is
+# untouched: one full-domain program on this process, as before.
 #
-# WHY. Measured facts, not re-derived here (tools/diag/exec_overlap.jl,
-# host_device_overlap.jl, steptime_shard.jl, the p5 VJP census):
+# THIS FILE IS THE DECOMPOSITION ONLY -- which cells belong to which shard, the
+# capacity documents, the lane buffers, the gather/scatter between the runner's
+# species-major full vector and a shard's sub-vector, the partial-norm
+# reduction, and the map from a shard's parameter keys onto the driver's
+# PNAMES. HOW the shards are run lives behind an interface in
+# tools/shard_exec.jl (`RESEACT_SHARD_EXEC`, default `process` = the eight
+# Distributed workers this was built as), and the per-shard chemistry program
+# itself is tools/shard_kernel.jl. Nothing below knows which executor it got.
+#
+# WHY THAT SPLIT. The decomposition is device-shaped already: a flat C x 1 x 1
+# lane grid with all geometry and forcing delivered through per-lane buffers,
+# so the chemistry kernel does no global gather. The eight-process fan-out is
+# not -- it rests entirely on measurements of THIS CPU, and on an A100/H100
+# every one of them is false. See tools/shard_exec.jl for the contract and for
+# what a device executor would have to implement.
+#
+# WHY PROCESSES, ON THIS CPU. Measured facts, not re-derived here
+# (tools/diag/exec_overlap.jl, host_device_overlap.jl, steptime_shard.jl, the
+# p5 VJP census):
 #   * one XLA:CPU execution keeps ~3 of 16 cores busy, and ~9% parallel
 #     efficiency is what the 8,920-op step gets from the thread pool, because
 #     each op is one elementwise pass over NC doubles -- below the parallel-for
@@ -31,22 +47,24 @@
 #   byte comparison -- the driver reports both (the ladder signature and the
 #   gradient) so the difference is visible rather than assumed.
 #
-# WHAT CROSSES THE SOCKET PER STEP: each shard's NS x C_k doubles out and back
+# WHAT CROSSES THE BOUNDARY PER STEP: each shard's NS x C_k doubles out and back
 # (85,176 doubles = 0.7 MB in total per CONUS step, split N ways), a scalar
 # partial norm, and for a VJP the shard's dJ/dp (a few dozen doubles). The
-# host round-trip is timed separately from the workers' own device time so its
+# host round-trip is timed separately from the shards' own device time so its
 # share is a measurement (`shard_report`).
 #
-# The gradient w.r.t. `p`: each worker's capacity document keeps every scalar
+# The gradient w.r.t. `p`: each shard's capacity document keeps every scalar
 # parameter the chemistry half reads (`param_coords = true` keeps the lat/lon
 # coordinate FORMULAS, so dJ/d(Transport3D.lat0_deg) and dJ/d(lon0_deg) keep
 # their photolysis term -- see capacity_chem.jl); a parameter the document
-# pruned is one the chemistry does not depend on and contributes zero. Worker
+# pruned is one the chemistry does not depend on and contributes zero. Shard
 # parameter VALUES are asserted equal to the driver's `p` at setup.
 #
 # ---------------------------------------------------------------------------
 # MEASURED (2026-09-05, all via sbatch on partition ctessum; the interactive
 # cgroup stalls Julia builds in Lustre page faults and is not usable for this).
+# All of these are the `process` executor, which is the default and whose
+# behaviour the 2026-09-08 executor-seam refactor did not change.
 #
 # GATE, 6x6x8, fwd,adj, 3 windows, un-jittered, clamp on (slurm 10366675/6/7 =
 # N 0/2/4): the accept/reject ladder 3/0,116/3 2/1,92/2 3/0,30/0 is
@@ -108,64 +126,40 @@
 # Plain include into the driver's scope (like subcycle_chem.jl), gated by
 # RESEACT_ADJ_SHARDS > 0; with the knob off nothing here is loaded.
 #
-#   RESEACT_ADJ_SHARDS          N worker processes (0 = off)
-#   RESEACT_SHARD_THREADS       julia threads per worker (default 2)
-#   RESEACT_SHARD_HEAP          --heap-size-hint per worker (default 8G)
-#   RESEACT_SHARD_PIN           1 = pin each worker to its own CPU range via
-#                               taskset (default 0)
+#   RESEACT_ADJ_SHARDS          N shards (0 = off)
+#   RESEACT_SHARD_EXEC          which executor runs them (tools/shard_exec.jl):
+#                               `process` (default) or `inprocess`
+#   RESEACT_SHARD_THREADS       julia threads per worker  (process executor)
+#   RESEACT_SHARD_HEAP          --heap-size-hint per worker (process executor)
+#   RESEACT_SHARD_PIN           1 = pin each worker to its own CPU range
 # ===========================================================================
-using Distributed
-
-const SHARD_THREADS = parse(Int, get(ENV, "RESEACT_SHARD_THREADS", "2"))
-const SHARD_HEAP    = get(ENV, "RESEACT_SHARD_HEAP", "8G")
-const SHARD_PIN     = get(ENV, "RESEACT_SHARD_PIN", "0") == "1"
 
 # runner_layout / reference_geometry / SUB_CAPMP; the subcycle's own machinery
 # is only ever built under RESEACT_SUBCYCLE=1, which is exclusive with sharding.
 include(joinpath(REPO, "tools", "subcycle_chem.jl"))
+# the executor interface and its implementations
+include(joinpath(REPO, "tools", "shard_exec.jl"))
 
 mutable struct ShardStats
     calls::Int
     vjps::Int
     t_rpc::Float64      # wall time of the fan-out/gather, driver side
-    t_dev::Float64      # max over shards of the worker's own device time, per call
+    t_dev::Float64      # max over shards of the shard's own device time, per call
     t_dev_sum::Float64  # sum over shards of device time (what N=1 would pay)
     t_pack::Float64     # driver-side sub-vector assembly
 end
 ShardStats() = ShardStats(0, 0, 0.0, 0.0, 0.0, 0.0)
 
-# Call a WORKER-side function by NAME. Both sides define `shard_step` /
-# `shard_vjp` (different signatures), so a driver function object must not be
-# shipped; the applicator below is serialized with its code and resolves the
-# name in the worker's own Main.
-#
-# IT IS BUILT IN `Main` ON PURPOSE, and that is not a style choice. Serializing
-# an anonymous function ships its code plus its DEFINING MODULE, and the worker
-# resolves that module by name before it can reconstruct the function. This file
-# is `include`d into whatever scope the driver runs in -- which is `Main` when
-# tools/adjoint_gradient.jl is run directly, and the module `_AdjointArm` when
-# run_reseact_adjoint.jl runs it (it wraps each arm in its own module so the two
-# drivers' top-level constants cannot collide). A closure defined there dies on
-# the worker with
-#     UndefVarError: `_AdjointArm` not defined in `Main`
-# during deserialization, at the FIRST rpc -- i.e. the sharded path worked only
-# via the direct driver, and the repo's own documented five-day command
-# (adjoint_conus_5d.sbatch -> run_reseact_adjoint.jl with RESEACT_ADJ_SHARDS=8)
-# could not spawn a shard. `Core.eval(Main, ...)` gives the applicator a module
-# every worker has by construction, so both entry points work.
-const _RPC_APPLY = Core.eval(Main, :((f, a...) -> getfield(Main, f)(a...)))
-_rpc(pid::Int, fname::Symbol, args...) =
-    remotecall_fetch(_RPC_APPLY, pid, fname, args...)
-
 mutable struct ShardSet
-    pids::Vector{Int}
+    ex::ShardExecutor                  # HOW the shards run (tools/shard_exec.jl)
+    n::Int
     ranges::Vector{UnitRange{Int}}     # runner cell positions per shard
     C::Vector{Int}
     meta::Vector{Any}
-    pa::Vector{Dict{String,Any}}       # driver-side mirrors of each worker's lane buffers
+    pa::Vector{Dict{String,Any}}       # driver-side mirrors of each shard's lane buffers
     cells::Vector{NTuple{3,Int}}       # runner cell position -> reference (i, j, k)
     geom
-    pmap::Vector{Vector{Int}}          # worker parameter index -> index into PNAMES
+    pmap::Vector{Vector{Int}}          # shard parameter index -> index into PNAMES
     stats::ShardStats
 end
 
@@ -190,34 +184,19 @@ function _gather_lanes!(S::ShardSet, k::Int)
 end
 
 """
-    build_shards(n) -> ShardSet
+    build_shards(n; executor = make_shard_executor()) -> ShardSet
 
-Spawn `n` worker processes, build one capacity shard on each (concurrently),
-prime their forcing from the driver's current `merged_param`, and check their
+Decompose the domain into `n` shards, acquire `n` slots from `executor`, build
+one capacity shard in each (as concurrently as the executor allows), prime
+their forcing from the driver's current `merged_param`, and check their
 parameter vectors against `p`.
 """
-function build_shards(n::Int)
+function build_shards(n::Int; executor::ShardExecutor = make_shard_executor())
     n >= 1 || error("build_shards: n must be >= 1")
-    say("\n---- SHARDS: $n chemistry worker processes ($SHARD_THREADS threads, heap $SHARD_HEAP each) ----")
+    say("\n---- SHARDS: $n chemistry shards, executor `$(exec_name(executor))` ----")
     tsp = time()
-    exeflags = ["--project=$(Base.active_project())", "-t", string(SHARD_THREADS),
-                "--heap-size-hint=$SHARD_HEAP"]
-    pids = addprocs(n; exeflags = exeflags, dir = REPO)
-    length(pids) == n || error("build_shards: asked for $n workers, got $(length(pids))")
-    if SHARD_PIN
-        # each worker on its own CPU slice of the job's allowed set
-        allowed = _allowed_cpus()
-        per = max(1, length(allowed) ÷ n)
-        for (k, pid) in enumerate(pids)
-            cpus = allowed[((k - 1) * per + 1):min(k * per, length(allowed))]
-            wp = remotecall_fetch(getpid, pid)
-            run(pipeline(`taskset -pc $(join(cpus, ',')) $wp`; stdout = devnull))
-        end
-        say("  workers pinned: $per cpus each of $(length(allowed)) allowed")
-    end
-    wsrc = joinpath(REPO, "tools", "shard_worker.jl")
-    Distributed.remotecall_eval(Main, pids, :(include($wsrc)))
-    say(@sprintf("  spawned + loaded %d workers in %.1f s", n, time() - tsp))
+    exec_start!(executor, n; say = say)
+    say(@sprintf("  executor ready with %d slots in %.1f s", n, time() - tsp))
 
     spnames, cells = runner_layout(var_map, NS, NC)
     geom = reference_geometry(BINSP, p, merged_const, GRID_MP)
@@ -225,11 +204,11 @@ function build_shards(n::Int)
     Cs = length.(ranges)
     say("  shard sizes: " * join(string.(Cs), ", ") * " cells (no padding)")
 
-    # phase 1: capacity documents (the load is grid-independent, ~40 s each, in parallel)
+    # phase 1: capacity documents (the load is grid-independent, ~40 s each)
     cfg1 = [Dict{String,Any}("wid" => k, "C" => Cs[k], "NS" => NS, "model" => MODEL,
                              "capmp" => SUB_CAPMP) for k in 1:n]
     t1 = time()
-    infos = asyncmap(k -> _rpc(pids[k], :shard_prepare_doc!, cfg1[k]), 1:n)
+    infos = exec_map(executor, k -> exec_prepare_doc!(executor, k, cfg1[k]), 1:n)
     say(@sprintf("  capacity documents ready on all shards (%.1f s)", time() - t1))
 
     # phase 2: builds + compiles, with exactly the arrays each document reads
@@ -241,26 +220,26 @@ function build_shards(n::Int)
         push!(metas, m)
         push!(pas, CapacityChem.lane_buffers(m, merged_param, Cs[k]))
     end
-    S0 = ShardSet(pids, ranges, Cs, metas, pas, cells, geom, Vector{Int}[], ShardStats())
+    S0 = ShardSet(executor, n, ranges, Cs, metas, pas, cells, geom, Vector{Int}[], ShardStats())
     cfg2 = Dict{String,Any}("ov" => ov, "spnames" => spnames, "T0" => T0, "DT0C" => DT0C,
                             "ATOL_C" => ATOL_C, "RTOL" => RTOL, "JACMODE" => JACMODE,
                             "XLAFIX" => XLAFIX, "EXCLP" => EXCLP, "want_vjp" => want("adj"))
     t2 = time()
-    binfo = asyncmap(1:n) do k
+    binfo = exec_map(executor, 1:n) do k
         vars = metas[k].variables
         ca = Dict{String,Any}(kk => v for (kk, v) in merged_const if kk in vars)
         pshapes = Dict{String,Any}(kk => size(v) for (kk, v) in merged_param
                                    if kk in vars && v isa AbstractArray)
         _gather_lanes!(S0, k)
-        _rpc(pids[k], :shard_build!, cfg2, ca, pshapes, pas[k])
+        exec_build!(executor, k, cfg2, ca, pshapes, pas[k])
     end
-    say(@sprintf("  shard builds + compiles done (%.1f s wall, concurrent)", time() - t2))
+    say(@sprintf("  shard builds + compiles done (%.1f s wall)", time() - t2))
     for k in 1:n
         b = binfo[k]
         say(@sprintf("    shard %2d  C=%-5d build %6.1f s  jacobian %6.1f s  compile step %6.1f s  vjp %6.1f s  rss %.1f GB",
                      k, Cs[k], b.tbuild, b.tjac, b.tcstep, b.tcvjp, b.rss))
     end
-    # parameter vectors: every worker key must be one of ours, at our value
+    # parameter vectors: every shard key must be one of ours, at our value
     pmap = Vector{Vector{Int}}(undef, n)
     pidx = Dict{Symbol,Int}(kk => i for (i, kk) in enumerate(PNAMES))
     for k in 1:n
@@ -278,9 +257,9 @@ function build_shards(n::Int)
     nsh = length(unique(vcat(pmap...)))
     say(@sprintf("  parameters: %d of the driver's %d scalars reach the chemistry shards (values checked)",
                  nsh, length(PNAMES)))
-    S = ShardSet(pids, ranges, Cs, metas, pas, cells, geom, pmap, ShardStats())
-    # WARM UP both RPC paths once, so the first-call JIT (the driver's fan-out
-    # closures, the workers' execution wrappers) is paid here and not inside
+    S = ShardSet(executor, n, ranges, Cs, metas, pas, cells, geom, pmap, ShardStats())
+    # WARM UP both fan-out paths once, so the first-call JIT (the driver's
+    # closures, the shards' execution wrappers) is paid here and not inside
     # the timed forward pass / backward sweep. Measured at 6x6x8: ~5 s of the
     # first window's wall was this. The results are discarded.
     tw = time()
@@ -292,27 +271,11 @@ function build_shards(n::Int)
     return S
 end
 
-function _allowed_cpus()
-    for line in eachline("/proc/self/status")
-        startswith(line, "Cpus_allowed_list:") || continue
-        out = Int[]
-        for part in split(strip(split(line, ':')[2]), ',')
-            if occursin('-', part)
-                a, b = parse.(Int, split(part, '-')); append!(out, a:b)
-            else
-                push!(out, parse(Int, part))
-            end
-        end
-        return out
-    end
-    return collect(0:(Sys.CPU_THREADS - 1))
-end
-
 "Push the driver's current forcing to every shard (one call per GEOS-FP epoch)."
 function shard_refresh_all!(S::ShardSet)
-    asyncmap(1:length(S.pids)) do k
+    exec_map(S.ex, 1:S.n) do k
         _gather_lanes!(S, k)
-        _rpc(S.pids[k], :shard_refresh!, S.pa[k])
+        exec_refresh!(S.ex, k, S.pa[k])
     end
     return nothing
 end
@@ -340,15 +303,16 @@ end
     shard_step(S, u, t, dt) -> (unew, EEst)
 
 One chemistry step of the whole domain, fanned out over the shards. `EEst` is
-`sqrt(sum_k sse_k / N)`, the per-shard partial sums added in shard order.
+`sqrt(sum_k sse_k / N)`, the per-shard partial sums added IN SHARD ORDER --
+invariant 2 of the executor contract (tools/shard_exec.jl).
 """
 function shard_step(S::ShardSet, u::Vector{Float64}, t::Float64, dt::Float64)
-    st = S.stats; n = length(S.pids)
+    st = S.stats; n = S.n
     tp = time()
     ucs = [_pack(S, k, u) for k in 1:n]
     st.t_pack += time() - tp
     tr = time()
-    res = asyncmap(k -> _rpc(S.pids[k], :shard_step, ucs[k], t, dt), 1:n)
+    res = exec_map(S.ex, k -> exec_step(S.ex, k, ucs[k], t, dt), 1:n)
     st.t_rpc += time() - tr
     tp = time()
     unew = Vector{Float64}(undef, N)
@@ -367,13 +331,13 @@ end
     shard_vjp(S, u, lam, t, dt) -> (lambda_in, dJdp aligned with PNAMES)
 """
 function shard_vjp(S::ShardSet, u::Vector{Float64}, lam::Vector{Float64}, t::Float64, dt::Float64)
-    st = S.stats; n = length(S.pids)
+    st = S.stats; n = S.n
     tp = time()
     ucs = [_pack(S, k, u) for k in 1:n]
     lcs = [_pack(S, k, lam) for k in 1:n]
     st.t_pack += time() - tp
     tr = time()
-    res = asyncmap(k -> _rpc(S.pids[k], :shard_vjp, ucs[k], lcs[k], t, dt), 1:n)
+    res = exec_map(S.ex, k -> exec_vjp(S.ex, k, ucs[k], lcs[k], t, dt), 1:n)
     st.t_rpc += time() - tr
     tp = time()
     lin = Vector{Float64}(undef, N)
@@ -393,12 +357,12 @@ end
 function shard_report(S::ShardSet)
     st = S.stats; nc = st.calls + st.vjps
     nc == 0 && return
-    say(@sprintf("  shards: %d step calls + %d VJP calls over %d processes", st.calls, st.vjps, length(S.pids)))
+    say(@sprintf("  shards: %d step calls + %d VJP calls over %d `%s` slots", st.calls, st.vjps,
+                 S.n, exec_name(S.ex)))
     say(@sprintf("    fan-out wall %.2f s (%.2f ms/call); of which slowest-shard device %.2f s (%.2f ms/call) => host round-trip + imbalance %.2f s (%.1f%%)",
                  st.t_rpc, 1000 * st.t_rpc / nc, st.t_dev, 1000 * st.t_dev / nc,
                  st.t_rpc - st.t_dev, 100 * (st.t_rpc - st.t_dev) / max(st.t_rpc, eps())))
     say(@sprintf("    sum of shard device time %.2f s (%.2f ms/call, what one stream would pay for the same lanes); driver pack/unpack %.2f s",
                  st.t_dev_sum, 1000 * st.t_dev_sum / nc, st.t_pack))
-    rss = [_rpc(pid, :shard_rss) for pid in S.pids]
-    say(@sprintf("    worker RSS: max %.1f GB, total %.1f GB", maximum(rss), sum(rss)))
+    say("    " * exec_footprint(S.ex))
 end

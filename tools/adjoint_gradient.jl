@@ -167,7 +167,9 @@ using Reactant
 const EA = EarthSciAST
 const RX = Reactant
 const EZ = Reactant.Enzyme
-try; RX.set_default_backend("cpu"); catch; end
+# Backend is env-gated (RESEACT_BACKEND, default cpu = unchanged behaviour) so a
+# device run needs no source edit here. See tools/shard_exec.jl.
+try; RX.set_default_backend(get(ENV, "RESEACT_BACKEND", "cpu")); catch; end
 
 const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
 const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
@@ -239,9 +241,13 @@ if BUCKETK > 0 && (want("adj") || want("fdtape"))
           "differentiate the recorded step sequence, and a bucketed window is K " *
           "interleaved sequences, not one -- run with RESEACT_ADJ_STAGES=fwd (or fwd,ref).")
 end
-# PROCESS-LEVEL SHARDING of the chemistry half (tools/shard_chem.jl): N worker
-# processes, each owning a capacity build of its contiguous slice of the cells,
-# serving the chemistry step AND the chemistry VJP; transport stays here. The
+# SHARDING of the chemistry half (tools/shard_chem.jl): N shards, each owning a
+# capacity build of its contiguous slice of the cells, serving the chemistry
+# step AND the chemistry VJP; transport stays here. HOW the shards run is the
+# executor's business, not this driver's -- `RESEACT_SHARD_EXEC` selects it
+# (default `process` = N Distributed worker processes, the measured path below;
+# `inprocess` runs the same shards here, sequentially). See tools/shard_exec.jl
+# for the contract, and for what a device backend would have to implement. The
 # SAME global-dt controller, the same tape/replay/checkpoint format -- only the
 # executor of the chemistry programs changes, so fwd AND adj both work. DEFAULT
 # OFF, and off means every call below is the one it always was.

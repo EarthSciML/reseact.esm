@@ -40,7 +40,9 @@ const REPO = dirname(@__DIR__)
 Pkg.activate(get(ENV, "RESEACT_RXENV", joinpath(REPO, "run-model-jl")); io=devnull)
 using Reactant, Printf, LinearAlgebra, Random
 const RX = Reactant
-try; RX.set_default_backend("cpu"); catch; end
+# Backend is env-gated (RESEACT_BACKEND, default cpu = unchanged behaviour) so a
+# device run needs no source edit here. See tools/shard_exec.jl.
+try; RX.set_default_backend(get(ENV, "RESEACT_BACKEND", "cpu")); catch; end
 const EZ = Reactant.Enzyme
 include(joinpath(REPO, "tools", "reactant_handoff", "rx_native_patch.jl"))
 include(joinpath(REPO, "tools", "reactant_handoff", "rx_traced_integrator.jl"))
