@@ -1014,6 +1014,20 @@ trade runs the other way, which is the entire point.
 and `cap` does not move compile time — consistent with the module being a while
 region rather than an unrolled body.
 
+**Program structure — one `while`, byte-for-byte the same size at two caps.**
+`RESEACT_ADJ_DEVDUMP=1` dumps the UNOPTIMISED differentiated module of each half
+at cap 32 and cap 128. On the real model at 6x6x8:
+
+| half | cap 32 | cap 128 |
+|---|---|---|
+| transport (SSPRK43) | **1** `stablehlo.while`, 88,046 lines, 10.14 MB | **1**, 88,046 lines, 10.14 MB |
+| chemistry (ROS23, `jac=:sym`) | **1** `stablehlo.while`, 121,864 lines, 15.30 MB | **1**, 121,864 lines, 15.30 MB |
+
+Identical to the byte at a 4x larger trip count, so the program is a while region
+and not an unrolled body: **size is O(1) in `cap`.** The toy gate agrees
+(`frozen_loop_smoke.jl`: 506 lines at cap 16 and at cap 128), and so does compile
+time at CONUS above.
+
 **Compile cost.** One program per `(kind, half, cap)` bucket, compiled up front
 by `devloop_precompile` — *outside* the sweep timer, because the first version of
 this put 491 s of compile into a 508 s "backward sweep" and made the device arm
