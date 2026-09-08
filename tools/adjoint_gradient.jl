@@ -262,6 +262,46 @@ if SHARDS > 0 && (want("ref") || want("fdtape"))
           "fdtape stages vary theta through the driver's OWN chemistry programs, which " *
           "the shards do not see -- run them unsharded.")
 end
+# THE DIFFERENTIATED MAP ON THE DEVICE (tools/frozen_device_loop.jl). DEFAULT
+# OFF, and off means every line below is the one it always was.
+#
+# The driver runs its inner steps from the HOST, one Julia round-trip per step
+# -- ~28,000 of them per 48 h window, twice (the fixed-sequence replay and the
+# VJP). On XLA:CPU that costs 0.2%, because the "device" is the same memory. On
+# an A100/H100 each round-trip is a device sync plus two transfers and the
+# design would dominate, so this is a PORTABILITY change: expect no CPU speedup,
+# expect a small regression from the masked (dead) iterations, and read a flat
+# benchmark as the expected outcome rather than a failure.
+#
+# ON turns each macro-step half into ONE device program: a static-trip-count
+# `RX.@trace for i in 1:cap` whose (t, dt) come from runtime [cap] tensors and
+# whose iterations past the recorded step count are neutralised by an `ifelse`
+# on a traced live-count. That is legitimate here and nowhere else in the loop
+# because the map the discrete adjoint differentiates is ALREADY a fixed-step
+# composition with a KNOWN trip count -- `replay_fixed` replays the recorded
+# sequence with the controller switched off. The FORWARD pass is untouched: its
+# adaptive `stablehlo.while` stays, nothing differentiates it.
+#
+# "both" runs BOTH backward sweeps in ONE process off the SAME forward pass and
+# compares them component by component. That is the gradient-agreement gate, and
+# doing it in-process is what makes it meaningful: same base point, same
+# checkpoints, same recorded (t, dt) sequence, so the ONLY difference is where
+# the composition happens.
+const DEVLOOP = lowercase(get(ENV, "RESEACT_ADJ_DEVLOOP", "0"))
+DEVLOOP in ("0", "1", "both") ||
+    error("RESEACT_ADJ_DEVLOOP must be 0, 1 or both, got $DEVLOOP")
+const DEVUSE = Ref(DEVLOOP == "1")
+if DEVLOOP != "0"
+    (SUBCYCLE || BUCKETK > 0) &&
+        error("RESEACT_ADJ_DEVLOOP=$DEVLOOP cannot combine with RESEACT_SUBCYCLE/" *
+              "RESEACT_BUCKET: neither records the single (t, dt) sequence the frozen " *
+              "grid replays, so the device loop would differentiate a map the forward " *
+              "pass did not take.")
+    SHARDS > 0 &&
+        error("RESEACT_ADJ_DEVLOOP=$DEVLOOP cannot combine with RESEACT_ADJ_SHARDS=$SHARDS: " *
+              "the frozen grid needs the driver's OWN chemistry step and Jacobian inside " *
+              "one traced loop, and the shards hold theirs in other processes.")
+end
 _env(k, d) = parse(Int, get(ENV, "RESEACT_$k", string(d)))
 _envi(k)   = haskey(ENV, "RESEACT_$k") ? parse(Int, ENV["RESEACT_$k"]) : nothing
 # RESEACT_RES picks the GEOS-FP grid row (GEOSFP_GRIDS in split_common.jl:
@@ -633,9 +673,16 @@ CSSP = timed_compile("ssp_step", () -> RX.@compile compile_options=COPTS ssp_ste
 const OWN_CHEM = SHARDS == 0 || want("ctl")
 CROS = OWN_CHEM ?
     timed_compile("ros_step", () -> RX.@compile compile_options=COPTS ros_step(U_R, THC, T_R, DTC_R)) : nothing
-CSSPV = want("adj") ?
+# With RESEACT_ADJ_DEVLOOP=1 the backward sweep never issues a SINGLE-STEP VJP:
+# a whole macro-step half is one device program. Compiling these anyway is
+# minutes and gigabytes of pure waste at CONUS -- ros_vjp alone was 573 s and the
+# session peak on the 48 h run. `both` needs them (it runs the host sweep as the
+# comparison arm) and so does the `ref` stage (the per-step dot-product identity
+# is a per-STEP check by construction), so only the pure device mode skips them.
+_need_step_vjp() = want("adj") && (DEVLOOP != "1" || want("ref"))
+CSSPV = _need_step_vjp() ?
     timed_compile("ssp_vjp", () -> RX.@compile compile_options=COPTS ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R)) : nothing
-CROSV = (want("adj") && OWN_CHEM) ?
+CROSV = (_need_step_vjp() && OWN_CHEM) ?
     timed_compile("ros_vjp", () -> RX.@compile compile_options=COPTS ros_vjp(U_R, THC, LAM_R, T_R, DTC_R)) : nothing
 
 # --- the LEVEL SUBCYCLE's own programs (RESEACT_SUBCYCLE=1 only) -----------
@@ -723,6 +770,18 @@ function exec_report(title::AbstractString, total::Float64, nwin::Int)
                      key, EXEC_T[key], n, 1000 * EXEC_T[key] / max(n, 1), EXEC_T[key] / max(nwin, 1),
                      inner ? "   [inside the call above]" : ""))
     end
+    # THE HOST ROUND-TRIP SHARE -- the number the device loop exists to move.
+    # Every `.upload` / `.read*` region is a transfer plus a sync, and every
+    # `host.*` region is Julia work between two device calls; together they are
+    # what a real accelerator would charge per inner step. Printed for BOTH loop
+    # shapes so the before/after is read off the same decomposition.
+    rt = 0.0
+    for (key, v) in EXEC_T
+        (occursin(".upload", key) || occursin(".read", key) || startswith(key, "host.")) &&
+            (rt += v)
+    end
+    say(@sprintf("    %-16s %9.2f s  (%6.2f s/window)  = %.3f%% of the phase  [uploads + readbacks + host work between device calls]",
+                 "host round-trip", rt, rt / max(nwin, 1), 100 * rt / max(total, eps())))
     d = Base.GC_Diff(Base.gc_num(), GC0[])
     say(@sprintf("    %-16s %9.2f s over %6d pauses, %.2f GB allocated  (%6.2f s/window)  [overlaps the lines above]",
                  "GC", d.total_time / 1e9, d.pause, d.allocd / 1024^3, d.total_time / 1e9 / max(nwin, 1)))
@@ -960,6 +1019,12 @@ function replay_fixed(u0::Vector{Float64}, seqT::StepSeq, seqC::StepSeq;
     return u, tpT, tpC
 end
 
+# The DEVICE-SIDE twin of the two loops above and of `backward_stage!`, included
+# here (rather than at the top) because it dispatches on `StepSeq` and calls
+# `timed_compile`. Included only when asked for: with RESEACT_ADJ_DEVLOOP=0
+# nothing extra is defined and nothing extra is compiled.
+DEVLOOP == "0" || include(joinpath(REPO, "tools", "frozen_device_loop.jl"))
+
 """
     forward_pass(; record) -> (u_end, ckpts, tapes, counts, seconds)
 
@@ -1140,6 +1205,29 @@ function backward_sweep(lam0::Vector{Float64})
     for k in length(CKPTS):-1:1
         ck = CKPTS[k]
         refresh_forcing_if_needed(ck.epoch)      # forcing replayed from the checkpoint
+        if DEVUSE[]
+            # THE FROZEN GRID ON THE DEVICE. Four calls per macro step instead
+            # of 2*(naT + naC): the frozen forward composition of each half, and
+            # the reverse over it, each one XLA program. The transport primal is
+            # not optional -- the chemistry half starts from its output -- and
+            # the chemistry primal is what the checkpoint faithfulness test needs.
+            # Lie-Trotter order is unchanged: chemistry backwards FIRST.
+            trep = time()
+            umid = devloop_replay(:T, ck.u, ck.seqT)
+            uend = devloop_replay(:C, umid, ck.seqC)
+            el = time() - trep
+            devloop_checkpoint_check(k, uend)
+            t_replay += el
+            lam, gC_ = devloop_vjp(:C, umid, lam, ck.seqC)
+            lam, gT_ = devloop_vjp(:T, ck.u, lam, ck.seqT)
+            for (i, kk) in enumerate(PNAMES); gacc[kk] += gC_[i] + gT_[i]; end
+            devloop_finite_check(k, lam, gC_, gT_)
+            nvjp += length(ck.seqC) + length(ck.seqT)
+            @printf("  macro step %2d  t=%.0f  vjps: %d chem + %d transport (2 device calls)   ||lambda||=%.6e\n",
+                    k, ck.t, length(ck.seqC), length(ck.seqT), norm(lam))
+            flush(stdout)
+            continue
+        end
         tpT, tpC, el = tapes_for(k)
         t_replay += el
         lam = backward_stage!(CROSV_EXEC, tpC, lam, THC, "chem[macro $k]")   # chemistry LAST forward => FIRST back
@@ -1158,8 +1246,39 @@ function backward_sweep(lam0::Vector{Float64})
 end
 
 T_BWD = 0.0; T_REPLAY = 0.0; NVJP = 0
+GACC_HOST = Dict{Symbol,Float64}(); LAM_HOST = Float64[]
+T_BWD_HOST = 0.0; T_REPLAY_HOST = 0.0
 if want("adj")
     say("\n---- ADJ: the backward sweep (ONE sweep, all $(length(PNAMES)) parameters) ----")
+    # RESEACT_ADJ_DEVLOOP=both: sweep TWICE off the same forward pass -- host
+    # first, device second -- so the gradient comparison below has no confounder
+    # left. Same checkpoints, same recorded (t, dt) sequence, same theta, same
+    # process; the only difference is whether the composition runs on the host
+    # or inside one traced loop. The DEVICE gradient is the one that survives
+    # into `gacc`, so `ref` and `fdtape` below check the new implementation.
+    if DEVLOOP == "both"
+        say("\n  ---- pass 1 of 2: the HOST-lifted loop (the reference for the agreement gate) ----")
+        DEVUSE[] = false
+        gc_mark!(); tsh = time()
+        LAM_HOST, T_REPLAY_HOST, NVJP_H = backward_sweep(WOBJ)
+        T_BWD_HOST = time() - tsh
+        say(@sprintf("  host sweep %.2f s over %d macro steps, %d inner VJPs (%.4f s/VJP)",
+                     T_BWD_HOST, length(CKPTS), NVJP_H,
+                     (T_BWD_HOST - T_REPLAY_HOST) / max(NVJP_H, 1)))
+        exec_report("backward sweep, HOST loop", T_BWD_HOST, length(CKPTS))
+        GACC_HOST = Dict{Symbol,Float64}(k => gacc[k] for k in PNAMES)
+        for k in PNAMES; gacc[k] = 0.0; end
+        NCLAMPED = 0; REPLAY_MAXREL = 0.0; NVJP_RETRIES = 0; BADREC[] = nothing
+        DEVUSE[] = true
+        say("\n  ---- pass 2 of 2: the DEVICE frozen-grid loop ----")
+    end
+    # OUTSIDE THE TIMER, and the first version of this was not -- which put 491
+    # of a 508 s "backward sweep" into `everything-else` and made the device arm
+    # look 28x slower than it is. The forward pass has already recorded every
+    # macro step's step count, so the exact set of cap buckets the sweep will
+    # need is known here; compiling them up front costs the same and makes the
+    # sweep timing mean what the host arm's means.
+    DEVUSE[] && devloop_precompile()
     gc_mark!(); tstart = time()
     LAM_END, T_REPLAY, NVJP = backward_sweep(WOBJ)
     T_BWD = time() - tstart
@@ -1169,8 +1288,13 @@ if want("adj")
     say(@sprintf("  of which replay-of-the-primal %.2f s (%.3f s/macro step) and VJPs %.2f s (%.3f s/macro step, %.4f s/VJP)",
                  T_REPLAY, T_REPLAY / nm_, T_BWD - T_REPLAY, (T_BWD - T_REPLAY) / nm_,
                  NVJP > 0 ? (T_BWD - T_REPLAY) / NVJP : 0.0))
-    say(@sprintf("  clamp bit on %d of %d (state, accepted-step) pairs on the tape (%.4f%%)",
-                 NCLAMPED, NVJP * N, 100 * NCLAMPED / max(NVJP * N, 1)))
+    # NOT MEASURABLE under the device loop, and printing a 0 would read as "the
+    # clamp never bit". The clamp is still applied -- inside the traced body, as
+    # a select on `raw > 0` -- but the driver never sees the intermediate states.
+    DEVUSE[] ?
+        say("  clamp: applied inside the device loop (select on raw > 0); the per-state count is not visible from the host") :
+        say(@sprintf("  clamp bit on %d of %d (state, accepted-step) pairs on the tape (%.4f%%)",
+                     NCLAMPED, NVJP * N, 100 * NCLAMPED / max(NVJP * N, 1)))
     KEEPTAPE || say(@sprintf("  fixed-sequence replay lands within %.3e relative of every checkpoint",
                              REPLAY_MAXREL))
     say(@sprintf("  flaky-reverse retries: %d over %d VJP calls (%.3f%%)%s",
@@ -1180,10 +1304,55 @@ if want("adj")
                               T_BWD / T_FWD, (T_BWD - T_REPLAY) / T_FWD,
                               T_BWD / nm_, T_FWD / nm_))
     exec_report("backward sweep", T_BWD, nm_)
+    # ---- the AGREEMENT GATE: device frozen grid vs the host-lifted loop -----
+    # NOT a bit-identity gate, and it must not be read as one. `replay_fixed`
+    # replays a FIXED sequence through the same step algebra, so the two arms
+    # differ only by reassociation and codegen -- the composition is fused into
+    # one XLA program on one side and cut into ~n_inner programs on the other.
+    # Tight agreement is the claim; bit identity is not. (This is a DIFFERENT
+    # comparison from the ~3e-10-per-macro-step gap between the ADAPTIVE host
+    # loop and the device while-loop noted at the top of this file and in
+    # DIFFERENTIABILITY_PLAN.md -- that one is about the controller, not this.)
+    if DEVLOOP == "both"; let
+        # `let`, not bare top-level: a top-level `for` body is SOFT SCOPE, so
+        # `worst`/`nnz` inside it become fresh locals per iteration -- and `nnz`
+        # additionally collides with the `SparseArrays.nnz` this file has in
+        # scope, which turns the accumulation into an UndefVarError rather than
+        # a silently wrong count.
+        say("\n  ---- AGREEMENT: device frozen-grid gradient vs the host-lifted gradient ----")
+        worst = 0.0; worstk = :none; ncmp = 0
+        for k in PNAMES
+            a = GACC_HOST[k]; b = gacc[k]
+            sc = max(abs(a), abs(b))
+            sc == 0.0 && continue
+            ncmp += 1
+            r = abs(a - b) / sc
+            r > worst && (worst = r; worstk = k)
+        end
+        say(@sprintf("  %-30s %-24s %-24s %s", "parameter", "host-lifted", "device frozen grid", "rel"))
+        for k in sort(collect(PNAMES); by = kk -> -abs(gacc[kk]))
+            gacc[k] == 0.0 && GACC_HOST[k] == 0.0 && continue
+            a = GACC_HOST[k]; b = gacc[k]
+            @printf("  %-30s % .14e  % .14e  %.3e\n", String(k), a, b,
+                    abs(a - b) / max(abs(a), abs(b), 1e-300))
+        end
+        dl = isempty(LAM_HOST) ? NaN :
+             maximum(abs.(LAM_END .- LAM_HOST) ./ max.(abs.(LAM_HOST), 1e-30))
+        say(@sprintf("  worst relative component difference %.3e (%s) over %d nonzero components",
+                     worst, String(worstk), ncmp))
+        say(@sprintf("  lambda_in at the start of the window: worst relative %.3e", dl))
+        say(@sprintf("  wall: host sweep %.2f s, device sweep %.2f s  (%.2fx -- a regression here is expected, see frozen_device_loop.jl)",
+                     T_BWD_HOST, T_BWD, T_BWD / max(T_BWD_HOST, eps())))
+        say(worst <= 1e-10 ? "  AGREEMENT PASS (<= 1e-10 relative on every nonzero component)" :
+                             "  AGREEMENT FAIL")
+    end; end
     if SHARDS > 0
         say("  ---- SHARDED CHEMISTRY, backward sweep (replay + VJPs) ----")
         shard_report(SHARD)
     end
+    # ---- program structure: a while region, and O(1) in cap -----------------
+    DEVLOOP != "0" && get(ENV, "RESEACT_ADJ_DEVDUMP", "0") == "1" &&
+        for h in (:T, :C); devloop_dump_structure(h); end
 end
 
 # --------------------------------------------------------------------------- #
@@ -1521,6 +1690,11 @@ if want("fdtape") && want("adj")
                  length(CKPTS)))
 
     function replay_frozen(THT_, THC_)
+        # Under the device loop the map differenced here must be the map the
+        # sweep differentiated, through the SAME compiled programs -- otherwise
+        # fdtape stops being the confounder-free acceptance test of THIS
+        # implementation and becomes a comparison of two different maps.
+        DEVUSE[] && return devloop_replay_window(THT_, THC_)
         u = copy(UBASE)
         for ck in CKPTS
             refresh_forcing_if_needed(ck.epoch)
