@@ -116,6 +116,12 @@ cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm
 export RESEACT_RXENV=${RESEACT_RXENV:-/projects/illinois/eng/cee/ctessum/ctessum/code/reseact.esm/run-model-jl}
 [ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV missing"; exit 1; }
 
+# 0.25 deg A3dyn is 3.80 GB/day and EarthSciIO caps ONE request at 90 s
+# (EARTHSCIIO_HTTP_TIMEOUT, julia/src/transport.jl:90), so the fetch dies at
+# ~3.5 GB. Raise it here; the libcurl low-speed abort still catches real stalls.
+export EARTHSCIIO_HTTP_TIMEOUT=${EARTHSCIIO_HTTP_TIMEOUT:-3600}
+export EARTHSCIIO_HTTP_RETRIES=${EARTHSCIIO_HTTP_RETRIES:-8}
+
 export RESEACT_RES=${RESEACT_RES:-4x5}
 export RESEACT_ADJ_NMACRO=${RESEACT_ADJ_NMACRO:-576}
 # The label and the CSV carry the arm, so four runs cannot overwrite each other
