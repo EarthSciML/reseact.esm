@@ -44,8 +44,8 @@
 # scripts, not packages, so there is no `using` that reaches them; and the
 # driver's own scope is `Main` when tools/adjoint_gradient.jl is run directly
 # but the module `_AdjointArm` when run_reseact_adjoint.jl runs it. So this
-# module reads them off its PARENT -- whatever scope `include`d it -- which is
-# right in both cases, and on a Distributed worker as well. The parent must
+# module reads them off its PARENT -- whatever scope `include`d it -- once, into
+# const aliases. That is right in both cases, and on a worker as well. The parent must
 # already have: `CapacityChem`, `RxTracedIntegrator`, `RxSymBlockJac`, and the
 # split_common.jl top-levels `stencil_following_rule` /
 # `index_promoted_refs_by_loop!`.
@@ -62,11 +62,32 @@ const HOST = parentmodule(@__MODULE__)
 const EA = EarthSciAST
 const RX = Reactant
 
-# Resolved as property lookups on a const module rather than as `const` aliases,
-# so this file may be included before the parent has finished its own includes.
-_cc()   = HOST.CapacityChem
-_rti()  = HOST.RxTracedIntegrator
-_rsbj() = HOST.RxSymBlockJac
+# CONST, resolved once here rather than per call. Both loaders have these in
+# place before they include this file, so the deferred lookup the first cut used
+# bought nothing. NOTE it is also not a speedup: the hypothesis that deferred
+# lookups cost TRACE time (a captured Module reached through a non-inferable
+# getproperty inside the traced closures) was MEASURED AND NOT CONFIRMED -- the
+# whole setup delta sits in the `compile step` wall, which is four concurrent
+# XLA compiles finishing within 0.3 s of each other (169.0 +/- 0.3 s in one arm,
+# 219.8 +/- 0.1 s in the other), i.e. core contention, and it did not move when
+# these consts went in. Keep the change for the explicit precondition below;
+# do not cite it as performance. (slurm 10426936 / 10427441.)
+#
+# The price is an ordering requirement: the parent must already have these when
+# it includes this file. Both loaders do, and the check below says so plainly
+# if a third one does not.
+for _n in (:CapacityChem, :RxTracedIntegrator, :RxSymBlockJac,
+           :stencil_following_rule, :index_promoted_refs_by_loop!)
+    isdefined(HOST, _n) || error(
+        "shard_kernel.jl: its parent module $(HOST) has no `$(_n)`. This file must be " *
+        "included AFTER capacity_chem.jl, rx_traced_integrator.jl, rx_sym_block_jac.jl " *
+        "and split_common.jl are loaded into that same scope.")
+end
+const CC   = HOST.CapacityChem
+const RTI  = HOST.RxTracedIntegrator
+const RSBJ = HOST.RxSymBlockJac
+const stencil_following_rule      = HOST.stencil_following_rule
+const index_promoted_refs_by_loop! = HOST.index_promoted_refs_by_loop!
 
 # Everything one shard needs, filled by `prepare_doc!` then `build!`.
 mutable struct ShardState
@@ -121,10 +142,10 @@ function prepare_doc!(cfg::Dict)
         pre  = EA.algebraic_states_to_observeds(flat)
         flat = EA.promote_downstream_shapes(pre)
         promoted = EA.promoted_array_names(pre, flat)
-        parts = split_system(flat, HOST.stencil_following_rule(flat); nparts = 2)
-        HOST.index_promoted_refs_by_loop!(EA.flattened_to_esm(parts[2]), promoted)
+        parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
+        index_promoted_refs_by_loop!(EA.flattened_to_esm(parts[2]), promoted)
     end
-    st.cd, st.meta = _cc().capacity_doc(st.docCAP0, st.C; say = s -> wsay(st, s),
+    st.cd, st.meta = CC.capacity_doc(st.docCAP0, st.C; say = s -> wsay(st, s),
                                         param_coords = true)
     wsay(st, @sprintf("capacity document ready at C=%d (%.1f s)", st.C, time() - tl))
     return st, (variables = collect(st.meta.variables), lane_arrays = st.meta.lane_arrays,
@@ -142,7 +163,8 @@ timings.
 """
 function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
                 pshapes::Dict{String,Any}, lanes0::Dict{String,Any})
-    CC = _cc(); RTI = _rti(); RSBJ = _rsbj()
+    # CC / RTI / RSBJ are the const module aliases above -- see the note there:
+    # capturing them as locals here is what made the traced closures dynamic.
     C = st.C; NS = st.NS
     st.pa = CC.lane_buffers(st.meta, pshapes, C)
     copy_lanes!(st.pa, lanes0)
