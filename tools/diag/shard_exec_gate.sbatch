@@ -39,7 +39,6 @@ set -uo pipefail
 
 SUBMITDIR=$SLURM_SUBMIT_DIR
 TREE=${SEAM_TREE:?SEAM_TREE must name the checkout to run}
-cd "$TREE" || exit 1
 
 JULIA=/u/ctessum/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/bin/julia
 
@@ -59,14 +58,33 @@ export RESEACT_ADJ_JAC=${RESEACT_ADJ_JAC:-sym}
 export RESEACT_ADJ_STAGES=${RESEACT_ADJ_STAGES:-fwd,adj}
 export RESEACT_ADJ_SHARDS=${RESEACT_ADJ_SHARDS:-4}
 export RESEACT_SHARD_EXEC=${RESEACT_SHARD_EXEC:-process}
-export RESEACT_LABEL=${RESEACT_LABEL:-shardexec-$SLURM_JOB_ID}
-export RESEACT_ADJ_CSV=${RESEACT_ADJ_CSV:-$SUBMITDIR/logs/$RESEACT_LABEL.csv}
+LABEL0=${RESEACT_LABEL:-shardexec-$SLURM_JOB_ID}
 
 echo "=== node $(hostname)  cpus=$SLURM_CPUS_PER_TASK  mem=${SLURM_MEM_PER_NODE}M ==="
-echo "=== tree=$TREE  shards=$RESEACT_ADJ_SHARDS  exec=$RESEACT_SHARD_EXEC  stages=$RESEACT_ADJ_STAGES ==="
-git -C "$TREE" rev-parse HEAD 2>/dev/null || echo "(tree is not a git checkout: archived copy)"
 
-"$JULIA" --project="$RESEACT_RXENV" -t 8 --heap-size-hint=16G tools/adjoint_gradient.jl
+# SEAM_TREE2, when set, runs the SAME configuration against a second checkout
+# back to back in THIS job. That is how the before/after PERFORMANCE pair is
+# taken: setup wall (SHARDS READY, and the per-shard XLA compiles inside it)
+# swings by tens of percent with what else is on the node and on the shared
+# Lustre mount, so two separately scheduled jobs are not comparable even on the
+# same node. One job, one node, one arm at a time is.
+run_arm() {
+    local tree=$1 tag=$2
+    cd "$tree" || exit 1
+    export RESEACT_LABEL="$tag"
+    export RESEACT_ADJ_CSV="$SUBMITDIR/logs/$tag.csv"
+    echo "=== ARM $tag  tree=$tree  shards=$RESEACT_ADJ_SHARDS  exec=$RESEACT_SHARD_EXEC  stages=$RESEACT_ADJ_STAGES ==="
+    git -C "$tree" rev-parse HEAD 2>/dev/null || echo "(tree is not a git checkout: archived copy)"
+    "$JULIA" --project="$RESEACT_RXENV" -t 8 --heap-size-hint=16G tools/adjoint_gradient.jl
+    echo "=== ARM $tag exit $? ==="
+}
+
+if [ -n "${SEAM_TREE2:-}" ]; then
+    run_arm "$TREE"       "$LABEL0-A"
+    run_arm "$SEAM_TREE2" "$LABEL0-B"
+else
+    run_arm "$TREE" "$LABEL0"
+fi
 
 echo "=== exit $? ==="
 sacct -j "$SLURM_JOB_ID" --format=JobID,MaxRSS,Elapsed,State 2>/dev/null || true
