@@ -974,25 +974,45 @@ ones). It is also a *different* comparison from the ~3e−10-per-macro-step gap
 between the ADAPTIVE host loop and the device while-loop in §4 — that one is
 about the controller.
 
-**Wall time — flat on paper, ~3.6x slower in device time, and that is expected.**
+**CONUS confirmation** (13×7×72, N = 85,176, 3 macro steps, 173 accepted inner
+steps, slurm **10427557**, 1 h 00 m 45 s wall, `RESEACT_ADJ_DEVLOOP=both`):
+worst relative component difference **1.246e−13** (`GEOSFP.t_interp_ref_I3`) over
+21 nonzero components, λ at the window start 6.019e−13, device replay within
+1.535e−14 of every checkpoint, J = 39.613123670961. **AGREEMENT PASS.**
 
-| 6×6×8, 4 macro steps | host-lifted | device frozen grid |
+**Wall time — flat-to-worse, and that is the expected outcome.**
+
+| | host-lifted | device frozen grid |
 |---|---|---|
+| **6×6×8, 4 macro steps** | | |
 | sweep wall | 19.85 s | 20.86 s (1.05x) |
 | of which executor (replay + VJP) | 5.73 s | 20.85 s (**3.64x**) |
 | of which `everything-else` | 13.80 s (one-time Julia JIT; it ran first) | 0.01 s |
-| **host round-trip share** | **4.649%** | **0.373%** (12.5x less) |
+| host round-trip share | 4.649% | **0.373%** |
 | device calls per macro step | 2·(n_T + n_C) = 138 | 4 |
+| **CONUS 13×7×72, 3 macro steps** | | |
+| sweep wall | 37.27 s | 48.68 s (1.31x) |
+| of which executor (replay + VJP) | 24.17 s | 48.66 s (**2.01x**) |
+| of which `everything-else` | 12.58 s (Julia JIT) | 0.02 s |
+| host round-trip share | 2.327% | **0.548%** |
+| device calls per macro step | 2·(n_T + n_C) ≈ 115 | 4 |
 
-The 1.05x wall is *flattered*: the host arm ran first and absorbed the Julia JIT,
-which amortises away over a real window. The honest number is the executor row:
-**the frozen loop costs ~3.6x the device time of the same steps issued
-individually.** About a fifth of that is the masked (dead) iterations — bucketing
-to the next power of two wasted 20.0% of transport and 18.8% of chemistry
-iterations here — and the rest is XLA:CPU getting less out of a `while` body than
-out of straight-line code, which is the same shape of finding as §6's
-concatenate-fusion pathologies. On an accelerator the trade runs the other way,
-which is the entire point.
+The sweep-wall rows are *flattered*: the host arm ran first in each process and
+absorbed the one-time Julia JIT, which amortises away over a real window. The
+honest number is the executor row — **the frozen loop costs 2.0x (CONUS) to 3.6x
+(6×6×8) the device time of the same steps issued individually**, and it improves
+with grid size, as a per-call-overhead story would. A quarter of it is the masked
+(dead) iterations: bucketing to the next power of two wasted 20.0%/18.8%
+(transport/chemistry) at 6×6×8 and 25.0%/28.1% at CONUS. The rest is XLA:CPU
+getting less out of a `while` body than out of straight-line code — the same
+shape of finding as §6's concatenate-fusion pathologies. On an accelerator the
+trade runs the other way, which is the entire point.
+
+**Compile cost at CONUS** (10 programs, 5 buckets × 2 kinds, 2,075 s total):
+`dev.C.vjp` ~180 s at every cap, `dev.T.vjp` **507–510 s** against `ssp_vjp`'s
+385.6 s. So the loop VJP compiles at ~1.3x its single-step counterpart at CONUS,
+and `cap` does not move compile time — consistent with the module being a while
+region rather than an unrolled body.
 
 **Compile cost.** One program per `(kind, half, cap)` bucket, compiled up front
 by `devloop_precompile` — *outside* the sweep timer, because the first version of
@@ -1007,5 +1027,9 @@ predates this change.** The `ref` stage skipped itself: "NO SLOT IS ZERO UNDER A
 ZERO SEED — Enzyme's forward mode is returning the primal, not the tangent, on
 this RHS." That probe and the identity block use single-step HOST programs off
 `tapes_for`, are untouched by this branch, and the driver already records the
-condition in its own comments. `fdtape` is what the driver designates as the
-reference when forward mode is unavailable, and it passes above.
+condition in its own comments. **Confirmed as pre-existing by a control run**
+(`RESEACT_ADJ_DEVLOOP=0`, and `ESS_OOP_SSA=0` to rule out the SSA emitter, which
+became the default after the identity was last recorded passing): identical
+message, identical zero-seed norm 2.326022e+04. So it is neither this branch nor
+the SSA emitter. `fdtape` is what the driver designates as the reference when
+forward mode is unavailable, and it passes above.
