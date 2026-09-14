@@ -294,7 +294,7 @@ function build_rung(docCAP0, C::Int, spnames::Vector{String}, geom,
     # (Measured: slurm 10127512 died exactly here at C=8.) Point every lane at
     # reference cell 1; the first real batch overwrites all of it.
     gather_lanes!(pa, meta, geom, fill(cells[1], C))
-    let du = EA.rhs_with_buffers(f)(u0c, pc, T0, EA.forcing_buffers(f))
+    let du = rx_host_rhs(f)(u0c, pc, T0, rx_bufs(f))
         nb = count(!isfinite, du)
         nb == 0 || error("build_rung: the C=$C RHS returns $nb of $(length(du)) NON-FINITE derivatives at the primed base point; the lane gather is not reaching this build")
     end
@@ -314,21 +314,22 @@ function build_rung(docCAP0, C::Int, spnames::Vector{String}, geom,
             error("build_rung: the C=$C Jacobian is $(jacE.structure), not block_diagonal")
         plan = RxSymBlockJac.block_jac_plan(jacE;
                     runner_names = first.(sort(collect(vmc), by = last)))
-        gjb  = EA.rhs_with_buffers(jacE.fJ!)
-        dev_bufsJ = map(RX.ConcreteRArray, EA.forcing_buffers(jacE.fJ!))
-        # One host evaluation, and it is the only thing between a transposed
-        # gather and a plausible Jacobian that is wrong in every lane.
+        gjb  = rx_rhs(jacE.fJ!)
+        dev_bufsJ = map(RX.ConcreteRArray, rx_bufs(jacE.fJ!))
+        # One HOST evaluation -- `rx_host_rhs`, identical in both RHS lanes --
+        # and it is the only thing between a transposed gather and a plausible
+        # Jacobian that is wrong in every lane.
         let w = validate_plan(plan, jacE, u0c, pc, T0;
-                              gjb = gjb, bufs = EA.forcing_buffers(jacE.fJ!))
+                              gjb = rx_host_rhs(jacE.fJ!), bufs = rx_bufs(jacE.fJ!))
             w <= 1e-12 || error("build_rung: the C=$C gather plan does not reproduce " *
                                 "the host Jacobian (worst relative $w)")
         end
         say(@sprintf("    C=%-5d prepare_jacobian %6.1f s  %s", C, tjac, string(plan)))
     end
 
-    dev_bufs = map(RX.ConcreteRArray, EA.forcing_buffers(f))
+    dev_bufs = map(RX.ConcreteRArray, rx_bufs(f))
     th = thC(_devp(pc), dev_bufs, dev_bufsJ)
-    stepfn = _mk_rung_step(EA.rhs_with_buffers(f), plan, gjb, NS, C, masks)
+    stepfn = _mk_rung_step(rx_rhs(f; var_map = vmc), plan, gjb, NS, C, masks)
     UD = RX.ConcreteRArray(copy(u0c))
     TD = RX.ConcreteRNumber(T0); DD = RX.ConcreteRNumber(DT0C)
     tc = time()
@@ -408,8 +409,8 @@ end
 "Gather this batch's forcing and geometry into the rung's lane buffers, and push."
 function batch_gather!(L::SubLadder, r::SubRung, lane_cells::Vector{NTuple{3,Int}})
     gather_lanes!(r.pa, r.meta, L.geom, lane_cells)
-    EA.sync_forcing!(r.dev_bufs, EA.forcing_buffers(r.f))
-    SYMJAC && EA.sync_forcing!(r.dev_bufsJ, EA.forcing_buffers(r.jacE.fJ!))
+    rx_sync!(r.dev_bufs, r.f)
+    SYMJAC && rx_sync!(r.dev_bufsJ, r.jacE.fJ!)
     return nothing
 end
 

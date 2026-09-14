@@ -152,9 +152,11 @@ include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 include(joinpath(RXDIR, "rx_sym_block_jac.jl")); using .RxSymBlockJac
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+say(rx_rhs_banner())
 
-host_bufs = [EA.forcing_buffers(fo[i]) for i in 1:2]
-g4 = [EA.rhs_with_buffers(fo[i]) for i in 1:2]
+host_bufs = [rx_bufs(fo[i]) for i in 1:2]
+g4 = [rx_rhs(fo[i]; var_map = var_map) for i in 1:2]
 PERM = cellmajor_perm(var_map)
 const NS = PERM.NS; const NC = PERM.NC; const N = PERM.N
 const MASKS = RTI.species_masks(var_map, NS, NC)
@@ -167,7 +169,7 @@ gT(u, th, t) = g4[1](u, th.p, t, th.bufs)
 gC(u, th, t) = g4[2](u, th.p, t, th.bufs)
 
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
-for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+for i in 1:2; rx_sync!(dev_bufs[i], fo[i]); end
 _devp(pp::NamedTuple) = NamedTuple{keys(pp)}(map(RX.ConcreteRNumber, values(pp)))
 PRd = _devp(p)
 THT = (p = PRd, bufs = dev_bufs[1])
@@ -387,12 +389,14 @@ if want("ros_sym")
     # indexes by POSITION.
     PLAN = block_jac_plan(jacE; runner_names = first.(sort(collect(var_map), by = last)))
     say("  $PLAN")
-    gjbJ = EA.rhs_with_buffers(jacE.fJ!)
-    host_bufsJ = EA.forcing_buffers(jacE.fJ!)
+    gjbJ = rx_rhs(jacE.fJ!)
+    host_bufsJ = rx_bufs(jacE.fJ!)
     dev_bufsJ = map(RX.ConcreteRArray, host_bufsJ)
-    EA.sync_forcing!(dev_bufsJ, host_bufsJ)
+    rx_sync!(dev_bufsJ, jacE.fJ!)
     @printf("  band model buffers: %d  %s\n", length(host_bufsJ), collect(keys(host_bufsJ)))
-    w = validate_plan(PLAN, jacE, uh, p, T0; gjb = gjbJ, bufs = host_bufsJ)
+    # the HOST callable: this is a check of the build, not of the emitter.
+    w = validate_plan(PLAN, jacE, uh, p, T0;
+                      gjb = rx_host_rhs(jacE.fJ!), bufs = host_bufsJ)
     @printf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s\n",
             w, w <= 1e-12 ? "PASS" : "FAIL -- index error in the plan")
     w <= 1e-12 || error("ros_sym: the gather plan does not reproduce the host Jacobian")

@@ -364,9 +364,11 @@ const RTI = RxTracedIntegrator
 # conditional block is one more thing that can only fail at runtime.
 include(joinpath(RXDIR, "rx_sym_block_jac.jl"))
 using .RxSymBlockJac
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+say(rx_rhs_banner())
 
-host_bufs = [EA.forcing_buffers(fo[i]) for i in 1:2]
-g4 = [EA.rhs_with_buffers(fo[i]) for i in 1:2]
+host_bufs = [rx_bufs(fo[i]) for i in 1:2]
+g4 = [rx_rhs(fo[i]; var_map = var_map) for i in 1:2]
 PERM = cellmajor_perm(var_map)
 const NS = PERM.NS; const NC = PERM.NC; const N = PERM.N
 const MASKS = RTI.species_masks(var_map, NS, NC)
@@ -421,14 +423,18 @@ if SYMJAC
     # two independent builds, two var maps, and a plan that indexes by POSITION.
     PLAN = block_jac_plan(jacE;
                           runner_names = first.(sort(collect(var_map), by = last)))
-    gjbJ = EA.rhs_with_buffers(jacE.fJ!)
-    host_bufsJ = EA.forcing_buffers(jacE.fJ!)
+    gjbJ = rx_rhs(jacE.fJ!)
+    host_bufsJ = rx_bufs(jacE.fJ!)
     say("  $PLAN   band buffers=$(length(host_bufsJ))")
     # the plan is pure index algebra, so it is checkable on the host against the
     # sparse Jacobian EarthSciASTDiff assembles itself -- one evaluation, and it
     # is the only thing standing between a transposed gather and a plausible
     # gradient that is wrong everywhere.
-    let w = validate_plan(PLAN, jacE, u0, p, T0; gjb = gjbJ, bufs = host_bufsJ)
+    # `rx_host_rhs`, not `gjbJ`: validate_plan evaluates the band model on
+    # ordinary arrays, so it is a check of the BUILD, and it has to read the
+    # same under RESEACT_RHS=direct as it does here.
+    let w = validate_plan(PLAN, jacE, u0, p, T0;
+                          gjb = rx_host_rhs(jacE.fJ!), bufs = host_bufsJ)
         say(@sprintf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s",
                      w, w <= 1e-12 ? "PASS" : "FAIL"))
         w <= 1e-12 || error("jac=:sym: the gather plan does not reproduce the host Jacobian")
@@ -444,12 +450,12 @@ gC(u, th, t) = g4[2](u, th.p, t, th.bufs)
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
 SYMJAC && (dev_bufsJ = map(RX.ConcreteRArray, host_bufsJ))
 function push_forcing!()
-    for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+    for i in 1:2; rx_sync!(dev_bufs[i], fo[i]); end
     # the band model has its own buffer set; it is fed from the same
     # `merged_param` arrays, so `refresh_forcing` moves it too -- but only if
     # this line is here. Miss it and the Jacobian freezes at the T0 epoch while
     # the RHS moves, which is a wrong Jacobian that still converges.
-    SYMJAC && EA.sync_forcing!(dev_bufsJ, EA.forcing_buffers(jacE.fJ!))
+    SYMJAC && rx_sync!(dev_bufsJ, jacE.fJ!)
     return nothing
 end
 push_forcing!()

@@ -62,6 +62,7 @@ const RTI = RxTracedIntegrator
 include(joinpath(RXDIR, "rx_sym_block_jac.jl"))
 using .RxSymBlockJac
 include(joinpath(REPO, "tools", "capacity_chem.jl")); using .CapacityChem
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
 
 const WID = Ref(0)
 wsay(s) = (println("  [shard $(WID[])] " * s); flush(stdout))
@@ -141,6 +142,10 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
                       lanes0::Dict{String,Any})
     st = S[]
     C = st.C; NS = st.NS
+    # every shard says which lane it took: `addprocs` inherits RESEACT_RHS,
+    # but a mixed run would compile, run and answer, and the answer would be
+    # a comparison of the traced lane with itself.
+    wsay(rx_rhs_banner())
     st.pa = CapacityChem.lane_buffers(st.meta, pshapes, C)
     _copy_lanes!(st.pa, lanes0)
     ov = Dict{String,Float64}(k => v for (k, v) in cfg["ov"] if k in st.meta.variables)
@@ -164,7 +169,7 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
     end
     # the primed base point must evaluate finite, or the lane gather is not
     # reaching this build (a zero lane NaNs through log(PS/Pc))
-    let du = EA.rhs_with_buffers(f)(u0c, pc, cfg["T0"], EA.forcing_buffers(f))
+    let du = rx_host_rhs(f)(u0c, pc, cfg["T0"], rx_bufs(f))
         nb = count(!isfinite, du)
         nb == 0 || error("shard_build!: the C=$C RHS returns $nb of $(length(du)) NON-FINITE derivatives at the primed base point")
     end
@@ -181,16 +186,17 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
         error("shard_build!: the C=$C Jacobian is $(st.jacE.structure), not block_diagonal")
     st.plan = RxSymBlockJac.block_jac_plan(st.jacE;
                   runner_names = first.(sort(collect(vmc), by = last)))
-    st.gjb = EA.rhs_with_buffers(st.jacE.fJ!)
+    st.gjb = rx_rhs(st.jacE.fJ!)
+    # the HOST callable: a check of the build, identical in both RHS lanes.
     let w = validate_plan(st.plan, st.jacE, u0c, pc, cfg["T0"];
-                          gjb = st.gjb, bufs = EA.forcing_buffers(st.jacE.fJ!))
+                          gjb = rx_host_rhs(st.jacE.fJ!), bufs = rx_bufs(st.jacE.fJ!))
         w <= 1e-12 || error("shard_build!: the C=$C gather plan does not reproduce the host Jacobian (worst relative $w)")
     end
-    st.dev_bufs  = map(RX.ConcreteRArray, EA.forcing_buffers(f))
-    st.dev_bufsJ = map(RX.ConcreteRArray, EA.forcing_buffers(st.jacE.fJ!))
+    st.dev_bufs  = map(RX.ConcreteRArray, rx_bufs(f))
+    st.dev_bufsJ = map(RX.ConcreteRArray, rx_bufs(st.jacE.fJ!))
     st.th = (p = _devp(pc), bufs = st.dev_bufs, bufsJ = st.dev_bufsJ)
 
-    frhs = EA.rhs_with_buffers(f)
+    frhs = rx_rhs(f; var_map = vmc)
     plan = st.plan; gjb = st.gjb; masks = st.masks
     atol = cfg["ATOL_C"]::Float64; rtol = cfg["RTOL"]::Float64; jacmode = cfg["JACMODE"]::Symbol
     gC(u, th, t) = frhs(u, th.p, t, th.bufs)
@@ -252,8 +258,8 @@ end
 function shard_refresh!(lanes::Dict{String,Any})
     st = S[]
     _copy_lanes!(st.pa, lanes)
-    EA.sync_forcing!(st.dev_bufs, EA.forcing_buffers(st.f))
-    EA.sync_forcing!(st.dev_bufsJ, EA.forcing_buffers(st.jacE.fJ!))
+    rx_sync!(st.dev_bufs, st.f)
+    rx_sync!(st.dev_bufsJ, st.jacE.fJ!)
     return nothing
 end
 

@@ -275,9 +275,11 @@ end
 
 include(joinpath(RXDIR, "rx_native_patch.jl"))       # AFTER using Reactant/EarthSciAST
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+say(rx_rhs_banner())
 
-host_bufs = [EA.forcing_buffers(fo[i]) for i in 1:2]
-g4 = [EA.rhs_with_buffers(fo[i]) for i in 1:2]
+host_bufs = [rx_bufs(fo[i]) for i in 1:2]
+g4 = [rx_rhs(fo[i]; var_map = var_map) for i in 1:2]
 P = cellmajor_perm(var_map)
 const NS = P.NS; const NC = P.NC; const N = P.N
 masks = RxTracedIntegrator.species_masks(var_map, NS, NC)
@@ -393,7 +395,7 @@ end
 _dev(pp::NamedTuple) = NamedTuple{keys(pp)}(map(RX.ConcreteRNumber, values(pp)))
 _devt(t::Tuple) = map(RX.ConcreteRNumber, t)
 dev_bufs = [map(RX.ConcreteRArray, host_bufs[i]) for i in 1:2]
-push_forcing!() = for i in 1:2; EA.sync_forcing!(dev_bufs[i], EA.forcing_buffers(fo[i])); end
+push_forcing!() = for i in 1:2; rx_sync!(dev_bufs[i], fo[i]); end
 push_forcing!()
 PRd = _dev(p)
 
