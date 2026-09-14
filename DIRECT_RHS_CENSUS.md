@@ -1,5 +1,13 @@
 # Can the direct StableHLO emitter replace ReSEACT's traced `:oop` right-hand side?
 
+> **SUPERSEDED, 2026-09-14, by [AGREEMENT.md](AGREEMENT.md).** Sections 1-4
+> below were measured on a DEGENERATE operator split — EarthSciASTSplitter's
+> lifted-derivative recogniser matched the pre-1.1.0 `aggregate` node tag, so
+> both "halves" were the whole model, which is why they have identical gap
+> profiles and near-identical module sizes. The three coverage gaps are also
+> closed now, and section 4a's traced failure was the split, not the Reactant
+> version. Section 5 (the `jac = :sym` band model) still stands.
+
 Measurement, 2026-09-14, branch `direct-rhs`. Probe: `tools/diag/direct_rhs_census.jl`.
 CONUS job file: `tools/diag/direct_rhs_census_conus.sbatch` (written, NOT submitted —
 see "CONUS" below).

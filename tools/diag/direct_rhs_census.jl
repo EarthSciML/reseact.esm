@@ -54,6 +54,8 @@
 #   RESEACT_CENSUS_NCALL      timed calls after warm-up (default 20)
 #   RESEACT_CENSUS_EXCL       excluded StableHLO passes, or "none"
 #                             (default: the adjoint driver's own default)
+#   RESEACT_CENSUS_TRACED     compile the traced ORACLE too (default 1; set 0
+#                             where its own failure would cost the whole run)
 #   RESEACT_CENSUS_JSON       write the machine-readable record here
 #   RESEACT_RXENV             the Julia environment to activate
 # ===========================================================================
@@ -85,6 +87,7 @@ const UJIT    = parse(Float64, get(ENV, "RESEACT_ADJ_UJITTER", "1e-1"))
 const NCALL   = parse(Int, get(ENV, "RESEACT_CENSUS_NCALL", "20"))
 const STAGES  = Set(String.(split(get(ENV, "RESEACT_CENSUS_STAGES", "emit,agree,cost,grad"), ',')))
 const JSONOUT = get(ENV, "RESEACT_CENSUS_JSON", "")
+const WANT_TRACED = get(ENV, "RESEACT_CENSUS_TRACED", "1") == "1"
 want(s) = s in STAGES
 
 _envi(k) = haskey(ENV, "RESEACT_$k") ? parse(Int, ENV["RESEACT_$k"]) : nothing
@@ -396,6 +399,19 @@ for (i, P) in enumerate(PROGS)
     say("  $(P.name): TRACED emission")
     g = EA.rhs_with_buffers(P.f)
     ct = nothing
+    # `RESEACT_CENSUS_TRACED=0` skips the ORACLE's own compile. It exists because
+    # on Reactant 0.2.285 the traced lane does not compile at all (section 4 of
+    # the report) and the way it fails is expensive: the chemistry half climbs
+    # past 32 GB resident before it gives up, which in this cgroup takes the
+    # process -- and the direct lane's numbers -- with it. Skipping it is how the
+    # DIRECT rows get measured on a machine shared with another Julia.
+    if !WANT_TRACED
+        say("    SKIPPED (RESEACT_CENSUS_TRACED=0)")
+        r["traced_compiled"] = false
+        r["traced_error"] = "skipped: RESEACT_CENSUS_TRACED=0"
+        TRACED[P.name] = (g, nothing)
+        continue
+    end
     try
         t0 = time()
         ct = compile4(g, u_dev, PR, t_dev, b_dev)
