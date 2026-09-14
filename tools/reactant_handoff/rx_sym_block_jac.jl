@@ -255,9 +255,33 @@ anything nonzero is an index error, not roundoff.
 
 Pass `gjb`/`bufs` to exercise the SAME 4-argument band model the traced path
 uses; without them the evaluator's own stored form is called instead.
+
+AN EMPTY PLAN IS REFUSED BEFORE ANYTHING IS COMPARED. The check below is a
+relative difference against the host evaluator, so on a Jacobian that is
+structurally empty it compares zero with zero at every position and returns
+0.0 -- the same number a perfect plan returns. That is not a hypothetical: in
+September 2026 EarthSciAST renamed the unified query node's wire tag from
+`aggregate` to `faq`, EarthSciASTDiff went on matching the old spelling, and
+`prepare_jacobian` therefore classified every array state equation as
+non-differential and returned `structure=empty, entries=0, scatter=0` on both
+halves of the split. The adjoint driver would have built an all-zero block
+Jacobian out of that, and this function would have signed it off.
 """
 function validate_plan(plan::BlockJacPlan, jac, u, p, t; gjb = nothing, bufs = nothing)
     NS, NC = plan.NS, plan.NC
+    used = count(!isempty, plan.blocks)
+    nsc = length(jac.scatter)
+    (NS * NC == 0 || used == 0 || nsc == 0) && error(
+        "validate_plan: the symbolic Jacobian is EMPTY -- $NS species x $NC " *
+        "cells, $used of $(NS^2) block entries used, $nsc scatter pairs, " *
+        "structure=$(jac.structure). A model with array states has a " *
+        "non-empty Jacobian; an empty one means the band calculus recognised " *
+        "no differential equation at all, which is a build fault (an " *
+        "EarthSciAST/EarthSciASTDiff node-tag mismatch is the known cause), " *
+        "not a sparse Jacobian. Refusing rather than validating: every " *
+        "comparison below is a relative difference, so zero against zero " *
+        "would report a WORST ERROR OF 0.0 and the run would proceed on an " *
+        "all-zero Jacobian.")
     ujh = zeros(plan.NJ)
     for (i, s) in enumerate(jac.umap)
         ujh[s] = u[i]
