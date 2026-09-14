@@ -89,7 +89,11 @@ function stencil_following_rule(flat)
     # rather than fail loudly.
     function contracts_space(e)::Bool
         e isa EA.OpExpr || return false
-        if e.op == "aggregate" && e.ranges !== nothing
+        # `faq` is the esm 1.1.0 spelling, and `EA.load_path` normalizes the
+        # pre-1.1.0 `aggregate` alias on load — so by the time this detector runs
+        # there is no `aggregate` node left to match, and matching one made the
+        # test never fire (the misrouting the note above warns about).
+        if e.op == "faq" && e.ranges !== nothing
             outs = Set{String}(string(x) for x in something(e.output_idx, Any[]))
             for (nm, spec) in e.ranges
                 nm in outs && continue
