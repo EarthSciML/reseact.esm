@@ -410,3 +410,143 @@ while that is happening is worthless — the concurrent slurm adjoint's
 module. And a probe that prints only on stage COMPLETION cannot tell a stall
 from slow progress, which is why the split stage announces each pass before
 running it.
+
+## 6. The 9,900: not the reads, the WRITE
+
+Section 5 ended on a number and a direction: **~9,900 slices survive `opt1`
+under every read form**, they are single-position, and the next place to look
+is the slot layout (`src/tree_walk/oop_merge.jl`). The direction was wrong, and
+the reason it was wrong is that nothing had ever asked WHICH PART OF THE EMITTER
+WROTE THEM.
+
+### The attribution
+
+EarthSciAST's direct emitter now tallies every emitted `slice` / `gather` /
+`concatenate` a second time, under `<op>@<site>.<why>` — the emitter site that
+was running (`_de_at!`: the scalar spine, a materialization level's scalars or
+kernels or scans, an access kernel, a scan, the output assembly) and the read
+form that asked for it. `RESEACT_CC_PROG=rhsT` prints the table. ONE emission
+of the transport right-hand side, 6x6x8, before this section's fix:
+
+| site | op | count |
+| --- | --- | ---: |
+| `assemble` | `slice`, ONE position | **1,728** |
+| `kernel` | `gather` | 1,211 |
+| `mat_kernel` | `slice`, wider | 698 |
+| `assemble` | `slice`, wider | 432 |
+| `mat_kernel` | `concatenate` | 89 |
+| `mat_kernel` | `gather` | 31 |
+| `mat_scan` | `slice`, wider | 8 |
+| `kernel` | `concatenate` | 4 |
+| `kernel` | `slice`, wider | 3 |
+| `assemble` | `concatenate` | 1 |
+| | **2,869 slices, 1,242 gathers, 94 concatenates** | |
+
+2,869 x 4 SSPRK43 stages = 11,476, which is `ssp_vjp`'s emitted slice count to
+the op. **Sixty per cent of every slice the emitter wrote is the OUTPUT
+ASSEMBLY, and every one of those is a single position.** The scalar spine
+emitted none at all.
+
+### The lead that the attribution killed
+
+The hypothesis this section was opened to test was the scalar spine: the `:oop`
+build carries a lane-batching plan for it (`_OopScalarBatches`, the
+`ESS_OOP_BATCH` mechanism, which on the traced lane cut dynamic slices from
+64,834 to 3,682 at 7x7x16) and the direct emitter never referenced it — it
+walked every scalar entry individually, which is exactly the shape that leaves
+thousands of one-element reads.
+
+It is a real emitter gap and it is now closed (EarthSciAST's
+`ext/reactant_direct/batch.jl`), but **it moves nothing on this model**: run the
+attribution with `ESS_OOP_BATCH=0` and with `ESS_OOP_BATCH=1` and the two
+modules are identical op for op — 2,869 slices, 1,242 gathers, 94 concatenates
+in both. ReSEACT's transport half has no per-cell scalar entries at all; every
+read in it goes through an access kernel. The batched surface is kept because a
+model that DOES decline the kernel path would otherwise emit O(cells) ops where
+the interpreter emits O(1), but it is not what follows.
+
+### `_de_assemble` had its own run-walk
+
+Every read in the emitter goes through ONE form, `_de_emit_runs`: decompose the
+positions into runs, then apply the cost model — one gather when the read
+shatters, slices plus a concatenate when the runs are long, structural zeros
+folded into either. Every read except one. `_de_assemble`, which turns the
+finished `du` slot map into the returned vector, had its own local walk: merge
+maximal runs of consecutive slots held at consecutive positions in the same
+producer, emit one slice each, concatenate.
+
+On a stencil model that walk finds almost nothing to merge. The output map is
+INTERLEAVED — a kernel's result value holds its own cells, and the next slot in
+ascending order usually belongs to a different value, or to a non-adjacent
+position inside the same one — so the runs are mostly runs of ONE. 3,744 slots
+decomposed into 2,160 pieces, 1,728 of them single positions.
+
+The fix is one line of behaviour: the output is a read like any other.
+
+```julia
+_de_assemble(ctx, M, n) = _de_emit_runs(ctx, _DESlot[M.m[i] for i in 1:n])
+```
+
+2,160 pieces over 3,744 positions is an average run of 1.7, the cost model wants
+a gather, and the producers concatenate once into a base well under the budget.
+**The whole assembly becomes ONE `stablehlo.gather`.**
+
+### What it costs and what it buys
+
+One emission of the transport right-hand side, 6x6x8, `raw2` (warm emission, no
+passes):
+
+| | before | after |
+| --- | ---: | ---: |
+| pre-pass ops | 10,506 | **8,348** |
+| `stablehlo.slice` | 2,869 | **709** |
+| `stablehlo.gather` | 1,242 | 1,243 |
+| `stablehlo.concatenate` | 94 | 94 |
+
+and on `ssp_vjp`, the reverse-mode program that was the wall, the same twelve-
+stage `RESEACT_CC_STAGES=split` run section 5 used (`ESM_DIRECT_EMIT_READ`
+default, base budget default, emitter CSE on — the "the fix + emitter CSE"
+column of section 5 is the `before`):
+
+| stage | before | after |
+| --- | ---: | ---: |
+| emitted `slice` | 11,476 | **2,836** |
+| emitted `gather` | 4,728 | 4,972 |
+| after `opt1` (`slice`) | 9,932 | **1,292** |
+| `opt1` | 4.5 s | 5.2 s |
+| `enzyme` (the differentiation) | 142.8 s | **12.4 s** |
+| adjoint `slice` / `pad` after `enzyme` | 27,610 / 9,583 | **3,862 / 943** |
+| `opt2b` (`enzyme-hlo-opt` on the adjoint) | **> 37 min, capped** | **4.6 s** |
+| twelve stages, total | — | **25.1 s** |
+
+**`opt2b` is 4.6 seconds.** The stage that three separate arms could not get
+through in half an hour, and that no read form and no pass exclusion moved, is
+gone — because `cse_slice` is quadratic in the slice POPULATION and the
+population is now a twentieth of what it was. The differentiation itself, which
+section 5 measured as superlinear in the same variable, fell 11.5x on the same
+evidence.
+
+End to end:
+
+| program | traced | direct, before | direct, after |
+| --- | ---: | ---: | ---: |
+| `@compile ssp_vjp` | 115.4 s | **> 6 h, unfinished** | **76.1 s** |
+
+The direct lane's reverse-mode transport step now compiles FASTER than the
+traced lane's.
+
+### Why this was the last one standing
+
+Four levers had been spent on the slice population and every one of them worked
+on the READS: the run-length rule, the gather base budget, emitter-side CSE, and
+pass exclusion. None of them could touch the assembly, because the assembly is
+not a read of the state — it is the WRITE of the result, and it was the one
+surface in the emitter that had been allowed to decide its own shape. Section 5
+measured that "every read form converges to the same module after `opt1`" and
+concluded the read lowering was finished as a lever. That was correct. What it
+missed is that ~9,900 of the survivors were never reads at all.
+
+The generalisable reading, for the next emitter and the next binding: **one read
+form, no exceptions.** A surface that opens its own path around the cost model
+will eventually be the surface that costs the most, and a flat op census cannot
+tell you which surface that is. Attribute the ops to the code that wrote them.

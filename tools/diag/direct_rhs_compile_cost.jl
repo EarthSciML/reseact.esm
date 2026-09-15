@@ -349,6 +349,35 @@ end
 
 # `@code_hlo` / `@compile` need a LITERAL call expression, so each program gets
 # its own three lines rather than a thunk that takes the macro.
+# --------------------------------------------------------------------------- #
+# READ ATTRIBUTION. The direct emitter tallies every emitted slice / gather /
+# concatenate against the emitter SITE that was running (`_de_at!`), so the
+# surviving single-position reads can be charged to the scalar spine, a fill
+# level, an access kernel, a scan or the output assembly rather than guessed at.
+# One emission of one right-hand side; `stats` holds the LAST one.
+# --------------------------------------------------------------------------- #
+function report_sites(tag, g)
+    st = try
+        rx_rhs_direct() ? getfield(getfield(g, :d), :stats) : nothing
+    catch
+        nothing
+    end
+    st === nothing && return nothing
+    rows = sort!([(String(k), v) for (k, v) in st if occursin('@', String(k))];
+                 by = last, rev = true)
+    isempty(rows) && return nothing
+    say("  SITE ATTRIBUTION ($tag), one emission:")
+    tot = Dict{String,Int}()
+    for (k, v) in rows
+        pre, rest = split(k, '@')
+        site, why = split(rest, '.')
+        say(@sprintf("    %-10s %-14s %-14s %8d", pre, site, why, v))
+        tot[pre] = get(tot, pre, 0) + v
+    end
+    say("    TOTALS: " * join([@sprintf("%s=%d", k, v) for (k, v) in sort(collect(tot))], "  "))
+    return nothing
+end
+
 MOD0 = Ref{Any}(nothing); MOD1 = Ref{Any}(nothing); MOD2 = Ref{Any}(nothing)
 function stage(tag, f)
     t0 = time(); m = f(); dt = time() - t0
@@ -394,6 +423,8 @@ else
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))
 end
 
+report_sites(PROG in (:rhsC, :ros_step, :ros_vjp) ? "chemistry" : "transport",
+             PROG in (:rhsC, :ros_step, :ros_vjp) ? G4[2] : G4[1])
 MOD0[] === nothing || report_census("raw   (no passes)", MOD0[])
 MOD1[] === nothing || report_census("opt   (full pipeline)",  MOD1[])
 MOD2[] === nothing || report_census("raw2  (warm, no passes)", MOD2[])
