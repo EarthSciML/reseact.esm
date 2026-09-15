@@ -118,8 +118,6 @@ end
 
 println("=== rx_adjoint_toy: variant=$VARIANT, NS=$NS NC=$NC N=$N ===")
 _ = @compile sout(U, P, T, DT)     # force the RHS through the tracer once
-println("helper functions minted by this RHS: ", Reactant.TracedUtils._CAP_CALLS[], " ",
-        sort(collect(Reactant.TracedUtils._NAME_COUNTS); by=last, rev=true))
 check("ROS23 jac=:ad", rout, rvjp, rjvp)
 check("ROS23 jac=:fd", foutf, fvjp, fjvp)
 check("SSPRK43", sout, svjp, sjvp)
