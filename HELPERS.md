@@ -178,7 +178,7 @@ emitter lowers, and calling it on `Vector{Float64}`s raises
 `E_TREEWALK_OOP_NOT_EVALUABLE`.
 
 The checks OF THE BUILD still want one evaluation at one point: the base-point
-finiteness guards in `subcycle_chem.jl` / `shard_worker.jl` ("does this build's
+finiteness guards in `subcycle_chem.jl` / `shard_kernel.jl` ("does this build's
 right-hand side come back finite at the primed base point?") and
 `RxSymBlockJac.validate_plan` ("does the gather plan reproduce what
 EarthSciASTDiff's own scatter map assembles?"). `rx_host_eval(f, p, t, bufs)`

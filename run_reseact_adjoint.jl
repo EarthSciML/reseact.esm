@@ -31,9 +31,59 @@
 # default here is `get!` and the environment wins:
 #
 #   RESEACT_NLON=6 RESEACT_NLAT=6 RESEACT_NLEV=8 RESEACT_ADJ_NMACRO=3 \
-#   RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 \
+#   RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 RESEACT_ADJ_SHARDS=0 \
 #   RESEACT_ADJ_STAGES=fwd,adj,ref,fdtape \
 #   julia --project=run-model-jl run_reseact_adjoint.jl
+#
+# `RESEACT_ADJ_SHARDS=0` IS PART OF THE PRESET, not an optimisation, and it was
+# missing from this command until 2026-09-15. This driver's own default is 8
+# shards (the five-day CONUS configuration), and `ref` / `fdtape` vary theta
+# through the DRIVER's own chemistry programs, which the shards do not see -- so
+# tools/adjoint_gradient.jl refuses the combination by name. Without it the
+# command above aborts before it builds anything, and the eight worker
+# processes it would otherwise spawn do not fit an interactive cgroup.
+#
+# ---------------------------------------------------------------------------
+# TWO NEW SWITCHES, BOTH DEFAULT OFF (2026-09-08)
+# ---------------------------------------------------------------------------
+# Neither changes a single line of what runs when it is unset, which is why they
+# are stated here rather than in the preset block.
+#
+#   RESEACT_SHARD_EXEC=process|inprocess   HOW the chemistry shards run.
+#     `RESEACT_ADJ_SHARDS=N` used to mean "N Distributed worker processes"; the
+#     DECOMPOSITION (which cells, the lane buffers, the gather/scatter, the
+#     partial-norm reduction -- tools/shard_chem.jl) is now separated from the
+#     EXECUTOR that runs it (tools/shard_exec.jl), and the per-shard chemistry
+#     program itself is a plain object with no opinion about processes
+#     (tools/shard_kernel.jl). `process` is the default and is the measured path
+#     unchanged. `inprocess` runs the identical shards in THIS process,
+#     sequentially: slower on this CPU by construction, and the point of it is
+#     that a disagreement between the two executors is a decomposition bug and
+#     cannot be anything else. The contract, and what a GPU executor would have
+#     to implement, is the header of tools/shard_exec.jl.
+#
+#   RESEACT_ADJ_DEVLOOP=0|1|both           WHERE the differentiated map runs.
+#     The backward sweep composes a macro step's inner steps on the HOST, one
+#     Julia round-trip per step. `1` makes each half ONE device program instead:
+#     a static-trip-count `@trace for i in 1:cap` reading (t, dt) from runtime
+#     [cap] tensors, with the iterations past the recorded step count masked
+#     out. That is legitimate because the map the adjoint differentiates is
+#     ALREADY a fixed-step composition with a trip count read off the tape --
+#     the FORWARD pass keeps its adaptive `stablehlo.while` and nothing
+#     differentiates it. `both` runs BOTH sweeps off the SAME forward pass in
+#     one process and compares them component by component, which is the
+#     gradient-agreement gate. EXPECT NO CPU SPEEDUP: the host round-trip is
+#     0.4-4.6% of the sweep on XLA:CPU and the frozen loop costs 2.0x (CONUS) to
+#     3.6x (6x6x8) the device time of the same steps issued individually. It is
+#     a portability change, for the accelerator where each round-trip is a sync
+#     plus two transfers. DIFFERENTIABILITY_PLAN.md section 7 has the acceptance
+#     tables; it does not combine with SUBCYCLE, BUCKET or SHARDS, and says so
+#     by name.
+#
+# BOTH RUN ON THE COMPILED LANE BELOW. The shards build through the same
+# `tools/rx_rhs.jl` seam the driver does and print the lane banner on their own
+# first line; the frozen grid is integrator code that composes whatever
+# right-hand side it is handed and never touched the emitter at all.
 #
 # ---------------------------------------------------------------------------
 # THE COMPILED RIGHT-HAND SIDE (2026-09-15)

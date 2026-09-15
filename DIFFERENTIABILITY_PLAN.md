@@ -898,3 +898,233 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
 
 Operational: never run CONUS builds in the interactive 40 GiB cgroup (Lustre
 page-fault thrash, hours); everything above ran through sbatch.
+
+## 7. The differentiated map on the device — the frozen grid (2026-09-08)
+
+**What changed.** The backward sweep no longer walks a macro step's inner steps
+from Julia. Each half of each macro step is now ONE compiled program: a
+static-trip-count `Reactant.@trace for i in 1:cap` whose `(t, dt)` come from
+runtime `[cap]` tensors and whose iterations past the recorded step count are
+neutralised by an `ifelse` on a traced live-count. Reverse mode is taken over
+that loop. `tools/reactant_handoff/rx_traced_integrator.jl` (`frozen_run`,
+`frozen_vjp`, the two `frozen_*_body` builders) and `tools/frozen_device_loop.jl`
+(the driver glue). **Default OFF** — `RESEACT_ADJ_DEVLOOP=1`, or `=both` to run
+both sweeps in one process and compare them.
+
+**Why, and what it is NOT for.** On XLA:CPU the host round-trip is 0.4–4.6% of
+the sweep, because the "device" is the same memory. On an A100/H100 each of the
+~28,000 accepted inner steps of a 48 h window becomes a device sync plus two
+transfers, and that design dominates. **This is a portability change and it is
+slower on CPU.** Read the wall time below accordingly.
+
+**The one thing that makes it legitimate.** The map the discrete adjoint
+differentiates is *already* a fixed-step composition with a KNOWN trip count:
+the forward pass records the accepted `(t, dt)` of every inner step and
+`replay_fixed` replays that sequence with the controller off (§4, FINDING 1).
+So the trip count is read off the tape, not guessed; `cap` only rounds it up to
+a power-of-two bucket. **The FORWARD pass is untouched** — `adaptive_solve` keeps
+its adaptive, data-dependent `stablehlo.while`; nothing differentiates it.
+
+**The hazard note at the top of `rx_traced_integrator.jl`'s adjoint section —
+"reverse mode cannot cross a `stablehlo.while`, for a FIXED trip count as well"
+— is STALE for the static-`for` shape.** `tools/diag/frozen_grid_probe.jl` and
+`frozen_grid_probe2.jl`, re-run on Reactant **0.2.280** on 2026-09-08, reproduce
+their 0.2.274 numbers exactly:
+
+| probe arm | result |
+|---|---|
+| K3b masked static-CAP loop (CAP 64, 50 live — i.e. **padded**) | rel **0.00e+00** |
+| differentiated module | **1** `stablehlo.while`, 116 lines — not unrolled |
+| L-b `Ops.dynamic_slice(dts, [i], [1])` (CAP 16, 10 live) | rel **1.19e-16** |
+| tape at state 85,176 × cap ∈ {32, 128, 256} | all exact, anon RSS +0.06 GB |
+| every checkpointing mode (`true`, `Periodic`, `Binomial`) | silently WRONG |
+
+Both probe arms were taken with `cap > nlive`, so the padded case *was* validated
+— it is not an untested corner.
+
+**Reading `dt` is the whole trap and only one form works.** `Ops.dynamic_slice`
+works; `v[i]` raises "Scalar indexing is disallowed"; `v[i:i]` raises an `iota`
+MethodError (the claim in §1 that a size-1 slice works where a scalar read does
+not is **false** for a traced loop index); a one-hot mask select **compiles and is
+silently wrong** at rel 2.7e-1.
+
+**A trap that cost a full cycle, and it is in the harness, not the loop.**
+`RX.@compile` **donates** the input buffers a program does not return, so reusing
+one `ConcreteRArray` across two calls silently corrupts the second. The symptom
+is diagnostic-looking and entirely fake: the first measurement in a process is
+right and every one after it drifts. An early `frozen_loop_smoke.jl` reported a
+1.7e-1 "gradient error" in `frozen_vjp` that was its own reuse of `UD`. The
+driver never sees this because `step_call`/`vjp_call`/`devloop_*` upload a fresh
+array per call — keep it that way.
+
+**Acceptance, 6×6×8, 4 macro steps, 276 accepted inner steps, `jac=:sym`,
+clamp ON, `RESEACT_ADJ_DEVLOOP=both`** (both sweeps off the SAME forward pass, so
+same base point, same checkpoints, same recorded sequence — the only difference
+is where the composition happens):
+
+| check | result |
+|---|---|
+| gradient vs the host-lifted sweep, worst of 21 nonzero components | **6.08e−15** (`Transport3D.lat0_deg`) |
+| λ at the start of the window | 4.29e−13 |
+| structural identity `scale·dJ/dscale == g0·dJ/dg0` | **0.000e+00** |
+| frozen replay at θ₀ through the DEVICE loop vs the forward pass J | **BIT-IDENTICAL** |
+| device replay vs every checkpoint | 9.62e−16 |
+| `fdtape` central differences **through the device loop**: `NEIRegrid.scale` | 5.59e−11 PASS |
+| `fdtape`: `Transport3D.tau_pblmix` | 6.19e−11 PASS |
+| `fdtape`: `NEIRegrid.g0` | 5.59e−11 PASS |
+
+This is **not** a bit-identity gate and must not be read as one: the two arms
+differ by reassociation and codegen (one fused XLA program vs ~n_inner separate
+ones). It is also a *different* comparison from the ~3e−10-per-macro-step gap
+between the ADAPTIVE host loop and the device while-loop in §4 — that one is
+about the controller.
+
+**CONUS confirmation** (13×7×72, N = 85,176, 3 macro steps, 173 accepted inner
+steps, slurm **10427557**, 1 h 00 m 45 s wall, `RESEACT_ADJ_DEVLOOP=both`):
+worst relative component difference **1.246e−13** (`GEOSFP.t_interp_ref_I3`) over
+21 nonzero components, λ at the window start 6.019e−13, device replay within
+1.535e−14 of every checkpoint, J = 39.613123670961. **AGREEMENT PASS.**
+
+**Wall time — flat-to-worse, and that is the expected outcome.**
+
+| | host-lifted | device frozen grid |
+|---|---|---|
+| **6×6×8, 4 macro steps** | | |
+| sweep wall | 19.85 s | 20.86 s (1.05x) |
+| of which executor (replay + VJP) | 5.73 s | 20.85 s (**3.64x**) |
+| of which `everything-else` | 13.80 s (one-time Julia JIT; it ran first) | 0.01 s |
+| host round-trip share | 4.649% | **0.373%** |
+| device calls per macro step | 2·(n_T + n_C) = 138 | 4 |
+| **CONUS 13×7×72, 3 macro steps** | | |
+| sweep wall | 37.27 s | 48.68 s (1.31x) |
+| of which executor (replay + VJP) | 24.17 s | 48.66 s (**2.01x**) |
+| of which `everything-else` | 12.58 s (Julia JIT) | 0.02 s |
+| host round-trip share | 2.327% | **0.548%** |
+| device calls per macro step | 2·(n_T + n_C) ≈ 115 | 4 |
+
+The sweep-wall rows are *flattered*: the host arm ran first in each process and
+absorbed the one-time Julia JIT, which amortises away over a real window. The
+honest number is the executor row — **the frozen loop costs 2.0x (CONUS) to 3.6x
+(6×6×8) the device time of the same steps issued individually**, and it improves
+with grid size, as a per-call-overhead story would. A quarter of it is the masked
+(dead) iterations: bucketing to the next power of two wasted 20.0%/18.8%
+(transport/chemistry) at 6×6×8 and 25.0%/28.1% at CONUS. The rest is XLA:CPU
+getting less out of a `while` body than out of straight-line code — the same
+shape of finding as §6's concatenate-fusion pathologies. On an accelerator the
+trade runs the other way, which is the entire point.
+
+**Compile cost at CONUS** (10 programs, 5 buckets × 2 kinds, 2,075 s total):
+`dev.C.vjp` ~180 s at every cap, `dev.T.vjp` **507–510 s** against `ssp_vjp`'s
+385.6 s. So the loop VJP compiles at ~1.3x its single-step counterpart at CONUS,
+and `cap` does not move compile time — consistent with the module being a while
+region rather than an unrolled body.
+
+**Program structure — one `while`, byte-for-byte the same size at two caps.**
+`RESEACT_ADJ_DEVDUMP=1` dumps the UNOPTIMISED differentiated module of each half
+at cap 32 and cap 128. On the real model at 6x6x8:
+
+| half | cap 32 | cap 128 |
+|---|---|---|
+| transport (SSPRK43) | **1** `stablehlo.while`, 88,046 lines, 10.14 MB | **1**, 88,046 lines, 10.14 MB |
+| chemistry (ROS23, `jac=:sym`) | **1** `stablehlo.while`, 121,864 lines, 15.30 MB | **1**, 121,864 lines, 15.30 MB |
+
+Identical to the byte at a 4x larger trip count, so the program is a while region
+and not an unrolled body: **size is O(1) in `cap`.** The toy gate agrees
+(`frozen_loop_smoke.jl`: 506 lines at cap 16 and at cap 128), and so does compile
+time at CONUS above. *(Re-run on the direct lane on 2026-09-15: all eight primal
+and VJP checks pass, 4.4e-16 to 8.3e-13, `FROZEN_LOOP_SMOKE_OK`. The toy gate's
+module is **758** lines there, not 506, at both caps -- `rx_native_patch.jl`
+lowered same-shape primitive broadcasts straight to `Reactant.Ops.*` and retired
+with the emitter it belonged to, so Reactant's own broadcast lowering mints the
+helper functions again. The claim is byte-identity across a 4x trip count, which
+holds on both lanes; the absolute size is not the claim.)*
+
+**Compile cost.** One program per `(kind, half, cap)` bucket, compiled up front
+by `devloop_precompile` — *outside* the sweep timer, because the first version of
+this put 491 s of compile into a 508 s "backward sweep" and made the device arm
+look 28x slower than it is. At 6×6×8 the window spanned 8 buckets, 588 s total;
+a loop VJP compiles at ~1.6x its single-step counterpart (`dev.T.vjp[4]` 141.6 s
+vs `ssp_vjp` 88.0 s). `RESEACT_ADJ_DEVCAP=N` collapses everything to one bucket
+(one compile, maximal masked waste).
+
+**Gate 1 (the per-step dot-product identity) could not be run, for a reason that
+predates this change.** The `ref` stage skipped itself: "NO SLOT IS ZERO UNDER A
+ZERO SEED — Enzyme's forward mode is returning the primal, not the tangent, on
+this RHS." That probe and the identity block use single-step HOST programs off
+`tapes_for`, are untouched by this branch, and the driver already records the
+condition in its own comments. **Confirmed as pre-existing by a control run**
+(`RESEACT_ADJ_DEVLOOP=0`, and `ESS_OOP_SSA=0` to rule out the SSA emitter, which
+became the default after the identity was last recorded passing): identical
+message, identical zero-seed norm 2.326022e+04. So it is neither this branch nor
+the SSA emitter. `fdtape` is what the driver designates as the reference when
+forward mode is unavailable, and it passes above. *(`ESS_OOP_SSA` no longer
+exists — see §8. The control run's conclusion is unaffected: the emitter it was
+ruling out was retired wholesale a week later and the `ref` stage still
+self-disables at the same number, which is a third independent confirmation that
+the condition is neither the loop nor the emitter.)*
+
+## 8. One compiled lane — the direct StableHLO emitter (2026-09-15)
+
+`EarthSciAST.rhs_with_buffers`, the traced emitter that lowered an `:oop` build
+through a Julia broadcast trace, is gone, and with it the `ESS_OOP_SSA` /
+`ESS_OOP_GVN` / `ESS_OOP_INTERN` / `ESS_OOP_SHIFT_SLICE` build flags,
+`tools/reactant_handoff/rx_native_patch.jl`, and the host-callable `:oop`
+product (calling one now raises `E_TREEWALK_OOP_NOT_EVALUABLE`). Every compiled
+program in this repository is built through ONE seam, `tools/rx_rhs.jl`, and
+that seam builds exactly one thing:
+`EarthSciASTReactantExt.direct_rhs_with_buffers(f)` — the direct StableHLO
+emitter, which lowers the compiled tree-walk IR operation by operation, with no
+fallback and a `DirectEmitError` naming the construct and the rule it came from
+when it cannot. `RESEACT_RHS` is not a switch: a stale `RESEACT_RHS=traced` is
+refused by name rather than silently running the lane that remains.
+
+The full record is `README.md`, `HELPERS.md`, `AGREEMENT.md` (the two emitters'
+right-hand sides agree at 6.5e-14 and 7.4e-16), `COMPILE_COST.md`,
+`DIRECT_RHS_CENSUS.md` and the header of `run_reseact_adjoint.jl`. What matters
+for the two sections above:
+
+* **§6's levers.** `RESEACT_EXCLUDED_PASSES` is unchanged and still the default.
+  `ESS_OOP_SSA` is not a lever any more because it is not optional: the direct
+  emitter walks the plan data and a consumer references its producer's VALUE, so
+  there is no flat buffer to route through and nothing to switch off.
+* **§7's frozen grid is integrator code and is untouched by the change.**
+  `frozen_run` / `frozen_vjp` compose whatever right-hand side they are handed;
+  they neither know nor care which emitter produced it. Its toy gate,
+  `tools/diag/frozen_loop_smoke.jl`, never built an EarthSciAST model at all,
+  and dropping its `rx_native_patch.jl` include was the whole of the change it
+  needed. **Re-measured on the direct lane, 6x6x8, 4 macro steps, `jac=:sym`,
+  clamp ON, `RESEACT_ADJ_DEVLOOP=both`:** worst relative component difference
+  **1.910e-14** (`Transport3D.dlon_deg`) over 21 nonzero components, λ at the
+  window start 7.994e-13, structural identity through the DEVICE gradient
+  **0.000e+00**, `AGREEMENT PASS` — against the 6.08e-15 / 4.29e-13 / 0.000e+00
+  §7 records on the traced lane. **But the frozen grid's compiles are much
+  dearer here**, and that is the one number of §7's that does not carry over:
+  the eight programs cost **4,675 s** against §7's 588 s for the same eight
+  buckets -- `dev.C.out` 129.0 / 106.0 s at cap 32 / 128, `dev.C.vjp` 159.1 s
+  then **2,030.4 s**, `dev.T.out` 848.2 / 19.5 s at cap 4 / 8, `dev.T.vjp`
+  613.9 / 768.7 s. The `dev.C.vjp` jump between two caps of the SAME program is
+  the striking one, since §7 measured `cap` not to move compile time at all.
+  The same run's four single-step programs were ordinary. That puts the CONUS
+  device loop, whose §7 compile budget was 2,075 s, in the same unmeasured
+  position as everything else at CONUS on this emitter.
+
+  The `ref` and `fdtape` stages of that run were NOT reached: the process was
+  OOM-killed in the interactive 40 GiB cgroup while compiling `ros_jvp`, i.e.
+  after the agreement gate and inside a stage that self-disables anyway. The
+  operational line from §6 -- run these through sbatch -- now applies at 6x6x8
+  as well when the device loop's eight extra programs sit beside the driver's
+  own.
+* **The host-side checks moved rather than went away.** The base-point
+  finiteness guards (`tools/subcycle_chem.jl`, `tools/shard_kernel.jl`) and
+  `RxSymBlockJac.validate_plan` now evaluate the program they are checking once,
+  through `rx_host_eval` — a lazy `@compile` plus a host→device→host round trip.
+  They remain checks OF THE BUILD, and `validate_plan` got stronger in the move:
+  it now evaluates the band model at BOTH lifts, the evaluator's `jac.umap`
+  scatter and the plan's own `ugather`, so a wrong STATE lift is caught as well
+  as a wrong band gather.
+* **The chemistry shards go through the same seam.** `tools/shard_kernel.jl`
+  reads `RxRHS` off its parent module alongside `CapacityChem` /
+  `RxTracedIntegrator` / `RxSymBlockJac`, and `build!` prints the lane banner on
+  each shard's own first line, so a shard that resolved a different EarthSciAST
+  than the driver cannot answer silently. Both executors in
+  `tools/shard_exec.jl` run that same kernel.

@@ -6,7 +6,8 @@ that no longer exists — `EarthSciAST.rhs_with_buffers`, the
 `oop_intern_stats` / `oop_gvn_stats` / `oop_ssa_stats` counters, the
 `ESS_OOP_SSA` / `ESS_OOP_GVN` / `ESS_OOP_INTERN` / `ESS_OOP_SHIFT_SLICE` build
 flags, `RESEACT_RHS`, or `tools/reactant_handoff/rx_native_patch.jl` — so they
-cannot run and are deleted in `6f592ca`.
+cannot run and are deleted in `6f592ca`; a second group, listed in its own table
+below, was deleted when `origin/main` was merged on 2026-09-15.
 
 **The probes themselves are in git history.** `git show 6f592ca^:<path>` prints
 any of them, headers, measured results and all. What is NOT recoverable from a
@@ -33,3 +34,51 @@ survives the emitter they were written against: `direct_rhs_compile_cost.jl`
 (the harness behind **COMPILE_COST.md**, which takes one program's `@compile`
 apart into trace / pass pipeline / XLA:CPU codegen) and
 `p6_rxops_semantics.jl`.
+
+## The build-scaling probes, retired in the merge of 2026-09-15
+
+`origin/main` landed a build-and-resolution scaling investigation
+(**BUILD_SCALING.md**, **SCALE_025.md**) on the branch point that still had the
+traced right-hand side. Its probes all share one line — a `sha256` /
+finiteness acceptance check of the freshly built model, taken by CALLING the
+`:oop` build product on host vectors:
+
+```julia
+du = fi(u0i, pi, TSAMP)
+sha = bytes2hex(sha256(reinterpret(UInt8, vec(du))))
+```
+
+An `:oop` build product is now the compiled IR a backend lowers, and calling it
+raises `E_TREEWALK_OOP_NOT_EVALUABLE` (EarthSciAST `src/tree_walk/oop.jl`), so
+each of these aborts at its FIRST rung. They cannot be re-pointed at
+`rx_host_eval` either, and that is the reason they are deleted rather than
+fixed: an `rx_host_eval` check costs one `Reactant.@compile` of the program
+being checked, in the same process, and every one of these probes exists to
+measure `build_evaluator`'s wall time, resident size, GC and page faults —
+which a Reactant load and an XLA compile in that process are exactly what
+destroy. There is no version of the check that leaves the measurement intact.
+
+`git show <merge>^2:<path>` prints any of them. What they are the provenance
+for:
+
+| Deleted | Backed |
+| --- | --- |
+| `build_res_window.jl`, `build_res_window.sbatch`, `build_res_window_split.sbatch` | **BUILD_SCALING.md** — the native-resolution window ladder: the decode/build/compile decomposition at `BRW_GRID=25x13x72` (slurm 10404098), the ~0.0058 s/cell residual in `build_evaluator`, and the `18480c62f94b7dc5` right-hand-side hash the synthetic ladders are checked against. |
+| `forcing_size_ladder.jl`, `forcing_size_ladder.sbatch` | **BUILD_SCALING.md** §"isolate array size from work" and **SCALE_025.md**'s `e` exponents (slurm 10404593): the controlled ladder that embeds ONE 2x2.5 decode into synthetic native arrays up to the 0.25x0.3125 shape, holding cells, geometry, values and gather count fixed so that only the size of the array being gathered from moves. Its `loop` stage was also the only remaining named call of `EarthSciAST.rhs_with_buffers` in the tree. |
+| `aktbl_ladder.jl`, `aktbl_ladder.sbatch` | **BUILD_SCALING.md**'s NLEV-only ladder (slurm 10423120 / 10423122), one process per grid, part 1. |
+| `axisb_ab.jl`, `axisb_ab.sbatch` | **BUILD_SCALING.md**'s axis-B A/B: two EarthSciAST checkouts built side by side, compared on the cascade tally, the spine templates and `sha256(du)` at the build's own base point. |
+| `axisb_evaltime.jl` | **BUILD_SCALING.md**'s "a build-time win that costs right-hand-side time is a bad trade" control. Its question does not survive at all: it timed 200 reps of the HOST tree-walk evaluation, which is the surface EarthSciAST deleted. |
+| `build_prof_delta.jl`, `build_prof_delta.sbatch` | **BUILD_SCALING.md** B3 — the `@profile` attribution of the unexplained per-cell build time. |
+
+`build_driver_decomp.jl` / `.sbatch` from the same investigation is KEPT: it
+times `build_evaluator` and never evaluates the product, so it runs unchanged.
+
+## Known residue: two older probes with the same dead line
+
+`tools/diag/native_window_probe.jl` (two call sites) and
+`tools/diag/res_switch_smoke.jl` call the `:oop` product on the host in exactly
+the way described above, and were missed by the cleanup in `6f592ca`. They abort
+at that line on the direct lane. They are recorded here rather than deleted
+because they predate this merge and the same trade applies to them: their
+measurement is a build measurement, and the only available check costs a
+compile.

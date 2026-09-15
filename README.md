@@ -21,7 +21,8 @@ the runner's default and projects to about 2 h of loop.
 | `run_reseact_reactant.jl` | Compiled runner: the same split through Reactant/XLA. |
 | `run_reseact_adjoint.jl` | **The gradient runner.** Defaults to the 5-day CONUS adjoint. Its header is the authoritative record of what has been run, what it cost, and what is still unproven. |
 | `tools/adjoint_gradient.jl` | The adjoint driver the runner wraps: host-lifted adaptive loops, per-macro-step checkpoints, replay, Enzyme VJPs, chemistry sharding. |
-| `tools/shard_chem.jl`, `tools/shard_worker.jl`, `tools/capacity_chem.jl` | Process-level chemistry sharding (`RESEACT_ADJ_SHARDS`). |
+| `tools/shard_chem.jl`, `tools/shard_kernel.jl`, `tools/shard_exec.jl`, `tools/shard_worker.jl`, `tools/capacity_chem.jl` | Chemistry sharding (`RESEACT_ADJ_SHARDS`). `shard_chem.jl` owns the DECOMPOSITION, `shard_kernel.jl` the per-shard program, `shard_exec.jl` the EXECUTOR seam (`RESEACT_SHARD_EXEC=process`, the default, or `inprocess`), `shard_worker.jl` the Distributed worker end of the process executor. |
+| `tools/frozen_device_loop.jl` | The differentiated map as ONE device program per macro-step half (`RESEACT_ADJ_DEVLOOP`, default off). A portability change for accelerators; slower on CPU. |
 | `tools/rx_rhs.jl` | The compiled-RHS seam: every program in the repository is built here. |
 | `tools/reactant_handoff/` | Traced integrator (`rx_traced_integrator.jl`), operator-split loop, symbolic block-Jacobian gather. |
 | `prototypes/reseact_3d_chem/` | Split/build machinery shared by the runners (`split_common.jl`), block Jacobian, hybrid-coordinate coefficients. |

@@ -28,7 +28,11 @@ const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
 include(joinpath(CHEMDIR, "split_common.jl"))
 using Printf
 const EA = EarthSciAST
-for res in ("4x5", "2x2.5")
+# Resolutions to time (RESEACT_DECODE_RES, comma-separated). 0.25x0.3125 decodes
+# global arrays of ~1.9 GB per 3-D variable, so run that arm through sbatch, not
+# in the interactive cgroup.
+const RESLIST = split(get(ENV, "RESEACT_DECODE_RES", "4x5,2x2.5"), ",")
+for res in RESLIST
     ff = reseact_forcing(CHEMDIR; ndays = 1, res = res)
     t0 = 64800.0
     tot = 0.0; bytes = 0.0

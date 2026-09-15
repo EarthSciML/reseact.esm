@@ -46,7 +46,9 @@ using Reactant
 const EA = EarthSciAST
 const RX = Reactant
 const EZ = Reactant.Enzyme
-try; RX.set_default_backend("cpu"); catch; end
+# Backend is env-gated (RESEACT_BACKEND, default cpu = unchanged behaviour) so a
+# device run needs no source edit here. See tools/shard_exec.jl.
+try; RX.set_default_backend(get(ENV, "RESEACT_BACKEND", "cpu")); catch; end
 
 const CHEMDIR = joinpath(REPO, "prototypes", "reseact_3d_chem")
 const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")

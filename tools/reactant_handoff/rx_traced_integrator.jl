@@ -733,4 +733,165 @@ function species_masks(var_map, NS::Int, NC::Int)
     return masks
 end
 
+
+# =============================================================================
+# THE FROZEN GRID -- the DIFFERENTIATED map as ONE device loop
+# =============================================================================
+# The discrete adjoint above differentiates ONE step at a time, and the driver
+# composes the steps on the HOST -- one Julia round-trip per inner step. That
+# costs 0.2% on XLA:CPU, where the "device" is the same memory, and it would
+# DOMINATE on an A100/H100, where each round-trip is a sync plus two transfers.
+#
+# The lift is available because the map the adjoint differentiates is ALREADY a
+# fixed-step composition with a KNOWN trip count: `adjoint_gradient.jl` records
+# the accepted (t, dt) sequence of every inner step in the forward pass and
+# replays THAT sequence backwards (`replay_fixed`), controller switched off.
+# Reverse mode over a static-trip-count `@trace for` is exact, so that map can
+# live on the device: `for i in 1:cap`, (t, dt) read from runtime [cap] tensors,
+# and the iterations past the recorded count neutralised by an `ifelse` on a
+# traced live-count -- which is how `adaptive_solve`'s body is already written.
+#
+# NOTHING HERE TOUCHES THE FORWARD PASS. `adaptive_solve` keeps its adaptive,
+# data-dependent `stablehlo.while`; nothing differentiates it, so its trip count
+# being data-dependent is irrelevant. Only the DIFFERENTIATED map is frozen.
+#
+# THE HAZARD COMMENT ABOVE ("REVERSE MODE CANNOT CROSS A `stablehlo.while` ...
+# for a FIXED trip count as well") IS STALE for the static-`for` shape, and the
+# two probes that establish it are in the tree: `tools/diag/frozen_grid_probe.jl`
+# and `frozen_grid_probe2.jl`, re-run on Reactant 0.2.280 on 2026-09-08 with the
+# same numbers they gave on 0.2.274:
+#   * K3b masked static-CAP loop, scalar dt      rel 0.00e+00
+#   * differentiated module: 1 stablehlo.while, 116 lines -- NOT unrolled, so
+#     program size is O(1) in cap
+#   * L-b `RX.Ops.dynamic_slice(dts, [i], [1])`  rel 1.19e-16
+#   * tape at state = 85,176 (CONUS N) x cap in {32, 128, 256}: all exact,
+#     anon RSS +0.06 GB
+# The straight-line requirement on the STEP still stands, and this loop honours
+# it: the body routes through `ssprk43_step_unrolled` / `ros23_step(unrolled=true)`
+# with `jac=:sym` or `:fd`, so the loop's own `stablehlo.while` is the ONLY
+# region op in the differentiated program.
+#
+# READING dt IS THE WHOLE TRAP, AND ONLY ONE FORM WORKS. Measured, twice:
+#   * `RX.Ops.dynamic_slice(v, [i], [1])`  -- WORKS, rel 1.19e-16. Used here.
+#   * `v[i]` scalar read                   -- "Scalar indexing is disallowed".
+#   * `v[i:i]` size-1 slice                -- `iota` MethodError. (An older plan
+#     document claims this works where a scalar read does not. It does not, for
+#     a TRACED loop index.)
+#   * one-hot mask select                  -- COMPILES AND IS SILENTLY WRONG
+#     (rel 2.7e-1). Do not reintroduce it.
+# And do NOT reach for checkpointing: every mode -- `true`, `Periodic(n)`,
+# `Binomial(n)` -- returns a silently wrong gradient on both 0.2.274 and 0.2.280,
+# on the data-dependent AND the static-bound loop (probe arms K2 and K4). The
+# static trip count is exactly what makes checkpointing unnecessary here.
+@inline _frozen_read(v, i) = sum(RX.Ops.dynamic_slice(v, [i], [1]))
+
+# `clamp_nonneg` written as a SELECT ON `raw > 0`, not `max(raw, 0)`, so its
+# derivative is the identical 0/1 diagonal the host driver applies as
+# `lam .*= (raw .> 0)` -- including at raw == 0 exactly, where `max`'s subgradient
+# is a tie-break rather than a definition. Value-identical to `max.(raw, 0)`
+# except on NaN, which is fatal either way.
+function _frozen_clamp0(x)
+    m = x .> 0.0
+    return ifelse.(m, x, 0.0)
+end
+
+"""
+    frozen_run(bodyf, u, theta, ts, dts, nlive, cap) -> u_end
+
+`cap` masked applications of `bodyf(u, theta, t, dt)`, with `(t, dt)` read from
+the runtime [cap] tensors `ts`/`dts` and iterations `i > nlive` neutralised.
+`nlive` is a TRACED scalar, so ONE compiled program serves every step count up
+to `cap`; only `cap` itself is a compile-time constant.
+
+`bodyf` must close over HOST values only -- `theta` is passed in explicitly
+precisely so no traced value hides inside the closure. A traced capture inside a
+callee becomes a free region value with no matching `stablehlo.while` operand
+and the verifier rejects the module; that is the same rule as `adaptive_solve`'s
+`aux` and the nested step loops' `f = f`, and `bodyf = bodyf` below is its
+analogue for a closure that is only CALLED in the body.
+
+PADDING: `dts` past `nlive` must hold a REAL, POSITIVE step, not zero -- a
+Rosenbrock attempt forms `W = I/(gamma*dt)` and would divide by zero. The driver
+pads with the LAST LIVE (t, dt), so the dead iterations are ordinary steps from
+the (frozen) end state and stay finite; the select discards them, and reverse
+mode routes an exactly zero cotangent through them.
+"""
+function frozen_run(bodyf, u, theta, ts, dts, nlive, cap::Int)
+    # track_numbers=false for the same reason the nested step loops need it: the
+    # step body reaches host Ints (N, NS, NC) as static reshape dims, and the
+    # default track_numbers=Number would promote them to traced scalars.
+    RX.@trace track_numbers=false for i in 1:cap
+        bodyf = bodyf
+        tt = _frozen_read(ts, i)
+        hh = _frozen_read(dts, i)
+        raw = bodyf(u, theta, tt, hh)
+        live = i <= nlive
+        u = ifelse.(live, raw, u)
+    end
+    return u
+end
+
+# ---- the two step bodies, as HOST-only closures ------------------------------
+# Everything that is host structure (the RHS, the layout, the tolerances, the
+# Jacobian mode, the clamp) is resolved HERE, outside the loop, so the traced
+# body references only `bodyf`, `u`, `theta`, `ts`, `dts`, `nlive` and the
+# induction variable.
+function frozen_ssprk43_body(g, abstol::Float64, reltol::Float64;
+                             clamp_nonneg::Bool=false)
+    b = (u, theta, t, dt) ->
+        first(ssprk43_step_unrolled((uu, ss) -> g(uu, theta, ss), u, t, dt, abstol, reltol))
+    return clamp_nonneg ? ((u, theta, t, dt) -> _frozen_clamp0(b(u, theta, t, dt))) : b
+end
+
+function frozen_ros23_body(g, NS::Int, NC::Int, masks, abstol::Float64, reltol::Float64;
+                           jac::Symbol=:fd, gj=nothing, clamp_nonneg::Bool=false)
+    b = function (u, theta, t, dt)
+        sj = gj === nothing ? nothing : (uu, ss) -> gj(uu, theta, ss)
+        return first(ros23_step((uu, ss) -> g(uu, theta, ss), u, t, dt, NS, NC, masks,
+                                abstol, reltol; unrolled=true, jac=jac, symjac=sj))
+    end
+    return clamp_nonneg ? ((u, theta, t, dt) -> _frozen_clamp0(b(u, theta, t, dt))) : b
+end
+
+# ---- the VJP of the WHOLE frozen half ----------------------------------------
+# Same shape as `ros23_step_vjp` / `ssprk43_step_vjp` one level up: a scalar
+# active return `<lambda, u_end>`, whose gradient IS the VJP, and `active_bufs`
+# splitting `theta.p` off from the forcing buffers so reverse mode never
+# materialises a gradient for meteorology. The ONLY difference is that the
+# differentiated function is now `cap` composed steps instead of one, so the
+# chain rule over the window happens inside XLA rather than in a host loop.
+_frozen_ldotu(bodyf, u, theta, lambda, ts, dts, nlive, cap) =
+    sum(lambda .* frozen_run(bodyf, u, theta, ts, dts, nlive, cap))
+_frozen_ldotu_pc(bodyf, u, p, rest, lambda, ts, dts, nlive, cap) =
+    _frozen_ldotu(bodyf, u, merge((p = p,), rest), lambda, ts, dts, nlive, cap)
+
+"""
+    frozen_vjp(bodyf, u, theta, lambda, ts, dts, nlive, cap; active_bufs=false)
+        -> (lambda_in, (p = grad_p,))
+
+Reverse mode over the frozen grid: `lambda_in = (du_end/du)' lambda` and the
+parameter cotangent SUMMED over every live step, in ONE device program.
+
+CALLER CONTRACT: hand the compiled program FRESH `ConcreteRArray`s every call.
+`RX.@compile` donates the input buffers a program does not return, so reusing
+one across two calls silently corrupts the second -- the first measurement in a
+process is right and everything after it drifts. `tools/frozen_device_loop.jl`
+and `tools/diag/frozen_loop_smoke.jl` both upload fresh inputs per call for this
+reason, and the smoke test's header records what it cost to learn.
+"""
+function frozen_vjp(bodyf, u, theta, lambda, ts, dts, nlive, cap::Int;
+                    active_bufs::Bool=false)
+    if !active_bufs && _splittable(theta)
+        r = EZ.gradient(EZ.Reverse, _frozen_ldotu_pc, EZ.Const(bodyf), u, theta.p,
+                        EZ.Const(_theta_rest(theta)), EZ.Const(lambda),
+                        EZ.Const(ts), EZ.Const(dts), EZ.Const(nlive), EZ.Const(cap))
+        return r[2], (p = r[3],)
+    end
+    r = EZ.gradient(EZ.Reverse, _frozen_ldotu, EZ.Const(bodyf), u, theta,
+                    EZ.Const(lambda), EZ.Const(ts), EZ.Const(dts),
+                    EZ.Const(nlive), EZ.Const(cap))
+    return r[2], r[3]
+end
+
+
 end # module
