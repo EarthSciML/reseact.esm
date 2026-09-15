@@ -292,9 +292,23 @@ Three more arms, same probe, same grid, one process each.
 
 | arm | emitted `slice` | after `opt1` | `opt1` | `enzyme` | `opt2b` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| budget 65536 (the fix) | 15,252 | 9,932 | 10.5 s | 142.8 s | > 37 min, capped |
-| `ESM_DIRECT_EMIT_READ=always` | 8,800 | 8,726 | 49.1 s | 117.6 s | > 31 min, capped |
-| the fix, minus `slice_elementwise` | 15,252 | — | **2.9 s** | 102.7 s | > 28 min, capped |
+| budget 65536 (the fix) | 15,252 | 9,932 | 10.5 s | 142.8 s | > 37 min |
+| `ESM_DIRECT_EMIT_READ=always` | 8,800 | 8,726 | 49.1 s | 117.6 s | > 31 min |
+| the fix, minus `slice_elementwise` | 15,252 | 10,015 | **2.9 s** | 102.7 s | **> 76 min** |
+| the fix + emitter CSE (section below) | 11,476 | 9,932 | 4.5 s | 99.7 s | > 13 min |
+
+**DO NOT READ THE `enzyme` COLUMN AS A LEVER.** Those four modules are within
+1% of each other in slice count where it matters — 8,726 to 10,015 after
+`opt1` — and the differentiation stage over them measured 99.7, 102.7, 117.6
+and 142.8 s. That spread is the node, not the arm: this measurement ran through
+a ninety-minute filesystem event on a shared node (section 6), and the 142.8 s
+arm ran in the worst of it. What IS attributable is the 1297.6 s of the
+4096-budget arm, whose slice count differs by 25x rather than by 3%.
+
+None of the four `opt2b` numbers is a completion. The first two hit the probe's
+own cap; the last two were killed from outside the probe at 76 and 13 minutes,
+so the 76-minute figure is a floor on the `slice_elementwise`-excluded arm and
+nothing in this table establishes an upper bound on any of them.
 
 **Every read form converges to the same module after `opt1`** — 8,726 slices
 against 9,932, for emitted counts that differ by 1.7x — and Enzyme turns that
@@ -306,7 +320,7 @@ paragraph in section 4 that guessed a materialization layout was right about
 WHERE to look next even though it was wrong that the read lowering had nothing
 left in it.
 
-What is left after `opt1` is ~9,000 slices that no read form removes, because
+What is left after `opt1` is ~9,900 slices that no read form removes, because
 they are not multi-run reads: they are single-position and short reads, one
 slice each, with no concatenate to replace (`always` emits 8,800 slices against
 20 concatenates). Merging those is a question about which slots sit next to
@@ -373,3 +387,26 @@ base budget, emitter-side CSE, and pattern exclusion. The one that is not is the
 slot layout the reads address: if a stencil neighbour read were one contiguous
 span, it would be one slice instead of several, and that is
 `src/tree_walk/oop_merge.jl`.
+
+## 6. The trap that cost this measurement three runs
+
+**Every timing in section 5 was taken on a node whose page cache had lost the
+3 GB `libReactantExtra.so`, and for ninety minutes that was indistinguishable
+from a hung process.** Julia processes sat in `D`/`I` state at 0% CPU with 0.4 GB
+resident and no output, for fifty minutes, while `dd` on the very same file
+returned 204 MB/s and the cgroup reported no memory pressure at all. The
+filesystem was not slow in bulk; individual memory-mapped PAGE FAULTS against it
+were taking on the order of 200 ms each, and dynamic linking a 3 GB shared
+object touches pages one at a time and out of order. `cat`-ing the library and
+the depots' `.so` caches to `/dev/null` — 3 GB in 100 s — unblocked every
+stalled process within seconds.
+
+Three consequences to carry forward. A stalled Julia process here is worth ONE
+check before it is worth a diagnosis: `cat` the artifact, and if it starts
+moving the problem was never the code. Any wall-clock number taken on this node
+while that is happening is worthless — the concurrent slurm adjoint's
+`@compile ros_step` reads 2795.8 s against 69.4 s for the same program, and the
+`enzyme` column of the table above spreads 1.4x across arms that are the same
+module. And a probe that prints only on stage COMPLETION cannot tell a stall
+from slow progress, which is why the split stage announces each pass before
+running it.

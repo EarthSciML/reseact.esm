@@ -120,8 +120,10 @@
 # 2304-slot buffer) on 240 of the 640 reads, which is 74% of the 58,620 slices.
 # EarthSciAST 8433a50c3 budgets the copy instead of the read: 15,252 slices,
 # the pre-Enzyme `enzyme-hlo-opt` from 69.9 s to 10.5 s, and the Enzyme
-# DIFFERENTIATION itself -- which no pass exclusion can touch -- from 1297.6 s
-# to 142.8 s.
+# DIFFERENTIATION itself -- which no pass exclusion can touch, because `enzyme`
+# is not one of the excludable patterns -- from 1297.6 s to ~100-143 s. (That
+# last range is four arms whose modules are within 1% of each other; the spread
+# is the shared node, not the arm. COMPILE_COST.md section 6.)
 #
 # WHAT IS STILL THE WALL, precisely: the FIRST `enzyme-hlo-opt` over the
 # differentiated module, in `cse_slice`, which compares each slice against the
@@ -131,7 +133,8 @@
 # lowering is now SPENT as a lever: `ESM_DIRECT_EMIT_READ=always` gathers every
 # multi-run read and lifts the budget, emits 8,800 slices against the fix's
 # 15,252 -- and after the pre-Enzyme pass both arrive at the same ~9,900, and
-# `opt2b` is unmoved in both. So is emitter-side CSE of the spans (EarthSciAST
+# `opt2b` is unmoved in both -- it ran 76 minutes without finishing in the
+# longest arm. So is emitter-side CSE of the spans (EarthSciAST
 # 5181e5c47; three quarters of the emitted slices were the SAME slice, which
 # takes emission and the pre-Enzyme pass down but leaves that module identical
 # to the op), and so is excluding `slice_elementwise`. Those ~9,900 are
