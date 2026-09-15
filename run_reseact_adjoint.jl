@@ -107,10 +107,34 @@
 # Excluding both by name through RESEACT_EXCLUDED_PASSES is NOT the fix -- it
 # was tried and the pipeline was OOM-killed in thirteen minutes, because
 # `cse_slice` is also what keeps the slice set from growing. The cost is the
-# slice POPULATION (58,620 even after the fix, where the traced lane's
-# equivalent mass is `broadcast_in_dim`, whose reverse is a reduce), so the
-# next lever is a materialization layout in which a stencil neighbour read is
-# one contiguous span -- `oop_merge.jl`'s block layout, not the read lowering.
+# slice POPULATION (58,620 even after that fix, where the traced lane's
+# equivalent mass is `broadcast_in_dim`, whose reverse is a reduce).
+#
+# AND THEN THE STAGE WAS NAMED TOO, which is what the paragraph above was
+# missing: `RESEACT_CC_STAGES=split` runs Reactant's `:all` pipeline one pass
+# at a time (COMPILE_COST.md section 5). Of the twelve stages, three carry the
+# whole cost, and they are not the ones the op counts suggested. A SECOND
+# emitter clause was declining the gather -- `_de_gather_base` charged the
+# CACHED producer-set concatenation to the one read in front of it, refusing
+# the transport stencil's own 6048-element base (the 3744-slot state beside a
+# 2304-slot buffer) on 240 of the 640 reads, which is 74% of the 58,620 slices.
+# EarthSciAST 8433a50c3 budgets the copy instead of the read: 15,252 slices,
+# the pre-Enzyme `enzyme-hlo-opt` from 69.9 s to 10.5 s, and the Enzyme
+# DIFFERENTIATION itself -- which no pass exclusion can touch -- from 1297.6 s
+# to 142.8 s.
+#
+# WHAT IS STILL THE WALL, precisely: the FIRST `enzyme-hlo-opt` over the
+# differentiated module, in `cse_slice`, which compares each slice against the
+# others through `OperationEquivalence::isEquivalentTo` (19.8% of a live
+# profile with `slice_elementwise` already excluded) over the 24,000-28,000
+# slices Enzyme's reverse of ~9,000 primal slices produces. And the read
+# lowering is now SPENT as a lever: `ESM_DIRECT_EMIT_READ=always` gathers every
+# multi-run read and lifts the budget, emits 8,800 slices against the fix's
+# 15,252 -- and after the pre-Enzyme pass both arrive at the same ~9,000, and
+# `opt2b` is unmoved in both. Those ~9,000 are single-position and short reads
+# with no concatenate to replace, so merging them is a question about which
+# slots sit next to which: `oop_merge.jl`'s block layout, measured this time
+# rather than guessed.
 #
 # WHAT IS PROVEN OF THE DIRECT LANE, then: the forward runner end to end, and
 # the algebraic agreement of both halves' right-hand sides (AGREEMENT.md).

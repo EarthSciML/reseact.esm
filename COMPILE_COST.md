@@ -115,11 +115,11 @@ surprising — `cse_slice` is also what KEEPS the slice set from growing, so
 removing it leaves the other patterns multiplying an un-deduplicated 58,620.
 The cost is the slice POPULATION, not one pattern's implementation.
 
-So getting further needs FEWER RUNS, not a cheaper form for the runs or a
-cheaper pass over them: a materialization layout in which a stencil neighbour
-read is one contiguous span. That is `src/tree_walk/oop_merge.jl`'s block
-layout, not `_de_emit_runs`. It is the next thing to attack and it is not
-attacked here.
+The cost is the slice POPULATION. What that paragraph then GUESSED — that
+getting further needs a materialization layout in which a stencil neighbour read
+is one contiguous span, i.e. `src/tree_walk/oop_merge.jl` rather than the read
+lowering — is wrong, and section 5 is the measurement that says so. Three
+quarters of the 58,620 came from ONE clause in the read lowering after all.
 
 ### End to end, the adjoint driver's four compiles at 6x6x8
 
@@ -224,3 +224,118 @@ overlay on purpose (`ext/reactant_direct/interp.jl`; it is O(1) in the grid).
 The transport step's whole trace mints three helpers, both `ssp_step` modules
 are ONE `func.func` after the pipeline, and the half where all the helpers live
 is the half that compiles FASTER in the direct lane.
+
+## 5. Which STAGE, and the second emitter clause
+
+`perf` named the pattern; it did not name the stage, because `opt` is one number
+over a dozen passes. `RESEACT_CC_STAGES=split` (the same probe) reproduces
+Reactant's `optimization_passes = :all` list for a CPU backend
+(`src/compiler/Compiler.jl`, the `:all` branch, `raise = false`) one stage at a
+time on ONE module, timing and censusing each. Validated on `ssp_step`, where
+the whole pipeline is seconds: the twelve stages sum to 17.1 s and end at 22,817
+ops against a plain `opt` run's 22,745 on the same program.
+
+### The stages of `ssp_vjp`, direct lane, 6x6x8
+
+`ESM_DIRECT_GATHER_BASE_MAX` is the budget knob introduced with the fix below;
+4096 is a STRICTER control than the shipped-at-72cbadc30 rule (which allowed
+`max(8n, 4096)` and therefore let the wider reads through at 58,620 slices), so
+read the left column as an upper bound on the old shape rather than a
+reproduction of it.
+
+| stage | what it is | budget 4096 | budget 65536 (the fix) |
+| --- | --- | ---: | ---: |
+| emitted `slice` | | 379,140 | **15,252** |
+| emitted `gather` | | 4,248 | 4,968 |
+| emitted `concatenate` | | 1,112 | 400 |
+| `mark` | `mark-func-memory-effects` | 1.1 s | 0.3 s |
+| `opt1` | `enzyme-hlo-opt`, pre-Enzyme | 69.9 s | **10.5 s** |
+| `ebatch` | `enzyme-batch` | 0.1 s | 0.0 s |
+| `opt2a` | `enzyme-hlo-opt` again | 7.4 s | 1.8 s |
+| `enzyme` | **the differentiation itself** | **1297.6 s** | **142.8 s** |
+| `opt2b` | `enzyme-hlo-opt` on the ADJOINT | not reached | > 37 min, capped |
+
+Two things fall out. **The differentiation itself is superlinear in the slice
+count** — 1297.6 s against 142.8 s for a 25x smaller slice set — which no
+amount of pass exclusion touches, because `enzyme` is not one of the excludable
+patterns. And **what is left is `opt2b`**: the FIRST `enzyme-hlo-opt` run over
+the differentiated module, which at the fix's slice count carries 27,610
+`slice`, 9,583 `pad` (the reverse of a slice is a pad-and-add), 10,354
+`reshape` and 18,351 `add`. That is where the remaining wall is, and it is the
+same `slice_elementwise` / `cse_slice` pair section 4 named, now working on the
+adjoint's slices rather than the primal's.
+
+### Where the 58,620 came from — the base budget, not the run structure
+
+Counted on the emitted module (`mlirG2/ssp_vjp-direct-unopt.mlir`, the
+`gather`-form emission at 72cbadc30): **640 reads reach a concatenate, and they
+share only 37 DISTINCT PRODUCER SETS.** 240 of those reads have the same shape —
+432 positions in 168 to 312 runs out of TWO producers, the 3744-slot extended
+state beside a 2304-slot buffer, 6048 elements of base. The run-length test
+wanted every one of them as a gather. `_de_gather_base` declined every one of
+them, because it compared the base against ONE read (`tot > max(8 * n, 4096)`,
+6048 against 4096) while the base is CACHED and that one concatenate would have
+served all 240.
+
+**43,368 of the 58,620 slices — 74% — are in reads that failed only that
+clause.** The rest are single-producer reads whose average run is four or longer,
+which is what the slice path exists for.
+
+EarthSciAST 8433a50c3 replaces the per-read comparison with an absolute budget
+on the COPY, charged only when there is one — a base over one producer with no
+structural zero is not a concatenate at all, because `_de_concat` of a single
+piece is that piece. That is the `budget 65536` column above.
+
+### And it is not enough: `opt2b` survives every read form
+
+Three more arms, same probe, same grid, one process each.
+
+| arm | emitted `slice` | after `opt1` | `opt1` | `enzyme` | `opt2b` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| budget 65536 (the fix) | 15,252 | 9,932 | 10.5 s | 142.8 s | > 37 min, capped |
+| `ESM_DIRECT_EMIT_READ=always` | 8,800 | 8,726 | 49.1 s | 117.6 s | > 31 min, capped |
+| the fix, minus `slice_elementwise` | 15,252 | — | **2.9 s** | 102.7 s | > 28 min, capped |
+
+**Every read form converges to the same module after `opt1`** — 8,726 slices
+against 9,932, for emitted counts that differ by 1.7x — and Enzyme turns that
+into 23,988 / 27,610 slices plus 8,723 / 9,583 pads either way. `always` is the
+CEILING on what the read lowering can buy (it gathers every read that
+decomposes into more than one run, and lifts the budget entirely), and it moves
+`opt2b` not at all. So the read lowering is finished as a lever, and the
+paragraph in section 4 that guessed a materialization layout was right about
+WHERE to look next even though it was wrong that the read lowering had nothing
+left in it.
+
+What is left after `opt1` is ~9,000 slices that no read form removes, because
+they are not multi-run reads: they are single-position and short reads, one
+slice each, with no concatenate to replace (`always` emits 8,800 slices against
+20 concatenates). Merging those is a question about which slots sit next to
+which — `src/tree_walk/oop_merge.jl`'s block layout — and not about
+`_de_emit_runs`.
+
+### And which pattern, once `slice_elementwise` is gone
+
+`perf record -F 199 -g`, 150 s, 29,727 samples, taken live on `opt2b` in the
+third arm above:
+
+| share | symbol |
+| ---: | --- |
+| 19.8% | `mlir::OperationEquivalence::isEquivalentTo` (two frames) |
+| 6.9% | `mlir::enzyme::failIfDynamicShape` (the `CheckedOpRewritePattern` guard) |
+| 2.2% | `StaticSlice::get` |
+| 2.0% | `CSE<stablehlo::SliceOp>::matchAndRewriteImpl` |
+
+`cse_slice` is now the whole cost, and it is QUADRATIC: it compares each slice
+against the others through `OperationEquivalence::isEquivalentTo`, and the
+adjoint module carries 24,000 to 28,000 of them. Excluding it as well is the
+combination section 4 already tried and it OOM-kills, because `cse_slice` is
+what keeps the other slice patterns from multiplying an un-deduplicated set.
+There is no pass exclusion that wins here; the slice population is the variable.
+
+### Where that leaves the direct lane's adjoint
+
+`@compile ssp_vjp` at 6x6x8 is still the wall, against 115.4 s in the traced
+lane, and the stage it is stuck in is now named: the FIRST `enzyme-hlo-opt`
+over the differentiated module, in `cse_slice`. Everything before it is in
+range — emission 3.4 s, `opt1` 2.9 to 10.5 s, the differentiation 102.7 to
+142.8 s — and everything the read lowering controls has been spent.
