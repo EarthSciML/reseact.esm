@@ -81,16 +81,45 @@ on it ran for more than SIX HOURS without finishing
 the traced lane.
 
 **The fix shrinks what Enzyme is given by 20.7x, to smaller than the traced
-lane's own module, and the reverse-mode compile is still the wall.** That is the
-honest state: `gather` made `ssp_step` comparable with the traced lane (207 s
-against 170 s) and it did NOT make `ssp_vjp` comparable. 58,620 slices is 66% of
-what remains, the reverse of a slice is a pad-and-add into a zero buffer, and
-the traced lane's equivalent mass is 51,781 `broadcast_in_dim`, whose reverse is
-a reduce. Getting further needs FEWER RUNS, not a cheaper form for the runs —
-i.e. a materialization layout in which a stencil neighbour read is one
-contiguous span — which is a question about `oop_merge.jl`'s block layout, not
-about `_de_emit_runs`. It is the next thing to attack and it is not attacked
-here.
+lane's own module, and the reverse-mode compile is still the wall.** `gather`
+made `ssp_step` comparable with the traced lane (207 s against 170 s) and it did
+not make `ssp_vjp` comparable. Emission is 3.4 s; the probe's `opt` stage — the
+MLIR pass pipeline alone, before XLA:CPU codegen is even reached — was killed by
+its own 3-hour cap.
+
+### Which pass, by name
+
+`perf record -F 199 -g` on the live compile, 60 s, 11,937 samples. It is not a
+mystery and it is not XLA:
+
+| share | symbol |
+| ---: | --- |
+| 13.1% | `enzyme::CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwise>::matchAndRewrite` |
+| 12.7% | `mlir::OperationEquivalence::isEquivalentTo` (CSE, two frames) |
+| 1.6% | `CSE<stablehlo::SliceOp>::matchAndRewriteImpl` |
+| 2.8% | `StaticSlice::get` / `StaticSlice::StaticSlice` |
+| 2.7% | `SliceOp::getStrides` / `SliceOp::getStartIndices` |
+
+with the remainder dominated by the generic accessors those patterns call
+(`DenseArrayAttrImpl<long>`, `RankedTensorType::getShape`, `hasStaticShape`,
+`SmallVectorImpl<long>::operator=`). Every frame in the profile is the greedy
+rewrite driver working on slices. The two registered pattern names are
+`slice_elementwise` (push a slice through an elementwise op, which CREATES two
+more slices per rewrite) and `cse_slice`, both reachable from the driver's
+existing `RESEACT_EXCLUDED_PASSES`.
+
+**Excluding them is not the fix.** Tried, with
+`RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop,slice_elementwise,cse_slice`:
+the pipeline was OOM-killed thirteen minutes in. That is consistent rather than
+surprising — `cse_slice` is also what KEEPS the slice set from growing, so
+removing it leaves the other patterns multiplying an un-deduplicated 58,620.
+The cost is the slice POPULATION, not one pattern's implementation.
+
+So getting further needs FEWER RUNS, not a cheaper form for the runs or a
+cheaper pass over them: a materialization layout in which a stencil neighbour
+read is one contiguous span. That is `src/tree_walk/oop_merge.jl`'s block
+layout, not `_de_emit_runs`. It is the next thing to attack and it is not
+attacked here.
 
 ### End to end, the adjoint driver's four compiles at 6x6x8
 

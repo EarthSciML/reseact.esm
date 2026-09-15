@@ -100,11 +100,17 @@
 # 893.7 s to 206.7 s, the transport RHS's optimized module from 18,060 ops to
 # 6,510 and its per-call median from 3.3 ms to 1.9 ms, and what Enzyme is given
 # from 1,849,190 ops to 89,238 -- SMALLER than the traced lane's module -- and
-# `ssp_vjp` is STILL the wall. 58,620 slices remain, the reverse of a slice is
-# a pad-and-add, and the traced lane's equivalent mass is `broadcast_in_dim`,
-# whose reverse is a reduce. The next lever is a materialization layout in
-# which a stencil neighbour read is one contiguous span, which is
-# `oop_merge.jl`'s block layout and not the read lowering.
+# `ssp_vjp` is STILL the wall, and `perf` names the pass rather than leaving it
+# to inference: 13.1% of the live compile is Enzyme-JAX's `SliceElementwise`
+# rewrite on `stablehlo.slice` and 12.7% is CSE's `OperationEquivalence::
+# isEquivalentTo`, with the rest of the profile the accessors those two call.
+# Excluding both by name through RESEACT_EXCLUDED_PASSES is NOT the fix -- it
+# was tried and the pipeline was OOM-killed in thirteen minutes, because
+# `cse_slice` is also what keeps the slice set from growing. The cost is the
+# slice POPULATION (58,620 even after the fix, where the traced lane's
+# equivalent mass is `broadcast_in_dim`, whose reverse is a reduce), so the
+# next lever is a materialization layout in which a stencil neighbour read is
+# one contiguous span -- `oop_merge.jl`'s block layout, not the read lowering.
 #
 # WHAT IS PROVEN OF THE DIRECT LANE, then: the forward runner end to end, and
 # the algebraic agreement of both halves' right-hand sides (AGREEMENT.md).

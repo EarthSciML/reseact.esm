@@ -31,7 +31,7 @@
 #                        adjoint driver's own programs, defined identically
 #                        except that the Jacobian mode is `:fd`, so the probe
 #                        needs no band model and no EarthSciASTDiff prepare.
-#   RESEACT_CC_STAGES    subset of trace,opt,raw2,compile (default trace,opt,raw2)
+#   RESEACT_CC_STAGES    subset of trace,opt,raw2,split,compile (default trace,opt,raw2)
 #                        The stages run IN THAT ORDER and the split is
 #                        differences between them, because the first Reactant
 #                        call in a process also pays for Julia's own JIT of the
@@ -40,6 +40,9 @@
 #                          opt  - raw2  = the Enzyme-JAX / StableHLO pipeline
 #                          trace - raw2 = Julia JIT of the tracing stack
 #                          compile - opt = XLA:CPU codegen
+#                        `split` runs the `:all` pipeline one stage at a time
+#                        on one module, timing and censusing each -- use it
+#                        when `opt` is the number that has to be taken apart.
 #   RESEACT_CC_DUMP      directory to write the module texts to
 #   RESEACT_NLON/NLAT/NLEV, RESEACT_RES, RESEACT_T0, RESEACT_ADJ_UJITTER,
 #   RESEACT_EXCLUDED_PASSES, RESEACT_ADJ_XLAFIX, ESS_OOP_SSA, RESEACT_RXENV
@@ -268,6 +271,82 @@ say(@sprintf("  excluded_passes=%s  xlafix=%s  XLA_FLAGS=%s",
              get(ENV, "XLA_FLAGS", "(unset)")))
 say("="^78)
 
+# --------------------------------------------------------------------------- #
+# THE PASS SPLIT. `opt` is one number over a pipeline of a dozen stages, and on
+# the reverse-mode program that number is hours, so it has to be taken apart.
+# Reactant assembles `optimization_passes = :all` for a CPU backend as the list
+# below (`src/compiler/Compiler.jl`, the `:all` branch, with `raise = false`);
+# this reproduces it stage by stage on ONE module, timing and censusing each,
+# so the stage that does not finish is named rather than guessed. The sum of
+# the stage times and the final census are checked against a plain `opt` run on
+# the same program -- do that on `ssp_step`, where `opt` is seconds.
+#
+#   RESEACT_CC_SPLIT_STOP   stop after this stage (default: run them all)
+#   RESEACT_CC_SPLIT_QUIET  comma-separated stages to skip the census of, for
+#                           when printing the module text is itself the cost
+# --------------------------------------------------------------------------- #
+const MLIR = RX.MLIR
+const RXC  = RX.Compiler
+const SPLIT_STOP  = get(ENV, "RESEACT_CC_SPLIT_STOP", "")
+const SPLIT_QUIET = Set(String.(filter(!isempty, strip.(split(get(ENV, "RESEACT_CC_SPLIT_QUIET", ""), ',')))))
+
+function split_stages(co::RX.CompileOptions)
+    kw = (; recognize_comms = true, lower_comms = true, backend = "cpu", is_sharded = false)
+    opt1 = RXC.optimization_passes(co; sroa = true, hlo_opts = true, kw...)
+    opt2 = RXC.optimization_passes(co; sroa = false, kw...)
+    biw  = sizeof(LinearAlgebra.BlasInt) * 8
+    lower = join(["lower-enzymexla-linalg{backend=cpu blas_int_width=$biw}",
+                  "lower-enzymexla-blas{backend=cpu blas_int_width=$biw}",
+                  "lower-enzymexla-lapack{backend=cpu blas_int_width=$biw}",
+                  "lower-enzymexla-math", "lower-enzymexla-mpi{backend=cpu}"], ",")
+    return [("mark",   "mark-func-memory-effects"),
+            ("opt1",   opt1),
+            ("ebatch", "enzyme-batch"),
+            ("opt2a",  opt2),
+            ("enzyme", RXC.enzyme_pass),
+            ("opt2b",  opt2),
+            ("clean",  "canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math"),
+            ("opt2c",  opt2),
+            ("kern",   "lower-kernel{backend=cpu},canonicalize"),
+            ("raise",  "canonicalize"),
+            ("lower",  lower),
+            ("jit",    "lower-jit{openmp=$(RXC.OpenMP[]) backend=cpu},symbol-dce")]
+end
+
+function run_split(f, args)
+    stages = split_stages(COPTS2)
+    say(@sprintf("  split: %d stages, stop=%s", length(stages),
+                 isempty(SPLIT_STOP) ? "(none)" : SPLIT_STOP))
+    tot = Ref(0.0)
+    MLIR.IR.@dispose ctx = RX.ReactantContext() begin
+        t0 = time()
+        mod = RXC.code_hlo(ctx, f, args; compile_options = COPTS0)
+        say(@sprintf("  %-8s %9.1f s   (emission, no passes)", "emit", time() - t0))
+        MLIR.IR.activate(ctx)
+        try
+            report_census("emit", sprint(show, mod))
+            for (nm, pipe) in stages
+                # Announced BEFORE it runs, so a run killed by the wall clock
+                # still names the stage that did not finish.
+                say(@sprintf("  %-8s ... running", nm))
+                t = time(); RXC.run_pass_pipeline!(mod, pipe, nm); dt = time() - t
+                tot[] += dt
+                say(@sprintf("  %-8s %9.1f s   (cumulative %.1f s)", nm, dt, tot[]))
+                nm in SPLIT_QUIET || report_census(nm, sprint(show, mod))
+                if !isempty(DUMPDIR)
+                    write(joinpath(DUMPDIR, "$(PROG)-$(rx_rhs_mode())-split-$nm.mlir"),
+                          sprint(show, mod))
+                end
+                nm == SPLIT_STOP && break
+            end
+        finally
+            MLIR.IR.deactivate(ctx)
+        end
+    end
+    say(@sprintf("  SPLIT TOTAL %.1f s", tot[]))
+    return nothing
+end
+
 # `@code_hlo` / `@compile` need a LITERAL call expression, so each program gets
 # its own three lines rather than a thunk that takes the macro.
 MOD0 = Ref{Any}(nothing); MOD1 = Ref{Any}(nothing); MOD2 = Ref{Any}(nothing)
@@ -281,31 +360,37 @@ if PROG === :rhsT
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 rhsT(U_R, THT, T_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
+    want("split")   && run_split(rhsT, (U_R, THT, T_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsT(U_R, THT, T_R))
 elseif PROG === :rhsC
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 rhsC(U_R, THC, T_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
+    want("split")   && run_split(rhsC, (U_R, THC, T_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsC(U_R, THC, T_R))
 elseif PROG === :ssp_step
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
+    want("split")   && run_split(ssp_step, (U_R, THT, T_R, DTT_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))
 elseif PROG === :ros_step
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
+    want("split")   && run_split(ros_step, (U_R, THC, T_R, DTC_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))
 elseif PROG === :ssp_vjp
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
+    want("split")   && run_split(ssp_vjp, (U_R, THT, LAM_R, T_R, DTT_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))
 else
     want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
+    want("split")   && run_split(ros_vjp, (U_R, THC, LAM_R, T_R, DTC_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))
 end
 
