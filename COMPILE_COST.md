@@ -370,6 +370,19 @@ There is no pass exclusion that wins here; the slice population is the variable.
 
 ### Where that leaves the direct lane's adjoint
 
+> **Overtaken at 6x6x8 on 2026-09-15 evening, and only there.** `@compile
+> ssp_vjp` is 98.7 s in the demonstration preset on EarthSciAST `oop-delete`
+> `87f4f2474` (`run_reseact_adjoint.jl`'s header has the full table, and the
+> preset now runs end to end in 21 m 11 s with every acceptance check green).
+> Two things moved at once and they are not separately measured: the emitter
+> commits after `72cbadc30`, and the `make_tracer` opaque-leaf registration,
+> which had never applied inside the adjoint driver because its guard tested
+> `Main` and the driver runs in `Main.adjoint`. The section below is still the
+> measurement of WHERE the time goes, and the ~9,900 slices are still the
+> number the next lever has to move — at CONUS, where nothing has been
+> measured.
+
+
 `@compile ssp_vjp` at 6x6x8 is still the wall, against 115.4 s in the traced
 lane, and the stage it is stuck in is now named: the FIRST `enzyme-hlo-opt`
 over the differentiated module, in `cse_slice`. Everything before it is in

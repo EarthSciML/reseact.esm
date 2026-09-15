@@ -36,145 +36,152 @@
 #   julia --project=run-model-jl run_reseact_adjoint.jl
 #
 # ---------------------------------------------------------------------------
-# WHICH COMPILED RIGHT-HAND SIDE: `RESEACT_RHS` (2026-09-15)
+# THE COMPILED RIGHT-HAND SIDE (2026-09-15)
 # ---------------------------------------------------------------------------
 # Every compiled program this driver builds -- both operator-split halves, the
 # symbolic Jacobian band model, and the capacity build inside each of the 8
-# chemistry shard workers -- goes through ONE seam, `tools/rx_rhs.jl`:
+# chemistry shard workers -- goes through ONE seam, `tools/rx_rhs.jl`, and that
+# seam builds exactly one thing:
 #
-#   RESEACT_RHS=traced   EarthSciAST.rhs_with_buffers -- the `:oop` build
-#                        product CALLED under `@compile`, Reactant tracing the
-#                        broadcast emitter. The lane every number above was
-#                        measured on, and the ORACLE for the direct one.
-#   RESEACT_RHS=direct   EarthSciASTReactantExt.direct_rhs_with_buffers --
-#                        EarthSciAST's direct StableHLO emitter, building the
-#                        module from the compiled tree-walk IR. DEFAULT since
-#                        the runs below.
+#   EarthSciASTReactantExt.direct_rhs_with_buffers(f)
 #
-# Nothing else differs between them, and every driver and every shard prints
-# its lane on the first line, because a run that took the other lane in one
-# shard would compile, run and answer, and the answer would be a comparison of
-# the traced lane with itself. The HOST checks -- the base-point finiteness
-# guards and `validate_plan` -- stay on `rhs_with_buffers` in both lanes: they
-# check the BUILD, and they must gate a direct run exactly as they gate a
-# traced one. Both lanes need the `faq`-node-tag fixes in EarthSciASTSplitter
-# AND EarthSciASTDiff (AGREEMENT.md section 2) and therefore, today, the
-# hand-built environment README.md names rather than `run-model-jl`.
+# `build_evaluator(...; form = :oop)` hands back the compiled tree-walk IR, and
+# EarthSciAST's direct emitter lowers that IR to StableHLO operation by
+# operation: no Julia broadcast trace in between, no fallback, and a construct
+# it cannot lower is a `DirectEmitError` naming the construct and the rule it
+# came from. `RESEACT_RHS` is not a switch; a stale `RESEACT_RHS=traced` in an
+# environment or an sbatch file is refused BY NAME rather than falling through
+# to the emitter that remains, because the failure mode of a silent fallthrough
+# is a log line that says one thing and a program that is another.
 #
-# WHAT THE TWO LANES COST AT 6x6x8, on the demonstration preset below
-# (3 macro steps, CLAMP=0, UJITTER=1e-1, all four stages, SHARDS=0, jac=:sym,
-# ESS_OOP_SSA=1, Reactant 0.2.285 for both):
+# THE HOST CHECKS RUN ON THE COMPILED PROGRAM TOO, and they had to move. The
+# `:oop` build product is IR, not a callable: calling it on `Vector{Float64}`s
+# raises `E_TREEWALK_OOP_NOT_EVALUABLE`. So the base-point finiteness guards
+# (`tools/subcycle_chem.jl`, `tools/shard_worker.jl`) and `validate_plan`
+# evaluate the program they are checking ONCE, at the point they are checking,
+# through `rx_host_eval`: a lazy `@compile` of that program plus a
+# host->device->host round trip. They are still checks of the BUILD -- an
+# independent evaluation of it, not a second implementation -- and they still
+# gate everything downstream. Host evaluation of the MODEL, outside the
+# compiled lane, is `build_evaluator(form = :inplace)`'s `f!`; rebuilding the
+# whole model that way for the sake of a guard would cost more than the guard.
 #
-#   BUILD      200.2 s traced   206.3 s direct     -- the same build; the lane
-#                                                     is chosen after it
-#   prepare_jacobian  46.4 s / 45.2 s, plan vs the host Jacobian 0.000e+00 in
-#                     BOTH -- so the band model reaches the direct lane intact
-#   @compile ssp_step  170.1 s traced   206.7 s direct
-#   @compile ros_step   91.0 s traced    69.4 s direct  (the direct lane WINS
-#                                                        the chemistry half)
-#   @compile ssp_vjp   115.4 s traced   the wall, see below
-#   TRACED, END TO END: 26 m 23 s, every acceptance stage green --
-#     J = 38.8466705557198; structural identity scale*dJ/dscale == g0*dJ/dg0 at
-#     8.665e-16; fixed-sequence replay 0.000e+00 at every checkpoint; 0 flaky
-#     retries over 251 VJP calls; 21 of 162 components nonzero; and ALL THREE
-#     fdtape parameters PASS (NEIRegrid.scale 2.893e-11, Transport3D.tau_pblmix
-#     8.591e-10, NEIRegrid.g0 2.893e-11). The two "FAIL" lines the recorded
-#     output further down describes are GONE -- they were the XLA:CPU race
-#     landing on the FD reference, and the workaround is on. `ref` still
-#     self-disables on its zero-seed guard; that contradiction is unchanged.
-#     NB J is 38.8466705557198 here against the 38.844190627265334 recorded
-#     below. That is the FIXED OPERATOR SPLIT, not the lane: the recorded run
-#     predates the faq-node-tag fixes and was integrating a degenerate split.
+# `validate_plan` GOT STRONGER IN THE MOVE, which was not the point but is
+# worth having. It now evaluates the band model at BOTH lifts -- the
+# evaluator's `jac.umap` scatter and the plan's own `ugather`, the one
+# `gather_uj` emits into the traced program -- and compares the plan's block
+# gather against EarthSciASTDiff's `jac.scatter`. A wrong STATE lift is
+# therefore caught as well as a wrong band gather; before, both sides used the
+# evaluator's lift and `ugather` went unchecked.
 #
-# THE TRANSPORT HALF'S REVERSE-MODE COMPILE IS THE OPEN ITEM, and it is the
-# reason the direct lane has no 6x6x8 gradient table beside the traced one yet.
-# `@compile ssp_vjp` in the direct lane ran 6 h 23 m WITHOUT FINISHING and was
-# killed by its own timeout. The cause is measured, not guessed
-# (COMPILE_COST.md): the emitter turned every read of the extended state into
-# one slice per contiguous run, ReSEACT's stencil runs are two to four elements
-# long, and the reverse-mode program reached the pass pipeline as 1,849,190 ops
-# of which 1,821,224 were `stablehlo.slice` -- against the traced lane's
-# 113,744 and 2,712. EarthSciAST 72cbadc30 (`ESM_DIRECT_EMIT_READ`, default
-# `gather`) emits ONE gather when the average run is shorter than four,
-# concatenating the distinct producer values once. That took `ssp_step` from
-# 893.7 s to 206.7 s, the transport RHS's optimized module from 18,060 ops to
-# 6,510 and its per-call median from 3.3 ms to 1.9 ms, and what Enzyme is given
-# from 1,849,190 ops to 89,238 -- SMALLER than the traced lane's module -- and
-# `ssp_vjp` is STILL the wall, and `perf` names the pass rather than leaving it
-# to inference: 13.1% of the live compile is Enzyme-JAX's `SliceElementwise`
-# rewrite on `stablehlo.slice` and 12.7% is CSE's `OperationEquivalence::
-# isEquivalentTo`, with the rest of the profile the accessors those two call.
-# Excluding both by name through RESEACT_EXCLUDED_PASSES is NOT the fix -- it
-# was tried and the pipeline was OOM-killed in thirteen minutes, because
-# `cse_slice` is also what keeps the slice set from growing. The cost is the
-# slice POPULATION (58,620 even after that fix, where the traced lane's
-# equivalent mass is `broadcast_in_dim`, whose reverse is a reduce).
+# WHAT IT COSTS AT 6x6x8, on the demonstration preset above (3 macro steps,
+# CLAMP=0, UJITTER=1e-1, all four stages, SHARDS=0, jac=:sym, Reactant 0.2.285,
+# two other Julia processes on the node):
 #
-# AND THEN THE STAGE WAS NAMED TOO, which is what the paragraph above was
-# missing: `RESEACT_CC_STAGES=split` runs Reactant's `:all` pipeline one pass
-# at a time (COMPILE_COST.md section 5). Of the twelve stages, three carry the
-# whole cost, and they are not the ones the op counts suggested. A SECOND
-# emitter clause was declining the gather -- `_de_gather_base` charged the
-# CACHED producer-set concatenation to the one read in front of it, refusing
-# the transport stencil's own 6048-element base (the 3744-slot state beside a
-# 2304-slot buffer) on 240 of the 640 reads, which is 74% of the 58,620 slices.
-# EarthSciAST 8433a50c3 budgets the copy instead of the read: 15,252 slices,
-# the pre-Enzyme `enzyme-hlo-opt` from 69.9 s to 10.5 s, and the Enzyme
-# DIFFERENTIATION itself -- which no pass exclusion can touch, because `enzyme`
-# is not one of the excludable patterns -- from 1297.6 s to ~100-143 s. (That
-# last range is four arms whose modules are within 1% of each other; the spread
-# is the shared node, not the arm. COMPILE_COST.md section 6.)
+#   BUILD                   213.4 s   the two `:oop` halves; the lane is
+#                                     chosen after it, so this is unchanged
+#   prepare_jacobian         43.8 s
+#   plan vs the JacobianEvaluator  0.000e+00, 175.4 s -- the CHECK's own cost,
+#                                     and it is new. It is the band model's own
+#                                     `@compile` plus two device calls, which is
+#                                     what one evaluation of an `:oop` build
+#                                     costs now. A second
+#                                     `prepare_jacobian(form = :inplace)` would
+#                                     be ~44 s at this grid and was NOT taken:
+#                                     it would validate the plan against a
+#                                     DIFFERENT build's slot numbering, and it
+#                                     would not put the emitter inside the check.
+#                                     `run_reseact_reactant.jl` measured the
+#                                     same check at 172.1 s in its own process.
+#   @compile ssp_step        28.4 s   (170.1 s / 206.7 s on the two lanes of
+#                                      2026-09-15)
+#   @compile ros_step       129.8 s   (91.0 s / 69.4 s)
+#   @compile ssp_vjp         98.7 s   -- see below; this used to be the wall
+#   @compile ros_vjp        156.4 s
 #
-# WHAT IS STILL THE WALL, precisely: the FIRST `enzyme-hlo-opt` over the
-# differentiated module, in `cse_slice`, which compares each slice against the
-# others through `OperationEquivalence::isEquivalentTo` (19.8% of a live
-# profile with `slice_elementwise` already excluded) over the 24,000-28,000
-# slices Enzyme's reverse of ~9,000 primal slices produces. And the read
-# lowering is now SPENT as a lever: `ESM_DIRECT_EMIT_READ=always` gathers every
-# multi-run read and lifts the budget, emits 8,800 slices against the fix's
-# 15,252 -- and after the pre-Enzyme pass both arrive at the same ~9,900, and
-# `opt2b` is unmoved in both -- it ran 76 minutes without finishing in the
-# longest arm. So is emitter-side CSE of the spans (EarthSciAST
-# 5181e5c47; three quarters of the emitted slices were the SAME slice, which
-# takes emission and the pre-Enzyme pass down but leaves that module identical
-# to the op), and so is excluding `slice_elementwise`. Those ~9,900 are
-# single-position and short reads with no concatenate to replace and no
-# duplicate to collapse, so merging them is a question about which slots sit
-# next to which: `oop_merge.jl`'s block layout, measured this time rather than
-# guessed.
+# THE `ssp_vjp` WALL IS GONE. It ran 6 h 23 m without finishing at this grid on
+# 2026-09-15 morning and it is 98.7 s here. TWO things changed at once and they
+# are NOT separately measured, so take the attribution as a reading rather than
+# a result:
+#   * EarthSciAST moved from `72cbadc30` to `oop-delete` `87f4f2474`, which
+#     carries the emitter-side span CSE and the output-assembly-as-a-read
+#     change. `run_reseact_reactant.jl` isolates this one, because its
+#     `make_tracer` registration was already in force: its single macro-step
+#     compile went 1262.0 s -> 426.8 s, ~3x.
+#   * `make_tracer` opaque leaves now apply HERE. Reactant's capture walk
+#     recurses the object graph of the callable it compiles, and the compiled
+#     right-hand side IS that graph -- the IR the emitter wraps. The
+#     registration that stops the walk used to be guarded on
+#     `isdefined(Main, :EarthSciAST)` in a file this driver included; but this
+#     driver runs inside `Main.adjoint`, `Main` never held `EarthSciAST`, and
+#     the guard was therefore never true. Every `@compile` in this driver was
+#     paying an O(IR size) walk that the forward runner was not. In
+#     `tools/rx_rhs.jl` the registration is applied against the module the seam
+#     itself imports, so it always takes. `ssp_step` went 206.7 s -> 28.4 s
+#     here, against the forward runner's 3x -- and that gap is the walk.
 #
-# WHAT IS PROVEN OF THE DIRECT LANE, then: the forward runner end to end, and
-# the algebraic agreement of both halves' right-hand sides (AGREEMENT.md).
-# `run_reseact_reactant.jl` at 6x6x8 over 24 h, BOTH LANES, one allocation
-# (slurm 10553964):
+# WHAT IS PROVEN. The forward runner end to end (`run_reseact_reactant.jl`, and
+# the table below), and the algebraic agreement of both halves' right-hand
+# sides at 6.5e-14 and 7.4e-16 against the measurement this emitter replaced
+# (AGREEMENT.md). `run_reseact_reactant.jl` at 6x6x8 over 24 h:
 #
-#                       traced        direct
-#     build             209.3 s       199.9 s
-#     @compile          578.8 s      1262.0 s     (one macro step; `runs` form)
-#     solve              62.7 s        80.6 s
-#     transport ladder  1087/35       1086/33
+#                       recorded       here
+#     build             199.9 s       212.3 s
+#     @compile         1262.0 s       426.8 s   (one macro step; `runs` form)
+#     solve              80.6 s        75.8 s
+#     transport ladder  1086/33       1084/36
 #     chemistry ladder  14551/1323    14551/1323  BYTE-IDENTICAL
 #     O3_mean end      35.40241      35.40241
-#     O3_min  end      27.28760      27.28770     (3.7e-7 relative)
+#     O3_min  end      27.28770      27.28762     (2.9e-6 relative)
 #     peak-to-trough    4.59759       4.59759
 #
-# NOT PROVEN: the 48 h CONUS gradient through the direct lane. The job is
-# written (`tools/diag/adjoint_conus_48h_direct.sbatch`, the record's
-# configuration value for value) and queued, and it cannot start until the
-# partition frees a whole node. It is also not worth an allocation until the
-# reverse-mode compile above is dealt with: at 6x6x8 it did not finish in
-# 6 h 23 m, and CONUS is 23x the cells.
+# The transport accept/reject ladder is the one thing that moves, and it moved
+# between the two lanes of the recorded job as well (1087/35 against 1086/33).
+# The end state does not: the chemistry ladder is byte-identical, and the
+# objective-bearing mean is identical to every printed digit.
 #
-# THE SSA SPIKE'S FATE HANGS ON THAT RUN, and the reasoning is worth stating
-# now because it does not depend on it. `ESS_OOP_SSA` is read at BUILD time and
-# its arms live inside `_oop_eval_acck` / `_oop_run_acc_vec` / `_oop_fill_level`
-# -- the functions a TRACE walks. The direct emitter walks the plan data itself
-# and never calls them; `ext/reactant_direct/` contains no reference to the SSA
-# tables at all. The direct lane is SSA by construction, which is the thing the
-# spike was reaching for from the other side. So if the direct lane's CONUS loop
-# matches or beats the traced-plus-SSA record (slurm 10372969, 47 min of loop),
-# the spike has nothing left to accelerate once the traced path is retired, and
-# it can be deleted. That comparison is the datum, and it has not been taken.
+# COMPILE_COST.md's closing section -- "`@compile ssp_vjp` at 6x6x8 is still
+# the wall" -- is therefore overtaken at THIS grid, and its measurement of
+# WHERE the time goes is not. The stage it names (the first `enzyme-hlo-opt`
+# over the differentiated module, inside `cse_slice`, quadratic in the slice
+# population through `OperationEquivalence::isEquivalentTo`) and the number it
+# names (the ~9,900 single-position slices that survive `opt1` under every read
+# form, a question about which slots sit next to which, i.e.
+# `src/tree_walk/oop_merge.jl`'s block layout) are what CONUS will meet, at 23x
+# the cells and with no measurement of its own yet.
+#
+# AND THE 6x6x8 GRADIENT TABLE EXISTS NOW, which it did not on 2026-09-15
+# morning. The demonstration preset above, end to end in 21 m 11 s, exit 0
+# (EarthSciAST `oop-delete` 87f4f2474, Reactant 0.2.285; log
+# /scratch/$USER/oopretire-logs/directonly/adj6.log, gradient CSV beside it):
+#
+#   J = 38.8466705557198 -- the same fifteen digits as the record
+#   21 of 162 components nonzero, and over ALL 21 the worst relative difference
+#     against the recorded table is 6.2e-15 (at Transport3D.dlon_deg):
+#     dJ/d(DryDepositionGas.kappa) = -1.180648932748e-01,
+#     dJ/d(NEIRegrid.scale)        = -8.008304991113e-02,
+#     dJ/d(Transport3D.g_acc)      = +3.263278735438e-02
+#   structural identity scale*dJ/dscale == g0*dJ/dg0 at 1.040e-15  PASS
+#   fixed-sequence replay 0.000e+00 relative at every checkpoint
+#   0 flaky-reverse retries over 251 VJP calls
+#   frozen replay at theta0 BIT-IDENTICAL to the forward pass (0.000e+00)
+#   fdtape: ALL THREE parameters PASS -- NEIRegrid.scale 2.893e-11,
+#     Transport3D.tau_pblmix 1.020e-10, NEIRegrid.g0 2.893e-11
+#   forward pass 3.48 s / 3 macro steps, backward sweep 17.49 s / 251 VJPs
+#     (0.0662 s/VJP)
+#
+# `ref` STILL SELF-DISABLES, at exactly the same number as the record: its
+# zero-seed guard finds r[1] norm = 2.326022e+04 where a zero tangent seed must
+# give exactly zero, and concludes Enzyme's forward mode is returning the
+# primal. That contradiction (an earlier investigation tested the same question
+# and cleared it) is unchanged and unresolved; prefer `fdtape` and the
+# structural identity, which is what the driver already says.
+#
+# THE 48 h CONUS GRADIENT IS QUEUED as slurm 10551451
+# (`tools/diag/adjoint_conus_48h_direct.sbatch`), the 2026-09-05 record's
+# configuration value for value, waiting on a whole node. It has not started,
+# and until it does the CONUS step cost of this emitter is unmeasured: the
+# 47-minute loop in the record below was taken on the emitter it replaced.
 #
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
