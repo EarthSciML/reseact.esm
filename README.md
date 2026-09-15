@@ -5,7 +5,7 @@ esm 1.0.0): GEOS-FP meteorology, monotone flux-form PPM transport, the SuperFast
 gas-phase mechanism with Fast-JX photolysis, PBL mixing, dry and wet deposition, and
 NEI2016 emissions, on a native slice of the GEOS-FP 4°×5° grid (CONUS by default:
 13×7×72 cells, 85,176 states). The model is compiled by EarthSciAST either to native
-Julia or, through Reactant/XLA, to a traced program that Enzyme differentiates.
+Julia or, through Reactant/XLA, to a StableHLO program that Enzyme differentiates.
 
 The headline result (2026-09-05): the gradient of mean surface O₃ over 48 h of CONUS
 with respect to all 160 runtime scalars of the model, in 47 min of loop time on one
@@ -18,14 +18,16 @@ the runner's default and projects to about 2 h of loop.
 |---|---|
 | `reseact.esm` | The model. Imports rules and components BY REFERENCE from sibling repos (see below). |
 | `run_reseact.jl` | Native runner: SciML operator splitting on the CPU. The reference. |
-| `run_reseact_reactant.jl` | Traced runner: the same split through Reactant/XLA. |
+| `run_reseact_reactant.jl` | Compiled runner: the same split through Reactant/XLA. |
 | `run_reseact_adjoint.jl` | **The gradient runner.** Defaults to the 5-day CONUS adjoint. Its header is the authoritative record of what has been run, what it cost, and what is still unproven. |
 | `tools/adjoint_gradient.jl` | The adjoint driver the runner wraps: host-lifted adaptive loops, per-macro-step checkpoints, replay, Enzyme VJPs, chemistry sharding. |
 | `tools/shard_chem.jl`, `tools/shard_worker.jl`, `tools/capacity_chem.jl` | Process-level chemistry sharding (`RESEACT_ADJ_SHARDS`). |
-| `tools/reactant_handoff/` | Traced integrator (`rx_traced_integrator.jl`), operator-split loop, Reactant patches. |
+| `tools/rx_rhs.jl` | The compiled-RHS seam: every program in the repository is built here. |
+| `tools/reactant_handoff/` | Traced integrator (`rx_traced_integrator.jl`), operator-split loop, symbolic block-Jacobian gather. |
 | `prototypes/reseact_3d_chem/` | Split/build machinery shared by the runners (`split_common.jl`), block Jacobian, hybrid-coordinate coefficients. |
 | `prototypes/reseact_3d_chem/geosfp_grids.jl` | The GEOS-FP **resolution table** — URL tokens, cell spacings, native extents, per-resolution CONUS box. Dependency-free, so the launcher and the drivers read the same rows. |
-| `tools/diag/` | ~140 measurement probes and their sbatch files. Each probe's header records its measured result; they are the provenance for every number in the docs. |
+| `tools/diag/` | ~130 measurement probes and their sbatch files. Each probe's header records its measured result; they are the provenance for every number in the docs. |
+| `tools/diag/README-retired.md` | The probes deleted with the emitter they measured, and which document each was the provenance for. |
 | `run-model-jl/` | The Julia environment (Project + Manifest). |
 | `DIFFERENTIABILITY_PLAN.md` | The adjoint plan, blockers, and §6: the wall-time campaign toward the 30-minute target, with every measured lever and negative result. |
 | `HELPERS.md` | What each runner depends on and where the helpers should eventually live upstream. |
@@ -43,7 +45,7 @@ the runner's default and projects to about 2 h of loop.
 
   | Repo | State the 2026-09-05 results ran on | Role |
   |---|---|---|
-  | `EarthSciAST` (`pkg/EarthSciAST.jl`) | `17cac5d8d` = `main` at `a1dc9bb30` + 2 commits of branch `inline-test-array-observeds` (an inline-test bindings fix; no emitter change). `origin/main` `05c9064a6` adds only the off-by-default `ESS_OOP_SHIFT_SLICE`. Use `main` once that branch merges. | compiler: `:oop` emitter, SSA emitter (`ESS_OOP_SSA=1`), Reactant extension |
+  | `EarthSciAST` (`pkg/EarthSciAST.jl`) | branch `oop-delete` — the direct StableHLO emitter is the compiled backend and the out-of-place runtime walk is gone. Use `main` once it merges. | compiler: the `:oop` build product (compiled tree-walk IR) and `EarthSciASTReactantExt`'s direct emitter |
   | `EarthSciASTDiff` (`pkg/EarthSciASTDiff.jl`) | `main` `7f83c11` — REQUIRED: the driver calls `prepare_jacobian(; source_layout)`, which this commit adds | symbolic block Jacobian (`jac=:sym`) |
   | `EarthSciASTSplitter.jl` | `main` `35902c6` | transport / chemistry split |
   | `EarthSciIO` (`julia/`) | `main` `d109951` (v0.1.3) | GEOS-FP / NEI providers, on-disk cache |
@@ -149,49 +151,69 @@ RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 RESEACT_ADJ_STAGES=fwd,adj,ref,fdta
 julia --project=run-model-jl run_reseact_adjoint.jl
 ```
 
-### Which right-hand side: `RESEACT_RHS`
+### The compiled right-hand side
 
 Every compiled program in this repository — the two operator-split halves, the
-symbolic Jacobian band model, and the capacity build inside each chemistry shard
-— is built through one seam, `tools/rx_rhs.jl`:
+symbolic Jacobian band model, and the capacity build inside each chemistry
+shard — is built through one seam, `tools/rx_rhs.jl`, and that seam builds one
+thing:
 
-| `RESEACT_RHS` | the compiled RHS is built by |
-|---|---|
-| `traced` (default) | `EarthSciAST.rhs_with_buffers(f)` — the `:oop` build product is CALLED under `Reactant.@compile` and Reactant traces the broadcast emitter |
-| `direct` | `EarthSciASTReactantExt.direct_rhs_with_buffers(f)` — EarthSciAST's direct StableHLO emitter builds the module from the compiled tree-walk IR, without tracing Julia broadcasts |
-
-Nothing else differs: the build, the split, the forcing buffers, the
-integrators, the Jacobian gather and the adjoint are the same code either way,
-which is what makes a difference downstream attributable to the emitter. Every
-driver prints the lane it took, and so does every chemistry shard worker, on its
-first line — a run whose log does not say which lane it took cannot be compared
-with anything. The HOST checks (the base-point finiteness guards and
-`validate_plan`) stay on the traced callable in both lanes: they check the
-BUILD, not the emitter, and they gate a direct run exactly as they gate a traced
-one. `traced` is the default and the oracle: the direct lane's forward runner
-is verified end to end at 6x6x8 and its right-hand sides agree to 6.5e-14, but
-Enzyme's reverse pass over the transport half does not yet compile in usable
-time — see [COMPILE_COST.md](COMPILE_COST.md).
-
-The direct lane needs an EarthSciAST carrying `ext/reactant_direct/`, which
-`run-model-jl` does not yet develop. Until it is released:
-
-```bash
-# Reactant 0.2.285, EarthSciAST `oop-retire`, and the `faq`-node-tag fixes in
-# EarthSciASTSplitter and EarthSciASTDiff. Without the last two the operator
-# split copies the whole tendency into BOTH halves and the symbolic Jacobian
-# comes back empty -- see AGREEMENT.md section 2.
-export JULIA_DEPOT_PATH=/scratch/$USER/oopretire-depot:/projects/illinois/eng/cee/ctessum/ctessum/.julia
-export RESEACT_RXENV=/scratch/$USER/oopretire-env-faq2
-RESEACT_RHS=direct julia --project=$RESEACT_RXENV run_reseact_adjoint.jl
-sbatch tools/diag/adjoint_conus_48h_direct.sbatch      # the 48 h CONUS gradient
+```julia
+rx_rhs(f; var_map) == EarthSciASTReactantExt.direct_rhs_with_buffers(f; var_map)
 ```
 
-What it cost at 6x6x8 and what remains unproven is in
-`run_reseact_adjoint.jl`'s header; why the direct lane's compile needed an
-emitter fix before it was usable, and the fix, is in
-[COMPILE_COST.md](COMPILE_COST.md); that the two lanes compute the same thing is
-[AGREEMENT.md](AGREEMENT.md).
+`build_evaluator(doc; form = :oop)` returns the compiled tree-walk IR, and
+EarthSciAST's direct emitter lowers that IR to StableHLO operation by operation:
+no Julia broadcast trace in between, no fallback, and a construct it cannot
+lower is a `EarthSciAST.DirectEmitError` naming the construct and the rule it
+came from. Every driver prints what it compiled through on its first line, and
+so does every chemistry shard worker.
+
+The `:oop` build product is not callable on host arrays — it is IR, and calling
+it raises `E_TREEWALK_OOP_NOT_EVALUABLE`. The checks OF THE BUILD (the
+base-point finiteness guards and `validate_plan`) therefore evaluate the
+compiled program once at the point being checked, through `rx_host_eval`: one
+`@compile` of the program under test plus a host→device→host round trip. Host
+evaluation of a model outside the compiled lane is `build_evaluator(form =
+:inplace)`'s `f!`.
+
+`RESEACT_RHS` is no longer a switch. A stale `RESEACT_RHS=traced` in an
+environment or an sbatch file is refused by name rather than falling through to
+the emitter that remains.
+
+### The Julia environment
+
+`run-model-jl` pins Reactant v0.2.280 and develops the released siblings from
+the main checkouts. Three things needed by the compiled lane are on branches:
+EarthSciAST's direct emitter, and the `faq`-node-tag fixes in
+EarthSciASTSplitter and EarthSciASTDiff, without which the operator split copies
+the whole tendency into both halves and the symbolic Jacobian comes back empty
+(AGREEMENT.md section 2). Until those merge, run out of a hand-built project:
+
+```bash
+export JULIA_DEPOT_PATH=/scratch/$USER/oopretire-depot:/projects/illinois/eng/cee/ctessum/ctessum/.julia
+export RESEACT_RXENV=/scratch/$USER/directonly-env      # Reactant 0.2.285 + the three branches
+julia --project=$RESEACT_RXENV run_reseact_adjoint.jl
+sbatch tools/diag/adjoint_conus_48h_direct.sbatch        # the 48 h CONUS gradient
+```
+
+**After those three branches merge**, `run-model-jl` needs two changes and no
+others — it is not edited here because until the merge it would stop resolving:
+
+```bash
+julia --project=run-model-jl -e 'using Pkg; Pkg.add(name="Reactant", version="0.2.285")'
+julia --project=run-model-jl -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'
+```
+
+Reactant 0.2.285 is not optional: it is the version every number recorded since
+2026-09-14 was measured on. Other versions have not been validated; 0.2.274–
+0.2.284 have all shown the checkpointing bug noted in the plan, and the XLA:CPU
+race workaround is required on every one of them.
+
+What the compiled lane costs at 6x6x8 and what remains unproven is in
+`run_reseact_adjoint.jl`'s header; where its compile time goes is
+[COMPILE_COST.md](COMPILE_COST.md); that it computes the same thing as the
+measurements it replaced is [AGREEMENT.md](AGREEMENT.md).
 
 Every default in the runner is a `get!`, so the environment wins. The knobs that
 matter: `RESEACT_RES` (GEOS-FP resolution), `RESEACT_NLON/NLAT/NLEV` and
@@ -205,7 +227,7 @@ start — the git HEAD and dirty state of this repo and of every developed sibli
 a logged result can be tied to commits.
 
 The forward-only runners: `julia --project=run-model-jl -t 8 run_reseact.jl` (native) and
-`run_reseact_reactant.jl` (traced); see `HELPERS.md` for their cost and agreement.
+`run_reseact_reactant.jl` (compiled); see `HELPERS.md` for their cost and agreement.
 
 ## What to expect (CONUS 13×7×72, 40-core node, 2026-09-05)
 

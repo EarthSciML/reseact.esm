@@ -8,6 +8,16 @@ graph, and XLA:CPU executes it wrongly on about 1 call in 2,000 when it has more
 one intra-op thread. The corruption is always the same: NaN in the six dry-deposition
 species at one grid cell (lane 1). With ONE XLA thread it never happens.
 
+**What the numbers below were measured on.** The fault is in XLA:CPU's execution of
+a StableHLO module, not in how the module was built, and the harness is
+emitter-independent: it drives the driver's own compiled programs through
+`tools/adjoint_gradient.jl`, so it follows whatever `tools/rx_rhs.jl` builds. Every
+rate, cost and cross-check recorded here was taken before 2026-09-15, when those
+programs came out of Reactant's trace of the broadcast emitter rather than out of
+EarthSciAST's direct StableHLO emitter. The workaround is per-compile and still
+default-on; the *rates* have not been re-measured on the current emitter, and a
+module of a different shape need not fault at the same rate.
+
 ## Reproduce
 
 ```bash
@@ -148,7 +158,7 @@ out of a private rsync snapshot in `~/.cache` precisely so this cannot recur.
   `/sys/fs/cgroup/memory.stat`.
 * **Run time: the workaround is SLOWER.** Same allocation, same 359-step
   accept/reject ladder: forward pass 76.63 s with it on against 71.78 s with it
-  off, 6.8% slower. That matches the 6.4% already recorded for the traced runner
+  off, 6.8% slower. That matches the 6.4% already recorded for the forward runner
   (slurm 10017939) and is the opposite of "costs nothing in wall time". The
   chemistry soaks agree in direction (0.2153 s/call off, ~0.25 s/call on) though
   those two ran on different nodes.

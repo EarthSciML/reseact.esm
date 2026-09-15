@@ -814,7 +814,7 @@ and all 19 nonzero gradient components to ≤ 1.3e-11:
 | 48 h CONUS, loop only | forward | backward | total | job |
 |---|---|---|---|---|
 | August, single process, stock emitter | 7,460 s | 18,762 s | 7 h 17 m | 10055533 |
-| + SSA emitter + excluded passes (4.27x step) | 1,425 s | 6,243 s | 2 h 08 m | 10359755 |
+| + the SSA emitter of the day + excluded passes (4.27x step) | 1,425 s | 6,243 s | 2 h 08 m | 10359755 |
 | + 8 chemistry shards + backward refresh fix | 693 s | 2,107 s | 47 min | 10372969 |
 
 Per window at the last row: chemistry step 0.69 s, chemistry replay 0.64,
@@ -825,7 +825,12 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
 * `RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop` — the
   Enzyme-JAX pattern pair rewrote 298 in-place updates into 79 whole-buffer
   concatenates; 3.32x on the CONUS step.
-* `ESS_OOP_SSA=1` (EarthSciAST) — composes to 4.27x.
+* Class-to-class (SSA) emission, then `ESS_OOP_SSA=1` on the traced emitter —
+  composed with the exclusions above to 4.27x. It is no longer a lever, because
+  it is no longer optional: the direct StableHLO emitter walks the plan data and
+  a consumer references its producer's VALUE, so there is no flat buffer to
+  route through and nothing to switch off. Whether the emitter that replaced it
+  holds the 4.27x at CONUS is what the queued 48 h run measures.
 * `RESEACT_ADJ_SHARDS=8` — N worker processes each own a capacity build of a
   contiguous cell slice and serve the chemistry step AND VJP; transport stays on
   the driver. Chemistry 2.5–3.0x at N=8; N=13 gains nothing (each call is near
@@ -839,9 +844,9 @@ chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
 **Measured negatives (do not retry without a new idea):**
 * Pass bisect on the VJP modules: nothing to remove; the primal's exclusion
   already reaches them.
-* Stencil shifts as slices (EarthSciAST `ESS_OOP_SHIFT_SLICE`, default OFF):
-  correct, converts 67% of transport reads, removes two thirds of the transport
-  VJP's scatter-adds — and the transport VJP is 0.97x. Its 22x-over-primal cost
+* Stencil shifts emitted as strided slices rather than gathers (an EarthSciAST
+  spike, never default): correct, converts 67% of transport reads, removes two
+  thirds of the transport VJP's scatter-adds — and the transport VJP is 0.97x. Its 22x-over-primal cost
   is NOT the scatter-adds; the remaining suspect is its ~4,600 loop fusions, each
   a whole-state pass. Chemistry loses under the flag (transposes).
 * Dyadic level subcycle (0.02x wall) and per-bucket adaptive stepping (0.66x
