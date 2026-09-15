@@ -27,7 +27,7 @@
 #   4-way geographic splits are impossible at CONUS): solo 30.3-31.7 us/cell
 #   -- the working-set effect keeps deepening. The 4-process CONCURRENT phase
 #   OOMs a 40GB memcg twice (3 holds ~3.5GB + 1 build peak + foreign juliae):
-#   run N>=4 under a larger allocation, or with ESS_OOP_SSA=1 (module -40%).
+#   run N>=4 under a larger allocation.
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
 get!(ENV, "RESEACT_NLON", "13"); get!(ENV, "RESEACT_NLAT", "7"); get!(ENV, "RESEACT_NLEV", "72")

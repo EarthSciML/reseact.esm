@@ -19,8 +19,8 @@
 #
 # Style rule: every ARRAY broadcast here is a single 2-3 argument operation per
 # statement. Julia fuses broadcasts only within one expression, so one-op
-# statements guarantee each broadcast reaches rx_native_patch.jl's `elem_apply`
-# fast path (a native stablehlo op) instead of minting a per-site helper func.
+# statements keep each broadcast a single primitive for Reactant to lower,
+# instead of a fused kernel it mints a per-site helper func for.
 #
 # Trace-time rule: Julia trace time is LINEAR in the number of traced RHS call
 # sites per loop body, so repeated stages run as NESTED `Reactant.@trace for`

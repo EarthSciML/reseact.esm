@@ -56,13 +56,12 @@ const RXDIR   = joinpath(REPO, "tools", "reactant_handoff")
 include(joinpath(CHEMDIR, "split_common.jl"))
 include(joinpath(CHEMDIR, "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(CHEMDIR, "block_jac.jl"))
-include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 include(joinpath(RXDIR, "rx_sym_block_jac.jl"))
 using .RxSymBlockJac
 include(joinpath(REPO, "tools", "capacity_chem.jl")); using .CapacityChem
-include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the compiled-RHS seam
 
 const WID = Ref(0)
 wsay(s) = (println("  [shard $(WID[])] " * s); flush(stdout))
@@ -142,9 +141,9 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
                       lanes0::Dict{String,Any})
     st = S[]
     C = st.C; NS = st.NS
-    # every shard says which lane it took: `addprocs` inherits RESEACT_RHS,
-    # but a mixed run would compile, run and answer, and the answer would be
-    # a comparison of the traced lane with itself.
+    # every shard says what it compiled through, on its own first line: a
+    # worker that resolved a different EarthSciAST than the driver would
+    # compile, run and answer, and the answer would look like the driver's.
     wsay(rx_rhs_banner())
     st.pa = CapacityChem.lane_buffers(st.meta, pshapes, C)
     _copy_lanes!(st.pa, lanes0)
@@ -168,8 +167,10 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
         st.capsel[(s - 1) * C + l] = vmc[nm]
     end
     # the primed base point must evaluate finite, or the lane gather is not
-    # reaching this build (a zero lane NaNs through log(PS/Pc))
-    let du = rx_host_rhs(f)(u0c, pc, cfg["T0"], rx_bufs(f))
+    # reaching this build (a zero lane NaNs through log(PS/Pc)). One compiled
+    # evaluation: an `:oop` build product is the IR the emitter lowers and
+    # raises E_TREEWALK_OOP_NOT_EVALUABLE if called on host arrays.
+    let du = rx_host_eval(f, pc, cfg["T0"], rx_bufs(f); var_map = vmc)(u0c)
         nb = count(!isfinite, du)
         nb == 0 || error("shard_build!: the C=$C RHS returns $nb of $(length(du)) NON-FINITE derivatives at the primed base point")
     end
@@ -187,10 +188,12 @@ function shard_build!(cfg::Dict, ca::Dict{String,Any}, pshapes::Dict{String,Any}
     st.plan = RxSymBlockJac.block_jac_plan(st.jacE;
                   runner_names = first.(sort(collect(vmc), by = last)))
     st.gjb = rx_rhs(st.jacE.fJ!)
-    # the HOST callable: a check of the build, identical in both RHS lanes.
+    # a check of the BUILD: the plan's two gathers against the evaluator's own
+    # index algebra, over two compiled evaluations of the band model.
     let w = validate_plan(st.plan, st.jacE, u0c, pc, cfg["T0"];
-                          gjb = rx_host_rhs(st.jacE.fJ!), bufs = rx_bufs(st.jacE.fJ!))
-        w <= 1e-12 || error("shard_build!: the C=$C gather plan does not reproduce the host Jacobian (worst relative $w)")
+                          eval_band = rx_host_eval(st.jacE.fJ!, pc, cfg["T0"],
+                                                   rx_bufs(st.jacE.fJ!)))
+        w <= 1e-12 || error("shard_build!: the C=$C gather plan does not reproduce the Jacobian (worst relative $w)")
     end
     st.dev_bufs  = map(RX.ConcreteRArray, rx_bufs(f))
     st.dev_bufsJ = map(RX.ConcreteRArray, rx_bufs(st.jacE.fJ!))

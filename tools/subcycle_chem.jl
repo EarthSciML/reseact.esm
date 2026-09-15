@@ -294,7 +294,7 @@ function build_rung(docCAP0, C::Int, spnames::Vector{String}, geom,
     # (Measured: slurm 10127512 died exactly here at C=8.) Point every lane at
     # reference cell 1; the first real batch overwrites all of it.
     gather_lanes!(pa, meta, geom, fill(cells[1], C))
-    let du = rx_host_rhs(f)(u0c, pc, T0, rx_bufs(f))
+    let du = rx_host_eval(f, pc, T0, rx_bufs(f); var_map = vmc)(u0c)
         nb = count(!isfinite, du)
         nb == 0 || error("build_rung: the C=$C RHS returns $nb of $(length(du)) NON-FINITE derivatives at the primed base point; the lane gather is not reaching this build")
     end
@@ -316,13 +316,14 @@ function build_rung(docCAP0, C::Int, spnames::Vector{String}, geom,
                     runner_names = first.(sort(collect(vmc), by = last)))
         gjb  = rx_rhs(jacE.fJ!)
         dev_bufsJ = map(RX.ConcreteRArray, rx_bufs(jacE.fJ!))
-        # One HOST evaluation -- `rx_host_rhs`, identical in both RHS lanes --
-        # and it is the only thing between a transposed gather and a plausible
-        # Jacobian that is wrong in every lane.
+        # Two compiled evaluations of the band model, and they are the only
+        # thing between a transposed gather and a plausible Jacobian that is
+        # wrong everywhere.
         let w = validate_plan(plan, jacE, u0c, pc, T0;
-                              gjb = rx_host_rhs(jacE.fJ!), bufs = rx_bufs(jacE.fJ!))
+                              eval_band = rx_host_eval(jacE.fJ!, pc, T0,
+                                                       rx_bufs(jacE.fJ!)))
             w <= 1e-12 || error("build_rung: the C=$C gather plan does not reproduce " *
-                                "the host Jacobian (worst relative $w)")
+                                "the Jacobian (worst relative $w)")
         end
         say(@sprintf("    C=%-5d prepare_jacobian %6.1f s  %s", C, tjac, string(plan)))
     end

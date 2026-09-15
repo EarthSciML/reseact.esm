@@ -25,7 +25,7 @@
 #     adaptive loops are `stablehlo.while` regions, so the compiled program does
 #     not encode the window. ONE @compile serves every macro step, whatever its
 #     length -- the compile cost is paid once and amortized over the whole run.
-#   * the forcing buffers are REAL XLA INPUTS (`rhs_with_buffers` / B2 form), and
+#   * the forcing buffers are REAL XLA INPUTS (the 4-argument form), and
 #     EarthSciAST guarantees that an in-place `copyto!` into those device arrays
 #     between calls is observed on the next call with NO RETRACE. That is what
 #     makes a discrete-cadence refresh survive compilation.
@@ -94,7 +94,7 @@
 #
 # Helper code it pulls in (see HELPERS.md for the migration plan):
 #   prototypes/reseact_3d_chem/{split_common,blockdiag_local,block_jac}.jl
-#   tools/reactant_handoff/rx_native_patch.jl        trace enablers (monkey-patch)
+#   tools/rx_rhs.jl                                  the compiled-RHS seam
 #   tools/reactant_handoff/rx_traced_integrator.jl   the traced ROS23/SSPRK43 stepper
 # ===========================================================================
 import Pkg
@@ -239,10 +239,9 @@ let dp0 = hydrostatic_dp(merged_param, ff.const_arrays, T0; slice = SLICE)
     end
 end
 
-include(joinpath(RXDIR, "rx_native_patch.jl"))       # AFTER using Reactant/EarthSciAST
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 include(joinpath(RXDIR, "rx_sym_block_jac.jl")); using .RxSymBlockJac
-include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the compiled-RHS seam
 say(rx_rhs_banner())
 
 # The kernel-class merge runs INSIDE EarthSciAST's build (src/tree_walk/oop_merge.jl),
@@ -311,13 +310,16 @@ if SYMJAC
     gjbJ = rx_rhs(jacE.fJ!)
     host_bufsJ = rx_bufs(jacE.fJ!)
     say("  $PLAN   band buffers=$(length(host_bufsJ))")
-    # the HOST callable: validate_plan evaluates the band model on ordinary
-    # arrays, which is a check of the BUILD and must read the same in both lanes.
-    let w = validate_plan(PLAN, jacE, u0, p, T0;
-                          gjb = rx_host_rhs(jacE.fJ!), bufs = host_bufsJ)
-        say(@sprintf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s",
-                     w, w <= 1e-12 ? "PASS" : "FAIL"))
-        w <= 1e-12 || error("RXJAC=sym: the gather plan does not reproduce the host Jacobian")
+    # A check of the BUILD: the plan's two gathers against the scatter map
+    # EarthSciASTDiff assembles from. It costs one @compile of the band program
+    # and two device calls, because an `:oop` build product is compiled IR and
+    # cannot be called on host arrays.
+    let tv = time(),
+        w = validate_plan(PLAN, jacE, u0, p, T0;
+                          eval_band = rx_host_eval(jacE.fJ!, p, T0, host_bufsJ))
+        say(@sprintf("  plan vs the JacobianEvaluator: worst relative %.3e  %s  (%.1f s)",
+                     w, w <= 1e-12 ? "PASS" : "FAIL", time() - tv))
+        w <= 1e-12 || error("RXJAC=sym: the gather plan does not reproduce the Jacobian")
     end
 end
 adv = let gT = g4[1], gC = g4[2], NS = NS, NC = NC, masks = masks,
@@ -435,14 +437,13 @@ xadv = RX.@compile compile_options=COPTS adv(UR, PRd, RX.ConcreteRNumber(T0),
                                  RX.ConcreteRNumber(T0 + MACRO_DT),
                                  RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(DT0C),
                                  dev_bufs[1], dev_bufs[2], BUFSJ)
-say(@sprintf("TRACED @compile: %.1f s", time() - tc))
-try; report_patch_stats(); catch; end
+say(@sprintf("@compile: %.1f s", time() - tc))
 
 # --------------------------------------------------------------------------- #
 # 3. Forcing refresh -- the whole point of macro-stepping. EarthSciAST documents
 #    that copyto! into the device buffers between calls is observed with NO
-#    retrace (rhs_with_buffers), so this costs one host->device copy, not a
-#    recompile.
+#    recompile (the 4-argument form takes them as real program inputs), so this
+#    costs one host->device copy.
 # --------------------------------------------------------------------------- #
 function refresh_forcing(t)
     for (k, prov) in discrete

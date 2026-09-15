@@ -193,15 +193,6 @@ const KEEPTAPE = get(ENV, "RESEACT_ADJ_KEEPTAPE", "0") == "1"
 # says whether the exact zeros it writes are what an infinite derivative is
 # coming from.
 const CLAMP = Ref(get(ENV, "RESEACT_ADJ_CLAMP", "1") == "1")
-# SSA CLASS-TO-CLASS EMISSION (EarthSciAST's ESS_OOP_SSA), ON BY DEFAULT. A
-# BUILD-time emitter flag, so it must be set before any build_evaluator /
-# prepare_jacobian call; `ESS_OOP_SSA=0` in the environment restores the stock
-# emitter. On because at CONUS it COMPOSES with the excluded-passes default
-# below rather than overlapping it, the full fwd+adj pipeline under it
-# reproduces the objective and every gradient component exactly, and the
-# emitted module is markedly smaller (fewer gathers and index constants) --
-# memory headroom this shared-cgroup environment spends immediately.
-get!(ENV, "ESS_OOP_SSA", "1")
 const ADJCSV   = get(ENV, "RESEACT_ADJ_CSV", "")
 const REFPARAM = String.(split(get(ENV, "RESEACT_ADJ_REFPARAM",
                    "NEIRegrid.scale,Transport3D.tau_pblmix,NEIRegrid.g0"), ','))
@@ -357,14 +348,13 @@ let dp0 = hydrostatic_dp(merged_param, ff.const_arrays, T0; slice = SLICE)
     end
 end
 
-include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 # unconditional: the gather plan needs only Reactant, and a `using` inside a
 # conditional block is one more thing that can only fail at runtime.
 include(joinpath(RXDIR, "rx_sym_block_jac.jl"))
 using .RxSymBlockJac
-include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the compiled-RHS seam
 say(rx_rhs_banner())
 
 host_bufs = [rx_bufs(fo[i]) for i in 1:2]
@@ -426,18 +416,19 @@ if SYMJAC
     gjbJ = rx_rhs(jacE.fJ!)
     host_bufsJ = rx_bufs(jacE.fJ!)
     say("  $PLAN   band buffers=$(length(host_bufsJ))")
-    # the plan is pure index algebra, so it is checkable on the host against the
-    # sparse Jacobian EarthSciASTDiff assembles itself -- one evaluation, and it
-    # is the only thing standing between a transposed gather and a plausible
-    # gradient that is wrong everywhere.
-    # `rx_host_rhs`, not `gjbJ`: validate_plan evaluates the band model on
-    # ordinary arrays, so it is a check of the BUILD, and it has to read the
-    # same under RESEACT_RHS=direct as it does here.
-    let w = validate_plan(PLAN, jacE, u0, p, T0;
-                          gjb = rx_host_rhs(jacE.fJ!), bufs = host_bufsJ)
-        say(@sprintf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s",
-                     w, w <= 1e-12 ? "PASS" : "FAIL"))
-        w <= 1e-12 || error("jac=:sym: the gather plan does not reproduce the host Jacobian")
+    # The plan is pure index algebra, so it is checkable against the scatter map
+    # EarthSciASTDiff assembles its own sparse Jacobian from -- and it is the only
+    # thing standing between a transposed gather and a plausible gradient that is
+    # wrong everywhere. It needs the band model evaluated at two points, which
+    # costs one @compile of the band program (the smallest of the four this
+    # driver builds) and two device calls; the `:oop` build product itself is
+    # compiled IR and cannot be called on host arrays.
+    let tv = time(),
+        w = validate_plan(PLAN, jacE, u0, p, T0;
+                          eval_band = rx_host_eval(jacE.fJ!, p, T0, host_bufsJ))
+        say(@sprintf("  plan vs the JacobianEvaluator: worst relative %.3e  %s  (%.1f s)",
+                     w, w <= 1e-12 ? "PASS" : "FAIL", time() - tv))
+        w <= 1e-12 || error("jac=:sym: the gather plan does not reproduce the Jacobian")
     end
 end
 

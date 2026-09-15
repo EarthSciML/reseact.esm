@@ -25,9 +25,9 @@
 #
 #  VARIANT MODE (`julia tools/rx_adjoint_toy.jl <variant>`) -- WHY does reverse
 #    mode crash on the real model? ReSEACT's RHS mints helper functions that the
-#    toy does not (`rx_native_patch.jl`'s heartbeat lists them:
-#    TypeCast_broadcast_scalar, reduce_fnadd_sum, log10_broadcast_scalar,
-#    floor_broadcast_scalar, update_computation). Each variant adds ONE of them
+#    toy does not (TypeCast_broadcast_scalar, reduce_fnadd_sum,
+#    log10_broadcast_scalar, floor_broadcast_scalar, update_computation --
+#    the names minted by Reactant's broadcast lowering). Each variant adds ONE of them
 #    and re-runs the VJPs. Measured: log10, floor and sumreduce ALL survive,
 #    under both Jacobians -- so the ReSEACT segfault
 #    (AutoDiffCallRev -> func::CallOp::build -> getAttr on a null FuncOp) is NOT
@@ -42,7 +42,6 @@ using Reactant, Printf, LinearAlgebra, Random
 const RX = Reactant
 try; RX.set_default_backend("cpu"); catch; end
 const EZ = Reactant.Enzyme
-include(joinpath(REPO, "tools", "reactant_handoff", "rx_native_patch.jl"))
 include(joinpath(REPO, "tools", "reactant_handoff", "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 

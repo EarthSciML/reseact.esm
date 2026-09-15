@@ -3,9 +3,9 @@
 # p5_vjp_census.jl -- WHAT does the optimized VJP module carry that the
 #                     primal step no longer does?
 # ===========================================================================
-# MOTIVATION (slurm 10359755, 48 h CONUS, 2026-09-04): with the driver defaults
-# ESS_OOP_SSA=1 + RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop
-# the forward pass sped up 5.2x and the replay 5.5x against August, but the
+# MOTIVATION (slurm 10359755, 48 h CONUS, 2026-09-04): with the driver default
+# RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop and the SSA
+# emitter of the day, the forward pass sped up 5.2x and the replay 5.5x against August, but the
 # VJPs only 2.5x (0.4585 -> 0.1847 s/VJP) and are now 67% of wall. `COPTS` is
 # shared by every compile site, so ros_vjp/ssp_vjp ALREADY compile with that
 # exclusion. The question is therefore empirical: does the optimized VJP

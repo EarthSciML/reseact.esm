@@ -148,11 +148,10 @@ let dp0 = hydrostatic_dp(merged_param, ff.const_arrays, T0; slice = SLICE)
     end
 end
 
-include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 include(joinpath(RXDIR, "rx_sym_block_jac.jl")); using .RxSymBlockJac
-include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the compiled-RHS seam
 say(rx_rhs_banner())
 
 host_bufs = [rx_bufs(fo[i]) for i in 1:2]
@@ -394,12 +393,13 @@ if want("ros_sym")
     dev_bufsJ = map(RX.ConcreteRArray, host_bufsJ)
     rx_sync!(dev_bufsJ, jacE.fJ!)
     @printf("  band model buffers: %d  %s\n", length(host_bufsJ), collect(keys(host_bufsJ)))
-    # the HOST callable: this is a check of the build, not of the emitter.
+    # A check of the BUILD: the plan's two gathers against the evaluator's own
+    # index algebra, over two compiled evaluations of the band model.
     w = validate_plan(PLAN, jacE, uh, p, T0;
-                      gjb = rx_host_rhs(jacE.fJ!), bufs = host_bufsJ)
-    @printf("  plan vs the host JacobianEvaluator: worst relative %.3e  %s\n",
+                      eval_band = rx_host_eval(jacE.fJ!, p, T0, host_bufsJ))
+    @printf("  plan vs the JacobianEvaluator: worst relative %.3e  %s\n",
             w, w <= 1e-12 ? "PASS" : "FAIL -- index error in the plan")
-    w <= 1e-12 || error("ros_sym: the gather plan does not reproduce the host Jacobian")
+    w <= 1e-12 || error("ros_sym: the gather plan does not reproduce the Jacobian")
     global gJ = (u, th, t) -> block_jac(PLAN, gjbJ(gather_uj(PLAN, u), th.p, t, th.bufsJ))
     global THS       = (p = PRd, bufs = dev_bufs[2],  bufsJ = dev_bufsJ)
     global th_host_S = (p = p,   bufs = host_bufs[2], bufsJ = host_bufsJ)

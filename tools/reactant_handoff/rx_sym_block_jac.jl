@@ -238,36 +238,54 @@ end
     sym_block_jac(plan, gjb)
 
 The `(u, p, t, bufs) -> Jb` the integrator's `symjac` hook wants, given the band
-model in its 4-ARGUMENT form (`EarthSciAST.rhs_with_buffers(jac.fJ!)`). The
-4-arg form is not optional: the 3-arg form resolves forcing internally, which
-under tracing BAKES the meteorology in as constants.
+model in its 4-ARGUMENT form (`rx_rhs(jac.fJ!)`, i.e.
+`direct_rhs_with_buffers`). The 4-arg form is not optional: the 3-arg form
+resolves forcing internally, which BAKES the meteorology in as constants.
 """
 sym_block_jac(plan::BlockJacPlan, gjb) =
     (u, p, t, bufs) -> block_jac(plan, gjb(gather_uj(plan, u), p, t, bufs))
 
 """
-    validate_plan(plan, jac, u, p, t; gjb = nothing, bufs = nothing)
+    validate_plan(plan, jac, u, p, t; eval_band)
 
-Run the plan and the HOST `JacobianEvaluator` on the same point, both on the
-host, and return the worst relative difference over every block entry. Zero is
-the expected answer -- the plan is a permutation of the same numbers, so
-anything nonzero is an index error, not roundoff.
+Check the gather plan against EarthSciASTDiff's OWN index algebra at one point,
+and return the worst relative difference over every block entry. Zero is the
+expected answer -- the two are permutations of the same numbers, so anything
+nonzero is an index error, not roundoff.
 
-Pass `gjb`/`bufs` to exercise the SAME 4-argument band model the traced path
-uses; without them the evaluator's own stored form is called instead.
+`eval_band` is a host callable `uj -> duj::Vector{Float64}` for the band model,
+normally `rx_host_eval(jac.fJ!, p, t, bufs)`. It is called TWICE, on two
+independently built band states:
+
+  * `jac.umap` scattered from `u` -- the evaluator's own lift. Its output is
+    read through `jac.scatter` into `jac.prototype`, which is exactly the
+    assembly `jac(J, u, p, t)` performs, and is the REFERENCE.
+  * `plan.ugather` applied to `u` -- the plan's own lift, the one
+    [`gather_uj`](@ref) emits into the traced program. Its output is read
+    through `plan.blocks`.
+
+So both halves of the plan -- the state lift AND the band-to-block gather -- are
+compared against the evaluator's, which is what makes this the check standing
+between a transposed gather and a plausible gradient that is wrong everywhere.
+The band model is EVALUATED once per lift rather than assumed: a plan whose
+`ugather` is wrong feeds the program a different state, and that shows up here.
+
+The evaluation is a compiled one because an `:oop` build product is compiled IR
+and raises `E_TREEWALK_OOP_NOT_EVALUABLE` when called on host arrays; see
+`rx_host_eval` in `tools/rx_rhs.jl`.
 
 AN EMPTY PLAN IS REFUSED BEFORE ANYTHING IS COMPARED. The check below is a
-relative difference against the host evaluator, so on a Jacobian that is
-structurally empty it compares zero with zero at every position and returns
-0.0 -- the same number a perfect plan returns. That is not a hypothetical: in
-September 2026 EarthSciAST renamed the unified query node's wire tag from
-`aggregate` to `faq`, EarthSciASTDiff went on matching the old spelling, and
-`prepare_jacobian` therefore classified every array state equation as
-non-differential and returned `structure=empty, entries=0, scatter=0` on both
-halves of the split. The adjoint driver would have built an all-zero block
-Jacobian out of that, and this function would have signed it off.
+relative difference, so on a Jacobian that is structurally empty it compares
+zero with zero at every position and returns 0.0 -- the same number a perfect
+plan returns. That is not a hypothetical: in September 2026 EarthSciAST renamed
+the unified query node's wire tag from `aggregate` to `faq`, EarthSciASTDiff
+went on matching the old spelling, and `prepare_jacobian` therefore classified
+every array state equation as non-differential and returned
+`structure=empty, entries=0, scatter=0` on both halves of the split. The adjoint
+driver would have built an all-zero block Jacobian out of that, and this
+function would have signed it off.
 """
-function validate_plan(plan::BlockJacPlan, jac, u, p, t; gjb = nothing, bufs = nothing)
+function validate_plan(plan::BlockJacPlan, jac, u, p, t; eval_band)
     NS, NC = plan.NS, plan.NC
     used = count(!isempty, plan.blocks)
     nsc = length(jac.scatter)
@@ -282,21 +300,27 @@ function validate_plan(plan::BlockJacPlan, jac, u, p, t; gjb = nothing, bufs = n
         "comparison below is a relative difference, so zero against zero " *
         "would report a WORST ERROR OF 0.0 and the run would proceed on an " *
         "all-zero Jacobian.")
+
+    # (a) the REFERENCE: the evaluator's own lift, and the assembly its call
+    #     operator performs on the result.
     ujh = zeros(plan.NJ)
     for (i, s) in enumerate(jac.umap)
         ujh[s] = u[i]
     end
-    duj = if gjb !== nothing
-        gjb(ujh, p, t, bufs)
-    elseif jac.oop
-        jac.fJ!(ujh, p, t)
-    else
-        jac.fJ!(jac.duj, ujh, p, t)
-        jac.duj
-    end
-    dp = vcat(0.0, duj)
+    dref = eval_band(ujh)
+    length(dref) == plan.NJ || error(
+        "validate_plan: the band model returned $(length(dref)) values for a " *
+        "$(plan.NJ)-slot band state")
     J = copy(jac.prototype)
-    jac(J, u, p, t)
+    fill!(J.nzval, 0.0)
+    for (slot, pos) in jac.scatter
+        J.nzval[pos] += dref[slot]
+    end
+
+    # (b) the PLAN: its own padded gather of `u`, and its own block index lists.
+    up = vcat(0.0, collect(Float64, u))
+    dp = vcat(0.0, eval_band(up[plan.ugather]))
+
     sidx(s, c) = (s - 1) * NC + c
     worst = 0.0
     for rs in 1:NS, cs in 1:NS

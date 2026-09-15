@@ -273,9 +273,8 @@ for (nm, th) in zip(PARAMS, THETA0)
     say(@sprintf("    %-28s = %.10g", nm, th))
 end
 
-include(joinpath(RXDIR, "rx_native_patch.jl"))       # AFTER using Reactant/EarthSciAST
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
-include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the RESEACT_RHS lane switch
+include(joinpath(REPO, "tools", "rx_rhs.jl"))   # the compiled-RHS seam
 say(rx_rhs_banner())
 
 host_bufs = [rx_bufs(fo[i]) for i in 1:2]
@@ -410,8 +409,7 @@ xjvp = RX.@compile sync=true jvp_step(
     RX.ConcreteRNumber(DT0T), RX.ConcreteRNumber(0.0),
     RX.ConcreteRNumber(DT0C), RX.ConcreteRNumber(0.0),
     dev_bufs[1], dev_bufs[2], PRd)
-say(@sprintf("TRACED JVP @compile: %.1f s", time() - tc))
-try; report_patch_stats(); catch; end
+say(@sprintf("JVP @compile: %.1f s", time() - tc))
 
 # --------------------------------------------------------------------------- #
 # 5. The macro-step window. State AND tangent stay on device between calls.

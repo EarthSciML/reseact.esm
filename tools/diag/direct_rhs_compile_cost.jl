@@ -2,11 +2,11 @@
 # ===========================================================================
 # direct_rhs_compile_cost.jl -- WHERE DOES THE DIRECT LANE'S COMPILE TIME GO?
 # ===========================================================================
-# The port of ReSEACT's production entry points onto the direct StableHLO
-# emitter (`RESEACT_RHS`, tools/rx_rhs.jl) is numerically fine and, at 6x6x8,
-# expensive to compile. On the adjoint driver's four programs the chemistry
-# half is FINE in both lanes; it is the TRANSPORT half, and reverse mode over
-# the transport half most of all. The numbers are in AGREEMENT.md.
+# ReSEACT's production entry points compile through the direct StableHLO
+# emitter (tools/rx_rhs.jl), and at 6x6x8 that compile is expensive. Of the
+# adjoint driver's four programs the chemistry half is fine; it is the
+# TRANSPORT half, and reverse mode over the transport half most of all. The
+# numbers are in COMPILE_COST.md.
 #
 # This probe takes that apart on ONE program at a time, without paying for a
 # whole adjoint run, by separating the three costs `@compile` rolls into one:
@@ -25,7 +25,6 @@
 # which is what prints the "Very slow compile?" alarm.
 #
 # Env:
-#   RESEACT_RHS          direct | traced        (the lane, via tools/rx_rhs.jl)
 #   RESEACT_CC_PROG      rhsT | rhsC | ssp_step | ros_step | ssp_vjp | ros_vjp
 #                        (default ssp_step) -- ONE per process. These are the
 #                        adjoint driver's own programs, defined identically
@@ -45,7 +44,7 @@
 #                        when `opt` is the number that has to be taken apart.
 #   RESEACT_CC_DUMP      directory to write the module texts to
 #   RESEACT_NLON/NLAT/NLEV, RESEACT_RES, RESEACT_T0, RESEACT_ADJ_UJITTER,
-#   RESEACT_EXCLUDED_PASSES, RESEACT_ADJ_XLAFIX, ESS_OOP_SSA, RESEACT_RXENV
+#   RESEACT_EXCLUDED_PASSES, RESEACT_ADJ_XLAFIX, RESEACT_RXENV
 #
 # ONE PROGRAM PER PROCESS, and keep the heap hint small: this is meant to run
 # beside other work in a 40 GiB cgroup.
@@ -77,8 +76,6 @@ include(joinpath(CHEMDIR, "split_common.jl"))
 include(joinpath(REPO, "tools", "grid_resize.jl")); using .GridResize
 
 get!(ENV, "RESEACT_NLON", "6"); get!(ENV, "RESEACT_NLAT", "6"); get!(ENV, "RESEACT_NLEV", "8")
-get!(ENV, "ESS_OOP_SSA", "1")
-const SSA   = ENV["ESS_OOP_SSA"]
 const MODEL = get(ENV, "RESEACT_MODEL", joinpath(REPO, "reseact.esm"))
 const T0    = parse(Float64, get(ENV, "RESEACT_T0", "5400"))
 const UJIT  = parse(Float64, get(ENV, "RESEACT_ADJ_UJITTER", "1e-1"))
@@ -94,8 +91,8 @@ const TPTS  = Float64[T0, T0 + 8 * 3600, T0 + 16 * 3600]
 const NDAYS = forcing_days_for(T0, last(TPTS))
 
 say("="^78)
-say(@sprintf("COMPILE COST  prog=%s  grid=%s  Reactant %s  ESS_OOP_SSA=%s",
-             PROG, GRIDSTR, pkgversion(RX), SSA))
+say(@sprintf("COMPILE COST  prog=%s  grid=%s  Reactant %s",
+             PROG, GRIDSTR, pkgversion(RX)))
 say("="^78)
 
 validate_reseact(MODEL; metaparameters = GRID_MP, say = say)
@@ -199,7 +196,6 @@ end
 const RXDIR = joinpath(REPO, "tools", "reactant_handoff")
 include(joinpath(REPO, "prototypes", "reseact_3d_chem", "blockdiag_local.jl")); using .BlockDiag
 include(joinpath(REPO, "prototypes", "reseact_3d_chem", "block_jac.jl"))
-include(joinpath(RXDIR, "rx_native_patch.jl"))
 include(joinpath(RXDIR, "rx_traced_integrator.jl"))
 const RTI = RxTracedIntegrator
 include(joinpath(REPO, "tools", "rx_rhs.jl"))

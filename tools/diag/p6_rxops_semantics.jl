@@ -1,8 +1,8 @@
 #!/usr/bin/env julia
 # p6_rxops_semantics.jl -- do Reactant's reverse / broadcast_to_size /
 # permutedims / mixed Int-range getindex agree with Base on a 3-D array?
-# The strided-box emitter (EarthSciAST ESS_OOP_SHIFT_SLICE) composes exactly
-# these; its host emulation is exact, so a CONUS mismatch must be one of them.
+# A strided-box read composes exactly these, and its host emulation is exact,
+# so a CONUS mismatch must be one of them.
 import Pkg; Pkg.activate(get(ENV, "RESEACT_RXENV", joinpath(@__DIR__, "..", "..", "run-model-jl")); io = devnull)
 using Reactant
 RX = Reactant
