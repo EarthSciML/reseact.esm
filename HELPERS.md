@@ -167,7 +167,35 @@ O3_mean, `cos_sza` exactly 0) worth anything.
 | Helper | Provides | Status |
 |---|---|---|
 | `tools/reactant_handoff/rx_native_patch.jl` | (a) native `stablehlo` broadcast lowering — same-shape primitive broadcasts lower straight to `Reactant.Ops.*` with no `<op>_broadcast_scalar` helper per site (kills the 10 000-name cap); (b) `make_tracer` opaque-leaf registration for `EarthSciAST._Node/_AccKernel/_OopAccPlan/_AccScratch` (skips the O(IR-size) capture walk — hours → minutes). | **Runtime monkey-patch.** Needs a durable home. |
+| `tools/rx_rhs.jl` | The `RESEACT_RHS` seam: `rx_rhs(f; var_map)` returns the COMPILED right-hand side in whichever lane is selected — `EarthSciAST.rhs_with_buffers` (`traced`) or `EarthSciASTReactantExt.direct_rhs_with_buffers` (`direct`) — with `rx_host_rhs`, `rx_bufs` and `rx_sync!` beside it. Every production entry point goes through it: both operator-split halves, the symbolic Jacobian band model, every capacity rung and every chemistry shard. | **Model-agnostic, three lines of decision.** Its reason to exist is that a MISSED call site is silent: a mixed run compiles, runs and answers, and the answer is a comparison of the traced lane with itself. |
 | `tools/reactant_handoff/rx_traced_integrator.jl` | The purpose-built traced integrator: ROS23 + SSPRK43 stage algebra, batched pivot-free block Gaussian elimination over cells, masked FD block Jacobian, exact PI controller, and the `@trace while` adaptive loop. This is why one macro step compiles as a single `stablehlo.while` program. | **The substantial deliverable.** Generic (not reseact-specific). Needs a package home. |
+
+#### The two compiled lanes, and what separates them
+
+`rx_host_rhs` is not the same accessor as `rx_rhs` and the distinction is the
+whole reason the seam has four entry points rather than one. The direct wrapper
+builds StableHLO and REFUSES a host call by design — it has nothing to run on
+the host — so the base-point finiteness guards in `subcycle_chem.jl` /
+`shard_worker.jl` and `RxSymBlockJac.validate_plan`, all of which evaluate the
+build on ordinary `Vector{Float64}`s, stay on `rhs_with_buffers` in both lanes.
+They are checks of the BUILD, not of the emitter, and keeping them identical is
+what makes them gate a direct run as tightly as they gate a traced one.
+
+`rx_bufs` is `forcing_buffers` today, in both lanes: the direct wrapper takes
+the buffers as a fourth ARGUMENT aligned with `forcing_buffers(f)` in the same
+name-sorted order, so an in-place refresh is seen by the already-compiled
+program and nothing recompiles — the same contract the traced four-argument form
+has. It is in the seam so that a future divergence has one place to happen.
+
+`var_map` is passed wherever it is to hand. It costs nothing and it is what
+turns a refusal from "flat slot 4705" into `Transport3D.Mz[1,1,9]`.
+
+The direct lane was slower to compile than the traced one until an emitter fix
+landed on 2026-09-15 (EarthSciAST `72cbadc30`): the read decomposition emitted a
+slice per contiguous run, and ReSEACT's stencil runs are two to four elements
+long, so the transport step arrived at the pass pipeline as 4.1 million ops.
+[COMPILE_COST.md](COMPILE_COST.md) is the measurement, the mechanism and the
+fix, including the `@code_hlo optimize = false` trap that hid it for one round.
 
 `tools/reactant_handoff/` now holds only these plus `op_split.jl` /
 `blockdiag_similar.jl`. The probe and experiment scaffolding that established the

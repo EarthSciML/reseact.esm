@@ -149,6 +149,50 @@ RESEACT_ADJ_CLAMP=0 RESEACT_ADJ_UJITTER=1e-1 RESEACT_ADJ_STAGES=fwd,adj,ref,fdta
 julia --project=run-model-jl run_reseact_adjoint.jl
 ```
 
+### Which right-hand side: `RESEACT_RHS`
+
+Every compiled program in this repository — the two operator-split halves, the
+symbolic Jacobian band model, and the capacity build inside each chemistry shard
+— is built through one seam, `tools/rx_rhs.jl`:
+
+| `RESEACT_RHS` | the compiled RHS is built by |
+|---|---|
+| `traced` (default) | `EarthSciAST.rhs_with_buffers(f)` — the `:oop` build product is CALLED under `Reactant.@compile` and Reactant traces the broadcast emitter |
+| `direct` | `EarthSciASTReactantExt.direct_rhs_with_buffers(f)` — EarthSciAST's direct StableHLO emitter builds the module from the compiled tree-walk IR, without tracing Julia broadcasts |
+
+Nothing else differs: the build, the split, the forcing buffers, the
+integrators, the Jacobian gather and the adjoint are the same code either way,
+which is what makes a difference downstream attributable to the emitter. Every
+driver prints the lane it took, and so does every chemistry shard worker, on its
+first line — a run whose log does not say which lane it took cannot be compared
+with anything. The HOST checks (the base-point finiteness guards and
+`validate_plan`) stay on the traced callable in both lanes: they check the
+BUILD, not the emitter, and they gate a direct run exactly as they gate a traced
+one. `traced` is the default and the oracle: the direct lane's forward runner
+is verified end to end at 6x6x8 and its right-hand sides agree to 6.5e-14, but
+Enzyme's reverse pass over the transport half does not yet compile in usable
+time — see [COMPILE_COST.md](COMPILE_COST.md).
+
+The direct lane needs an EarthSciAST carrying `ext/reactant_direct/`, which
+`run-model-jl` does not yet develop. Until it is released:
+
+```bash
+# Reactant 0.2.285, EarthSciAST `oop-retire`, and the `faq`-node-tag fixes in
+# EarthSciASTSplitter and EarthSciASTDiff. Without the last two the operator
+# split copies the whole tendency into BOTH halves and the symbolic Jacobian
+# comes back empty -- see AGREEMENT.md section 2.
+export JULIA_DEPOT_PATH=/scratch/$USER/oopretire-depot:/projects/illinois/eng/cee/ctessum/ctessum/.julia
+export RESEACT_RXENV=/scratch/$USER/oopretire-env-faq2
+RESEACT_RHS=direct julia --project=$RESEACT_RXENV run_reseact_adjoint.jl
+sbatch tools/diag/adjoint_conus_48h_direct.sbatch      # the 48 h CONUS gradient
+```
+
+What it cost at 6x6x8 and what remains unproven is in
+`run_reseact_adjoint.jl`'s header; why the direct lane's compile needed an
+emitter fix before it was usable, and the fix, is in
+[COMPILE_COST.md](COMPILE_COST.md); that the two lanes compute the same thing is
+[AGREEMENT.md](AGREEMENT.md).
+
 Every default in the runner is a `get!`, so the environment wins. The knobs that
 matter: `RESEACT_RES` (GEOS-FP resolution), `RESEACT_NLON/NLAT/NLEV` and
 `RESEACT_LON0/LAT0` (grid box, defaulting to the resolution's CONUS footprint),

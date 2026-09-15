@@ -6,7 +6,8 @@
 #   RESEACT_RHS=traced   (default)  EarthSciAST.rhs_with_buffers(f)
 #   RESEACT_RHS=direct              EarthSciASTReactantExt.direct_rhs_with_buffers(f)
 #
-# `traced` is the lane every recorded result in this repository was produced on:
+# `traced` is the lane every recorded result in this repository up to
+# 2026-09-15 was produced on, and it stays fully working as the ORACLE:
 # the `:oop` build product is CALLED under `Reactant.@compile`, and Reactant
 # traces the broadcast emitter to get StableHLO. `direct` hands the same `:oop`
 # build product to EarthSciAST's direct StableHLO emitter, which constructs the
@@ -15,6 +16,16 @@
 # forcing buffers, the integrators, the symbolic Jacobian gather, the adjoint --
 # is the same code in both lanes. That is the point: a difference downstream can
 # only be the emitter.
+#
+# THE DEFAULT IS STILL `traced`, and the reason is specific rather than
+# cautious: the direct lane's forward runner is verified end to end at 6x6x8
+# (run_reseact_adjoint.jl's header has the table) and its two right-hand sides
+# agree with the traced ones to 6.5e-14 and 7.4e-16 (AGREEMENT.md), but
+# `@compile ssp_vjp` -- Enzyme's reverse pass over the TRANSPORT half -- ran
+# 6 h 23 m at 6x6x8 without finishing. COMPILE_COST.md measures why, and the
+# emitter fix it produced (EarthSciAST 72cbadc30) took four of the adjoint's
+# five compiles to parity or better without closing that one. The default flips
+# when the 6x6x8 gradient table exists in both lanes.
 #
 # WHY A SEAM AND NOT A FLAG AT EACH SITE. There are six production entry points
 # and each builds several compiled programs (the two operator-split halves, the

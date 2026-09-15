@@ -36,6 +36,110 @@
 #   julia --project=run-model-jl run_reseact_adjoint.jl
 #
 # ---------------------------------------------------------------------------
+# WHICH COMPILED RIGHT-HAND SIDE: `RESEACT_RHS` (2026-09-15)
+# ---------------------------------------------------------------------------
+# Every compiled program this driver builds -- both operator-split halves, the
+# symbolic Jacobian band model, and the capacity build inside each of the 8
+# chemistry shard workers -- goes through ONE seam, `tools/rx_rhs.jl`:
+#
+#   RESEACT_RHS=traced   EarthSciAST.rhs_with_buffers -- the `:oop` build
+#                        product CALLED under `@compile`, Reactant tracing the
+#                        broadcast emitter. The lane every number above was
+#                        measured on, and the ORACLE for the direct one.
+#   RESEACT_RHS=direct   EarthSciASTReactantExt.direct_rhs_with_buffers --
+#                        EarthSciAST's direct StableHLO emitter, building the
+#                        module from the compiled tree-walk IR. DEFAULT since
+#                        the runs below.
+#
+# Nothing else differs between them, and every driver and every shard prints
+# its lane on the first line, because a run that took the other lane in one
+# shard would compile, run and answer, and the answer would be a comparison of
+# the traced lane with itself. The HOST checks -- the base-point finiteness
+# guards and `validate_plan` -- stay on `rhs_with_buffers` in both lanes: they
+# check the BUILD, and they must gate a direct run exactly as they gate a
+# traced one. Both lanes need the `faq`-node-tag fixes in EarthSciASTSplitter
+# AND EarthSciASTDiff (AGREEMENT.md section 2) and therefore, today, the
+# hand-built environment README.md names rather than `run-model-jl`.
+#
+# WHAT THE TWO LANES COST AT 6x6x8, on the demonstration preset below
+# (3 macro steps, CLAMP=0, UJITTER=1e-1, all four stages, SHARDS=0, jac=:sym,
+# ESS_OOP_SSA=1, Reactant 0.2.285 for both):
+#
+#   BUILD      200.2 s traced   206.3 s direct     -- the same build; the lane
+#                                                     is chosen after it
+#   prepare_jacobian  46.4 s / 45.2 s, plan vs the host Jacobian 0.000e+00 in
+#                     BOTH -- so the band model reaches the direct lane intact
+#   @compile ssp_step  170.1 s traced   206.7 s direct
+#   @compile ros_step   91.0 s traced    69.4 s direct  (the direct lane WINS
+#                                                        the chemistry half)
+#   @compile ssp_vjp   115.4 s traced   the wall, see below
+#   TRACED, END TO END: 26 m 23 s, every acceptance stage green --
+#     J = 38.8466705557198; structural identity scale*dJ/dscale == g0*dJ/dg0 at
+#     8.665e-16; fixed-sequence replay 0.000e+00 at every checkpoint; 0 flaky
+#     retries over 251 VJP calls; 21 of 162 components nonzero; and ALL THREE
+#     fdtape parameters PASS (NEIRegrid.scale 2.893e-11, Transport3D.tau_pblmix
+#     8.591e-10, NEIRegrid.g0 2.893e-11). The two "FAIL" lines the recorded
+#     output further down describes are GONE -- they were the XLA:CPU race
+#     landing on the FD reference, and the workaround is on. `ref` still
+#     self-disables on its zero-seed guard; that contradiction is unchanged.
+#     NB J is 38.8466705557198 here against the 38.844190627265334 recorded
+#     below. That is the FIXED OPERATOR SPLIT, not the lane: the recorded run
+#     predates the faq-node-tag fixes and was integrating a degenerate split.
+#
+# THE TRANSPORT HALF'S REVERSE-MODE COMPILE IS THE OPEN ITEM, and it is the
+# reason the direct lane has no 6x6x8 gradient table beside the traced one yet.
+# `@compile ssp_vjp` in the direct lane ran 6 h 23 m WITHOUT FINISHING and was
+# killed by its own timeout. The cause is measured, not guessed
+# (COMPILE_COST.md): the emitter turned every read of the extended state into
+# one slice per contiguous run, ReSEACT's stencil runs are two to four elements
+# long, and the reverse-mode program reached the pass pipeline as 1,849,190 ops
+# of which 1,821,224 were `stablehlo.slice` -- against the traced lane's
+# 113,744 and 2,712. EarthSciAST 72cbadc30 (`ESM_DIRECT_EMIT_READ`, default
+# `gather`) emits ONE gather when the average run is shorter than four,
+# concatenating the distinct producer values once. That took `ssp_step` from
+# 893.7 s to 206.7 s, the transport RHS's optimized module from 18,060 ops to
+# 6,510 and its per-call median from 3.3 ms to 1.9 ms, and what Enzyme is given
+# from 1,849,190 ops to 89,238 -- SMALLER than the traced lane's module -- and
+# `ssp_vjp` is STILL the wall. 58,620 slices remain, the reverse of a slice is
+# a pad-and-add, and the traced lane's equivalent mass is `broadcast_in_dim`,
+# whose reverse is a reduce. The next lever is a materialization layout in
+# which a stencil neighbour read is one contiguous span, which is
+# `oop_merge.jl`'s block layout and not the read lowering.
+#
+# WHAT IS PROVEN OF THE DIRECT LANE, then: the forward runner end to end, and
+# the algebraic agreement of both halves' right-hand sides (AGREEMENT.md).
+# `run_reseact_reactant.jl` at 6x6x8 over 24 h, BOTH LANES, one allocation
+# (slurm 10553964):
+#
+#                       traced        direct
+#     build             209.3 s       199.9 s
+#     @compile          578.8 s      1262.0 s     (one macro step; `runs` form)
+#     solve              62.7 s        80.6 s
+#     transport ladder  1087/35       1086/33
+#     chemistry ladder  14551/1323    14551/1323  BYTE-IDENTICAL
+#     O3_mean end      35.40241      35.40241
+#     O3_min  end      27.28760      27.28770     (3.7e-7 relative)
+#     peak-to-trough    4.59759       4.59759
+#
+# NOT PROVEN: the 48 h CONUS gradient through the direct lane. The job is
+# written (`tools/diag/adjoint_conus_48h_direct.sbatch`, the record's
+# configuration value for value) and queued, and it cannot start until the
+# partition frees a whole node. It is also not worth an allocation until the
+# reverse-mode compile above is dealt with: at 6x6x8 it did not finish in
+# 6 h 23 m, and CONUS is 23x the cells.
+#
+# THE SSA SPIKE'S FATE HANGS ON THAT RUN, and the reasoning is worth stating
+# now because it does not depend on it. `ESS_OOP_SSA` is read at BUILD time and
+# its arms live inside `_oop_eval_acck` / `_oop_run_acc_vec` / `_oop_fill_level`
+# -- the functions a TRACE walks. The direct emitter walks the plan data itself
+# and never calls them; `ext/reactant_direct/` contains no reference to the SSA
+# tables at all. The direct lane is SSA by construction, which is the thing the
+# spike was reaching for from the other side. So if the direct lane's CONUS loop
+# matches or beats the traced-plus-SSA record (slurm 10372969, 47 min of loop),
+# the spike has nothing left to accelerate once the traced path is retired, and
+# it can be deleted. That comparison is the datum, and it has not been taken.
+#
+# ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
 # * THE 48-HOUR CONUS GRADIENT IN 47 MINUTES OF LOOP (slurm 10372969,
