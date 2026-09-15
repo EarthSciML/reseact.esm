@@ -313,6 +313,28 @@ slice each, with no concatenate to replace (`always` emits 8,800 slices against
 which — `src/tree_walk/oop_merge.jl`'s block layout — and not about
 `_de_emit_runs`.
 
+### Three quarters of the slices were the SAME slice
+
+Counted on the same emitted module: 58,620 `stablehlo.slice`, **14,476 of them
+distinct**. One span of the extended state is emitted a hundred times. That is
+exactly the work `cse_slice` is doing pairwise, on a population the emitter knew
+to be redundant before it wrote it, so EarthSciAST 5181e5c47 memoizes `_de_slice`
+and `_de_concat` on the emission context (one straight-line block, so an earlier
+value always dominates a later use).
+
+It helps where it can and it stops where the measurement says it must:
+
+| | the fix | the fix + emitter CSE |
+| --- | ---: | ---: |
+| emitted `slice` | 15,252 | 11,476 |
+| emission | 3.4 s | 2.9 s |
+| `opt1` | 10.5 s | **4.5 s** |
+| after `opt1` | 9,932 | 9,932 |
+
+**The module after `opt1` is identical to the op.** The pipeline was already
+collapsing the duplicates — just expensively — so this buys emission and the
+pre-Enzyme pass and cannot buy `opt2b`.
+
 ### And which pattern, once `slice_elementwise` is gone
 
 `perf record -F 199 -g`, 150 s, 29,727 samples, taken live on `opt2b` in the
@@ -337,5 +359,17 @@ There is no pass exclusion that wins here; the slice population is the variable.
 `@compile ssp_vjp` at 6x6x8 is still the wall, against 115.4 s in the traced
 lane, and the stage it is stuck in is now named: the FIRST `enzyme-hlo-opt`
 over the differentiated module, in `cse_slice`. Everything before it is in
-range — emission 3.4 s, `opt1` 2.9 to 10.5 s, the differentiation 102.7 to
-142.8 s — and everything the read lowering controls has been spent.
+range — emission 2.9 s, `opt1` 2.9 to 4.5 s, the differentiation 102.7 to
+142.8 s, which together are inside the traced lane's 115.4 s — and everything
+the read lowering controls has been spent.
+
+The target for whatever comes next is a number, not a direction: **the ~9,900
+slices that survive `opt1` under every read form.** They are single-position and
+short reads, one slice each, distinct from each other, with no concatenate to
+replace and no duplicate to collapse; Enzyme's reverse of them is 24,000 to
+28,000 slices plus ~9,000 pads, and `cse_slice` is quadratic in that. Four
+levers were tried against them and all four are spent — the run-length rule, the
+base budget, emitter-side CSE, and pattern exclusion. The one that is not is the
+slot layout the reads address: if a stencil neighbour read were one contiguous
+span, it would be one slice instead of several, and that is
+`src/tree_walk/oop_merge.jl`.

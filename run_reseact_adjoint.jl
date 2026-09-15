@@ -130,11 +130,15 @@
 # slices Enzyme's reverse of ~9,000 primal slices produces. And the read
 # lowering is now SPENT as a lever: `ESM_DIRECT_EMIT_READ=always` gathers every
 # multi-run read and lifts the budget, emits 8,800 slices against the fix's
-# 15,252 -- and after the pre-Enzyme pass both arrive at the same ~9,000, and
-# `opt2b` is unmoved in both. Those ~9,000 are single-position and short reads
-# with no concatenate to replace, so merging them is a question about which
-# slots sit next to which: `oop_merge.jl`'s block layout, measured this time
-# rather than guessed.
+# 15,252 -- and after the pre-Enzyme pass both arrive at the same ~9,900, and
+# `opt2b` is unmoved in both. So is emitter-side CSE of the spans (EarthSciAST
+# 5181e5c47; three quarters of the emitted slices were the SAME slice, which
+# takes emission and the pre-Enzyme pass down but leaves that module identical
+# to the op), and so is excluding `slice_elementwise`. Those ~9,900 are
+# single-position and short reads with no concatenate to replace and no
+# duplicate to collapse, so merging them is a question about which slots sit
+# next to which: `oop_merge.jl`'s block layout, measured this time rather than
+# guessed.
 #
 # WHAT IS PROVEN OF THE DIRECT LANE, then: the forward runner end to end, and
 # the algebraic agreement of both halves' right-hand sides (AGREEMENT.md).
