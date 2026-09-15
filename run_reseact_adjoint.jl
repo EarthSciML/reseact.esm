@@ -183,6 +183,45 @@
 # and until it does the CONUS step cost of this emitter is unmeasured: the
 # 47-minute loop in the record below was taken on the emitter it replaced.
 #
+# AND IT CANNOT BE BROUGHT FORWARD INTO A SESSION, which was asked on
+# 2026-09-15 and is worth writing down as arithmetic rather than as the rule
+# this file already states. The interactive Slurm cgroup is 40.03 GiB =
+# 42.98 GB. The measured footprint of THIS configuration -- 4x5, 48 h, 8
+# shards, jac=:sym, clamp on -- is 42.9 GB (slurm 10386109,
+# tools/diag/adjoint_res_scaling.sbatch), i.e. 99.8% of the cgroup with the
+# cgroup empty, which it never is. THE USUAL LEVER DOES NOT APPLY: the peak is
+# the `ssp_vjp` COMPILE and not the window (576 macro steps add ~390 MB of
+# checkpoints on top -- adjoint_conus_48h.sbatch), `ssp_vjp` is the DRIVER's
+# program, and `RESEACT_ADJ_SHARDS` does not touch it -- the knob moves the
+# CHEMISTRY programs off the driver and `OWN_CHEM` already skips `ros_vjp`
+# under it. So N=4 buys back ~15 GB of worker RSS and leaves the peak exactly
+# where it was; N=2 buys ~23 GB and does the same. There is no shard count at
+# which the compile fits. This is also not a new finding, only a newly
+# quantified one: an in-session attempt was killed at a 30 GiB guard
+# mid-`ros_vjp` compile (adjoint_conus.sbatch), and
+# DIFFERENTIABILITY_PLAN.md's operational line is "never run CONUS builds in
+# the interactive 40 GiB cgroup (Lustre page-fault thrash, hours)".
+#
+# THE WAY TO GET IT SOONER IS THE PARTITION, NOT THE CGROUP. `ctessum` is five
+# nodes held by other whole-node jobs and the scheduler put 10551451 at
+# 2026-09-17; `scavenger` contains those same five nodes and 58 more, at
+# MaxTime 1 day and PreemptMode=REQUEUE, and had three whole nodes idle when
+# this was written. The sbatch takes the override:
+#
+#   sbatch --partition=scavenger --qos=normal \
+#          tools/diag/adjoint_conus_48h_direct.sbatch
+#
+# Preemption requeues from the start, so run it ALONGSIDE 10551451 and cancel
+# whichever loses. NOTE THAT 10551451 IS NOT THIS WORKTREE: it runs
+# `reseact-directrhs` against `oopretire-env-faq2`, i.e. EarthSciAST
+# `oop-retire` 7638b3319, which is ten commits behind `oop-delete` a3f9e1ba1 --
+# the runtime walk's deletion, the SSA spike's removal, the build product
+# becoming a struct, the IR helpers moving. None of that is MEANT to change the
+# emitted module and none of it has been shown not to at CONUS, so 10551451
+# answers a slightly different question than the one the retirement asks. The
+# sbatch in THIS worktree used to inherit that `cd` and that env; it no longer
+# does.
+#
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
