@@ -42,7 +42,17 @@
 #                        `split` runs the `:all` pipeline one stage at a time
 #                        on one module, timing and censusing each -- use it
 #                        when `opt` is the number that has to be taken apart.
-#   RESEACT_CC_DUMP      directory to write the module texts to
+#   RESEACT_CC_DUMP      directory the module texts are STREAMED to (default:
+#                        tools/diag/logs/cc, which is gitignored). Every stage
+#                        writes its module there and the census reads it back
+#                        line by line, because a module the probe holds in a
+#                        Julia `String` is a copy the census then makes a second
+#                        copy of, and at a continental grid one of those copies
+#                        is hundreds of megabytes inside a 40 GiB cgroup. Point
+#                        it at a scratch filesystem for the large grids.
+#   RESEACT_CC_TAG       prefix for the written module files (default: the
+#                        program name and the grid), so several runs can share
+#                        one directory.
 #   RESEACT_NLON/NLAT/NLEV, RESEACT_RES, RESEACT_T0, RESEACT_ADJ_UJITTER,
 #   RESEACT_EXCLUDED_PASSES, RESEACT_ADJ_XLAFIX, RESEACT_RXENV
 #
@@ -58,8 +68,10 @@ PROG in (:rhsT, :rhsC, :ssp_step, :ros_step, :ssp_vjp, :ros_vjp) ||
     error("RESEACT_CC_PROG must be rhsT, rhsC, ssp_step, ros_step, ssp_vjp or ros_vjp")
 const STAGES = Set(String.(split(get(ENV, "RESEACT_CC_STAGES", "trace,opt,raw2"), ',')))
 want(s) = s in STAGES
-const DUMPDIR = get(ENV, "RESEACT_CC_DUMP", "")
-isempty(DUMPDIR) || mkpath(DUMPDIR)
+const DUMPDIR = let d = get(ENV, "RESEACT_CC_DUMP", "")
+    isempty(d) ? joinpath(REPO, "tools", "diag", "logs", "cc") : d
+end
+mkpath(DUMPDIR)
 
 import Pkg
 Pkg.activate(get(ENV, "RESEACT_RXENV", joinpath(REPO, "run-model-jl")); io = devnull)
@@ -149,29 +161,85 @@ const _WATCH = ["stablehlo.slice", "stablehlo.concatenate", "stablehlo.dynamic_s
                 "stablehlo.while", "stablehlo.case", "stablehlo.custom_call",
                 "enzyme.autodiff", "enzymexla.jit_call", "func.call"]
 
-function census(mod::AbstractString)
+#
+# THE CENSUS READS A FILE, not a string. Two reasons. It keeps the probe's peak
+# heap independent of the module size, which is what lets the large grids run at
+# all. And it gives the census a second axis a flat op count hides: the CONSTANT
+# ELEMENT VOLUME. A program whose reads are gathers carries an i64 index
+# constant per gather, so trading thousands of `slice` ops for one `gather` can
+# move cost out of the op count and into the data the module ships; the op
+# totals alone cannot tell the two apart. Every constant's widest tensor type on
+# its line is summed, and `iota` beside it because a lowered index vector can
+# arrive either way.
+# Float and integer tensor types are counted SEPARATELY, because they answer
+# different questions. Float constant volume is the model's own frozen data
+# (stencil coefficients, cell geometry); integer constant volume is almost
+# entirely GATHER INDICES, the thing a read form trades ops for. A fix that
+# moves a module from thousands of slices to hundreds of gathers has to be read
+# on both axes at once or it just relocates the cost.
+const _TENSOR_RE_F = r"tensor<([0-9x]*)x?f(?:8|16|32|64)>"
+const _TENSOR_RE_I = r"tensor<([0-9x]*)x?i(?:1|8|16|32|64)>"
+
+function _tensor_elems(re::Regex, ln::AbstractString)
+    best = 0
+    for m in eachmatch(re, ln)
+        d = m.captures[1]
+        isempty(d) && (best = max(best, 1); continue)
+        n = 1
+        for tok in split(d, 'x')
+            isempty(tok) && continue
+            n *= parse(Int, tok)
+        end
+        best = max(best, n)
+    end
+    return best
+end
+
+function census(path::AbstractString)
     c = Dict{String,Int}(); nfunc = 0; nlines = 0
-    for ln in eachline(IOBuffer(mod))
+    felems = 0; ielems = 0; iotaelems = 0; nbytes = 0
+    for ln in eachline(path)
         nlines += 1
+        nbytes += sizeof(ln) + 1
         s = lstrip(ln)
         startswith(s, "func.func") && (nfunc += 1)
         m = match(r"\"?([a-z_]+\.[a-z_0-9]+)\"?[ (]", s)
         m === nothing && continue
-        c[m.captures[1]] = get(c, m.captures[1], 0) + 1
+        k = m.captures[1]
+        c[k] = get(c, k, 0) + 1
+        if k == "stablehlo.constant"
+            felems += _tensor_elems(_TENSOR_RE_F, ln)
+            ielems += _tensor_elems(_TENSOR_RE_I, ln)
+        elseif k == "stablehlo.iota"
+            iotaelems += max(_tensor_elems(_TENSOR_RE_F, ln),
+                             _tensor_elems(_TENSOR_RE_I, ln))
+        end
     end
-    return (lines = nlines, funcs = nfunc, ops = c, total = sum(values(c); init = 0))
+    return (lines = nlines, funcs = nfunc, ops = c, total = sum(values(c); init = 0),
+            felems = felems, ielems = ielems, iotaelems = iotaelems, bytes = nbytes)
 end
 
 function report_census(tag, mod)
     cs = census(mod)
-    say(@sprintf("    %-24s %9d lines  %9d ops  %5d func.func",
-                 tag, cs.lines, cs.total, cs.funcs))
+    say(@sprintf("    %-24s %9d lines  %9d ops  %5d func.func  f64const=%d (%.1f MB)  i64const=%d (%.1f MB)  iota=%d  textMB=%.1f",
+                 tag, cs.lines, cs.total, cs.funcs,
+                 cs.felems, 8 * cs.felems / 2^20, cs.ielems, 8 * cs.ielems / 2^20,
+                 cs.iotaelems, cs.bytes / 2^20))
     rows = sort!([(k, v) for (k, v) in cs.ops if v > 0]; by = last, rev = true)
     say("      top:     " * join([@sprintf("%s=%d", k, v) for (k, v) in first(rows, 12)], "  "))
     watched = [(w, get(cs.ops, w, 0)) for w in _WATCH]
     say("      watched: " * join([@sprintf("%s=%d", split(k, '.')[2], v)
                                   for (k, v) in watched if v > 0], "  "))
     return cs
+end
+
+# Write a module to `DUMPDIR` and return its PATH, which is what every stage
+# hands the census. `show(io, mod)` streams; `repr(mod)` would not.
+_dumptag() = get(ENV, "RESEACT_CC_TAG", "$(PROG)-$(GRIDSTR)")
+function _dump(nm, mod)
+    p = joinpath(DUMPDIR, "$(_dumptag())-$(nm).mlir")
+    open(io -> show(io, mod), p, "w")
+    return p
 end
 
 foreach(d -> d.materialize!(), dms)
@@ -260,8 +328,8 @@ const COPTS0 = _copts(false)    # trace / emit only
 const COPTS2 = _copts(:all)     # the production pipeline
 
 say("="^78)
-say(@sprintf("COMPILE COST  prog=%s  lane=%s  grid=%s  stages=%s",
-             PROG, rx_rhs_mode(), GRIDSTR, join(sort(collect(STAGES)), ",")))
+say(@sprintf("COMPILE COST  prog=%s  grid=%s  stages=%s",
+             PROG, GRIDSTR, join(sort(collect(STAGES)), ",")))
 say(@sprintf("  excluded_passes=%s  xlafix=%s  XLA_FLAGS=%s",
              isempty(EXCL2) ? "(none)" : join(EXCL2, ","), XLAFIX,
              get(ENV, "XLA_FLAGS", "(unset)")))
@@ -320,7 +388,7 @@ function run_split(f, args)
         say(@sprintf("  %-8s %9.1f s   (emission, no passes)", "emit", time() - t0))
         MLIR.IR.activate(ctx)
         try
-            report_census("emit", sprint(show, mod))
+            report_census("emit", _dump("split-emit", mod))
             for (nm, pipe) in stages
                 # Announced BEFORE it runs, so a run killed by the wall clock
                 # still names the stage that did not finish.
@@ -328,11 +396,7 @@ function run_split(f, args)
                 t = time(); RXC.run_pass_pipeline!(mod, pipe, nm); dt = time() - t
                 tot[] += dt
                 say(@sprintf("  %-8s %9.1f s   (cumulative %.1f s)", nm, dt, tot[]))
-                nm in SPLIT_QUIET || report_census(nm, sprint(show, mod))
-                if !isempty(DUMPDIR)
-                    write(joinpath(DUMPDIR, "$(PROG)-$(rx_rhs_mode())-split-$nm.mlir"),
-                          sprint(show, mod))
-                end
+                nm in SPLIT_QUIET || report_census(nm, _dump("split-$nm", mod))
                 nm == SPLIT_STOP && break
             end
         finally
@@ -354,7 +418,7 @@ end
 # --------------------------------------------------------------------------- #
 function report_sites(tag, g)
     st = try
-        rx_rhs_direct() ? getfield(getfield(g, :d), :stats) : nothing
+        getfield(getfield(g, :d), :stats)
     catch
         nothing
     end
@@ -382,39 +446,39 @@ function stage(tag, f)
 end
 
 if PROG === :rhsT
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 rhsT(U_R, THT, T_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 rhsT(U_R, THT, T_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
     want("split")   && run_split(rhsT, (U_R, THT, T_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsT(U_R, THT, T_R))
 elseif PROG === :rhsC
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 rhsC(U_R, THC, T_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 rhsC(U_R, THC, T_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
     want("split")   && run_split(rhsC, (U_R, THC, T_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsC(U_R, THC, T_R))
 elseif PROG === :ssp_step
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
     want("split")   && run_split(ssp_step, (U_R, THT, T_R, DTT_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))
 elseif PROG === :ros_step
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
     want("split")   && run_split(ros_step, (U_R, THC, T_R, DTC_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))
 elseif PROG === :ssp_vjp
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("split")   && run_split(ssp_vjp, (U_R, THT, LAM_R, T_R, DTT_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))
 else
-    want("trace")   && (MOD0[] = stage("trace",   () -> repr(RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
-    want("opt")     && (MOD1[] = stage("opt",     () -> repr(RX.@code_hlo compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
-    want("raw2")   && (MOD2[] = stage("raw2",    () -> repr(RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
+    want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
+    want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
+    want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("split")   && run_split(ros_vjp, (U_R, THC, LAM_R, T_R, DTC_R,))
     want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))
 end
@@ -424,10 +488,5 @@ report_sites(PROG in (:rhsC, :ros_step, :ros_vjp) ? "chemistry" : "transport",
 MOD0[] === nothing || report_census("raw   (no passes)", MOD0[])
 MOD1[] === nothing || report_census("opt   (full pipeline)",  MOD1[])
 MOD2[] === nothing || report_census("raw2  (warm, no passes)", MOD2[])
-if !isempty(DUMPDIR)
-    tagp = "$(PROG)-$(rx_rhs_mode())"
-    MOD0[] === nothing || write(joinpath(DUMPDIR, "$tagp-unopt.mlir"), MOD0[])
-    MOD1[] === nothing || write(joinpath(DUMPDIR, "$tagp-opt.mlir"), MOD1[])
-    say("  wrote module text to $DUMPDIR")
-end
-say("DONE $(PROG) $(rx_rhs_mode())")
+say("  module text: $DUMPDIR ($(_dumptag())-*.mlir)")
+say("DONE $(PROG)")

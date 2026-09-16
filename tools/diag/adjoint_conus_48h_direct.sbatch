@@ -28,17 +28,15 @@
 # without which the operator split copies the whole tendency into both halves
 # and the symbolic Jacobian comes back empty. See README.md.
 #
-# AND IT HAS TO BE *THIS* WORKTREE'S ENVIRONMENT, which until now it was not.
-# The `cd` and the RESEACT_RXENV default below were inherited from the two-lane
-# worktree this file was copied out of (`reseact-directrhs`, EarthSciAST
-# `oop-retire`, RESEACT_RHS=direct selecting the emitter out of a build that
-# still contained the traced one). Run from here, that script measured a
-# DIFFERENT checkout than the one the retirement is about: `oop-delete` carries
-# ten commits on top of it -- the out-of-place runtime walk deleted, the SSA
-# spike removed, the build product turned into a struct, the shared IR helpers
-# moved next to the IR -- none of which is INTENDED to change the emitted
-# module, and none of which has been shown not to at CONUS. Both are corrected
-# here; a run out of this file is now this worktree against `directonly-env`.
+# AND IT HAS TO BE *THIS* WORKTREE'S ENVIRONMENT. The `cd` and the RESEACT_RXENV
+# default below have been wrong twice now, each time inherited from the worktree
+# this file was copied out of, and each time the run measured a DIFFERENT
+# checkout than the one the question was about. They are `reseact-fix` and
+# `retire-conus-env` here, which is EarthSciAST `retire-oop` -- the emitter
+# carrying the three grid-blindness fixes (the read piece cap, the
+# model-relative gather-base budget, and the canonical slot-ordered base) that
+# this run exists to measure at CONUS. Check the provenance block the driver
+# prints against that before believing a number out of it.
 #
 # WHERE TO RUN IT, which is a scheduling question and not a taste one. The
 # `ctessum` partition is five nodes and they are held by whole-node jobs; a
@@ -74,18 +72,19 @@
 # the same shape adjoint_conus_5d.sbatch asks for.
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=160G
-# The compile cost at CONUS has never been measured on this emitter; 24 h is
-# ~19x the record's 1 h 15 m, which is margin for a surprise rather than a
-# projection.
+# The emitter before the read fixes did not get through `@compile ssp_step` at
+# this grid in 6.5 h (slurm 10567298, XLA's own `HloCSE`, then a section-memory
+# abort). 24 h is ~19x the record's 1 h 15 m, which is margin for a surprise
+# rather than a projection.
 #SBATCH --time=24:00:00
-#SBATCH --output=/scratch/%u/oopretire-logs/conus/adj48-direct-%j.log
+#SBATCH --output=/scratch/%u/oopretire-logs/conus-fix/adj48-direct-%j.log
 
 set -u
 # Slurm copies the script out of the repository, so the path is spelled out.
-cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact-directonly || exit 1
+cd /projects/illinois/eng/cee/ctessum/ctessum/code/reseact-fix || exit 1
 
 export JULIA_DEPOT_PATH=/scratch/$USER/oopretire-depot:/projects/illinois/eng/cee/ctessum/ctessum/.julia
-export RESEACT_RXENV=${RESEACT_RXENV:-/scratch/$USER/directonly-env}
+export RESEACT_RXENV=${RESEACT_RXENV:-/scratch/$USER/retire-conus-env}
 [ -d "$RESEACT_RXENV" ] || { echo "FATAL: env $RESEACT_RXENV missing"; exit 1; }
 
 # --- the record's configuration, value for value --------------------------
@@ -101,7 +100,7 @@ export RESEACT_ADJ_CLAMP=${RESEACT_ADJ_CLAMP:-1}
 export RESEACT_ADJ_SHARDS=${RESEACT_ADJ_SHARDS:-8}
 export RESEACT_ADJ_OBJ=${RESEACT_ADJ_OBJ:-SuperFast.O3:surf}
 export RESEACT_LABEL=${RESEACT_LABEL:-conus-adj48-direct-$SLURM_JOB_ID}
-export RESEACT_ADJ_CSV=${RESEACT_ADJ_CSV:-/scratch/$USER/oopretire-logs/conus/adj48-direct-${SLURM_JOB_ID}.csv}
+export RESEACT_ADJ_CSV=${RESEACT_ADJ_CSV:-/scratch/$USER/oopretire-logs/conus-fix/adj48-direct-${SLURM_JOB_ID}.csv}
 
 echo "=== node $(hostname)  cpus=$SLURM_CPUS_PER_TASK  mem=${SLURM_MEM_PER_NODE}M ==="
 echo "=== env=$RESEACT_RXENV jac=$RESEACT_ADJ_JAC clamp=$RESEACT_ADJ_CLAMP" \
