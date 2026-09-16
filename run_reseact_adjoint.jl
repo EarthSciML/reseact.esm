@@ -227,11 +227,24 @@
 # and cleared it) is unchanged and unresolved; prefer `fdtape` and the
 # structural identity, which is what the driver already says.
 #
-# THE 48 h CONUS GRADIENT IS QUEUED as slurm 10551451
-# (`tools/diag/adjoint_conus_48h_direct.sbatch`), the 2026-09-05 record's
-# configuration value for value, waiting on a whole node. It has not started,
-# and until it does the CONUS step cost of this emitter is unmeasured: the
-# 47-minute loop in the record below was taken on the emitter it replaced.
+# THE 48 h CONUS GRADIENT HAS NOW RUN ON THIS EMITTER (2026-09-15/16, slurm
+# 10575494, `tools/diag/adjoint_conus_48h_direct.sbatch` on the scavenger
+# partition): 59 m 08 s all in, 26 min of loop against the 2026-09-05 record's
+# 47 min, forward 432.9 s and backward 1,127.2 s against 692.6 s and 2,106.7 s.
+# The transport VJP, the program the emitter work was about, is 82.18 ms per
+# call against the record's 326.86 ms. The entry under WHAT WORKS TODAY has the
+# table, and COMPILE_COST.md section 7 has the comparison parameter by
+# parameter, the three-grid emission census behind it, and the one figure that
+# went the wrong way (peak RSS 116.4 GiB against the record's 42.2 GiB).
+#
+# IT DID NOT RUN AT ALL BEFORE THAT (slurm 10567298): `@compile ssp_step` at
+# CONUS spent 6 h 27 m with 99.3% of a live profile inside XLA's own `HloCSE`
+# and then aborted in the CPU backend's section allocator. The transport
+# right-hand side reached XLA carrying 97,385 `stablehlo.slice` in 105,474
+# operations, because two constants in EarthSciAST's read cost model priced a
+# property of the STENCIL against a cost that grows with the GRID. Three fixes
+# on `retire-oop` (ee0606b0d, dc5782cae, 6cc2e807b) make that emission flat in
+# the grid: 11,893 operations and 2,412 slices at CONUS.
 #
 # AND IT CANNOT BE BROUGHT FORWARD INTO A SESSION, which was asked on
 # 2026-09-15 and is worth writing down as arithmetic rather than as the rule
@@ -275,7 +288,33 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
-# * THE 48-HOUR CONUS GRADIENT IN 47 MINUTES OF LOOP (slurm 10372969,
+# * THE 48-HOUR CONUS GRADIENT IN 26 MINUTES OF LOOP, ON THE DIRECT EMITTER
+#   (slurm 10575494, 2026-09-15/16, 59 m 08 s all in, MaxRSS 116.4 GiB, exit 0;
+#   log and CSV at /scratch/$USER/oopretire-logs/conus-fix/adj48-direct-10575494.*).
+#   The 2026-09-05 record's configuration value for value -- 13x7x72, 576 macro
+#   steps of 300 s, `clamp_nonneg` ON, un-jittered, jac=:sym, 8 chemistry
+#   shards, objective `SuperFast.O3:surf` -- on EarthSciAST `retire-oop`
+#   6cc2e807b with Reactant 0.2.285:
+#     J          = 30.1943304387531 ppb mean surface O3 over 48 h
+#     forward      432.85 s  (0.751 s/macro step)
+#     backward   1,127.23 s  (1.957 s/macro step, 27,970 VJP calls, 0 flaky)
+#     @compile     ssp_step 27.2 s, ssp_vjp 358.6 s; BUILD 155.7 s
+#     21 of 162 components nonzero; fixed-sequence replay 0.000e+00 from every
+#     checkpoint; the plan reproduces the JacobianEvaluator at 0.000e+00
+#   AND IT IS NOT A BIT REPRODUCTION OF THE RECORD, which matters more than the
+#   speedup. J moves 8.9e-9 relative and the shared gradient components agree to
+#   1.1e-4 or better (the physically large ones to 1e-7 or better), where the
+#   traced lane's own variants reproduced each other to 13 digits. THREE things
+#   differ at once and none of them is separable from the others: the emitter,
+#   Reactant 0.2.280 -> 0.2.285, and the MODEL -- reseact.esm now declares
+#   `Transport3D.dlat_deg` and `Transport3D.dlon_deg` as runtime scalars, which
+#   is why 162 parameters and 21 nonzero components stand against the record's
+#   160 and 19. What IS attributable: the TRANSPORT accept/reject ladder is
+#   identical to the record (1,859 accepted steps in both) and the chemistry
+#   ladder differs by three steps out of 26,114, so the half the emitter work
+#   changed reproduced the record's step sequence exactly and the divergence is
+#   the adaptive controller in the chemistry half. COMPILE_COST.md section 7.
+# * THE 48-HOUR CONUS GRADIENT IN 47 MINUTES OF LOOP, TRACED (slurm 10372969,
 #   2026-09-05, 1 h 15 m all in): forward 692.6 s, backward 2,106.7 s, with
 #   8 chemistry shards, the SSA emitter, the excluded-passes pipeline and the
 #   backward-sweep refresh fix -- the SAME trajectory as the August run below

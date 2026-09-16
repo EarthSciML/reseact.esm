@@ -563,3 +563,247 @@ The generalisable reading, for the next emitter and the next binding: **one read
 form, no exceptions.** A surface that opens its own path around the cost model
 will eventually be the surface that costs the most, and a flat op census cannot
 tell you which surface that is. Attribute the ops to the code that wrote them.
+
+## 7. The grid, 2026-09-15/16: three clauses that priced a stencil and not a model
+
+Section 6 left `@compile ssp_vjp` — the reverse of the four-stage transport
+step, and the program that had been the wall — at 76.1 s at 6x6x8, and the
+emitter's read cost model looking settled. At the CONTINENTAL grid none of that held. A
+three-grid census of ONE transport right-hand side (`RESEACT_CC_PROG=rhsT`,
+`raw2`, i.e. emission alone) shows what grew:
+
+| one `rhsT` emission | 6x6x8 | 13x7x16 | 13x7x72 (CONUS) |
+| --- | ---: | ---: | ---: |
+| cells | 288 | 1,456 | 6,552 |
+| total ops | 8,348 | 37,086 | **105,474** |
+| `stablehlo.slice` | 709 | 30,549 | **97,385** |
+| `stablehlo.gather` | 1,243 | 563 | 721 |
+| everything else | flat | flat | flat (1.33x for 22.75x the cells) |
+
+The chemistry half is grid-independent in op count over the same span (13,619 →
+18,192) with its data volume scaling correctly, so this is the transport read
+form and nothing else. At CONUS `@compile reactant_ssp_step` never returned:
+6 h 27 m, 99.3% of a live `perf` profile inside `xla::HloCSE::RunOnComputation`
+(the pairwise `HloInstruction::IdenticalInternal`, one layer below the
+`cse_slice` of section 5), and then `LLVM ERROR: Unable to allocate section
+memory!` out of the CPU backend's contiguous section allocator — slurm
+10567298, MaxRSS 48.4 GiB (52.0 GB), on a node with 160 GB requested.
+
+### The two clauses, and why each is a grid cap in disguise
+
+Both live in EarthSciAST `ext/reactant_direct/values.jl` and both compare a
+property of the STENCIL against a cost that grows with the GRID.
+
+**The average-run test.** `_de_gather_is_cheaper` priced one gather against a
+slice per run by AVERAGE RUN LENGTH. That length is fixed by how a read walks
+its axis — a column read runs the model's level count and nothing else — while
+the NUMBER of runs is proportional to cells. At 8 levels the vertical runs are
+2 to 4 and the reads gather; at 16 levels and above the dominant run is exactly
+7, past the break-even of 4, so the same reads shatter into thousands of slices
+at every grid from there up. It declined 1,246 reads at CONUS and accounts for
+72,405 of the 97,385 slices (74%).
+
+**The absolute base budget.** `_DE_GATHER_BASE_MAX` refused a cross-producer
+gather whose base concatenate would copy more than 65,536 elements. The CONUS
+extended state is 85,176 slots, so every cross-producer read was refused *by
+construction* — including the output assembly, which spans every producer there
+is: one gather at 6x6x8, 24,000 slices at CONUS (26% of the total).
+
+`ESM_DIRECT_EMIT_READ=always` bounds from above what the read form can buy:
+10,201 ops and 222 slices at CONUS, flat across grids, but 38.3 M i64 index
+elements (293 MB) per right-hand side. That is the ceiling, not the fix.
+
+### The fix: a piece cap, a model-relative budget, a canonical base
+
+1. **A piece cap** (`_DE_GATHER_MAX_PIECES = 64`). Past it a read gathers
+   whatever its runs look like, so no read costs more than the cap in ops;
+   below it the average-run test decides as before, which keeps a short affine
+   read on the slice path where it carries no index data.
+   `ESM_DIRECT_GATHER_MAX_PIECES` overrides it.
+2. **A model-relative base budget**, `max(65_536, 4 * n_extended_state)`, with
+   the old constant as a floor. `ESM_DIRECT_GATHER_BASE_MAX` still overrides it.
+3. **One canonical base per slot map, in slot order.** The map's distinct
+   producers are concatenated once, in first-slot order, and reordered once if
+   that concatenation is not already in slot order; every read that would cost
+   more than the piece cap then reads that ONE value at plain slot indices. The
+   concatenate is emitted once per map per write epoch rather than once per
+   producer set, a read affine in slot space is an ordinary slice with no index
+   constant, and `_de_assemble` — a read of slots 1..n — IS the base, so the
+   output assembly emits nothing at all.
+
+EarthSciAST `retire-oop` ee0606b0d, dc5782cae, 6cc2e807b.
+
+### What the census says now
+
+Same probe, same three grids, Reactant 0.2.285, EarthSciAST `retire-oop`
+6cc2e807b. `before` is `oop-delete` a3f9e1ba1:
+
+| one `rhsT` emission | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| ops, before | 8,348 | 37,086 | 105,474 |
+| **ops, after** | **8,334** | **8,456** | **11,893** |
+| `slice`, before | 709 | 30,549 | 97,385 |
+| **`slice`, after** | **686** | **562** | **2,412** |
+| `gather`, before | 1,243 | 563 | 721 |
+| `gather`, after | 1,248 | 1,293 | 1,474 |
+| `concatenate`, before | 94 | 233 | 629 |
+| `concatenate`, after | 93 | 130 | 515 |
+| i64 constant elements, before | 1.57 M (12.0 MB) | 2.98 M (22.7 MB) | 13.4 M (102.3 MB) |
+| i64 constant elements, after | 1.61 M (12.3 MB) | 8.47 M (64.6 MB) | 39.6 M (301.8 MB) |
+| emission wall, before | 1.1 s | 3.8 s | 8.7 s |
+| emission wall, after | 1.2 s | 2.9 s | 11.5 s |
+
+**The op count is now flat in the grid** — 8,334 / 8,456 / 11,893 over a 22.75x
+span of cells, against 8,348 / 37,086 / 105,474 — and the 6x6x8 module, where
+none of the three clauses bites, is unchanged. The chemistry half is unchanged
+too (13,619 → 13,628 ops at 6x6x8).
+
+**The index data is not flat, and it is the cost of the trade.** 301.8 MB per
+CONUS transport right-hand side is above the 293 MB that
+`ESM_DIRECT_EMIT_READ=always` spends and well above the ~160 MB this work aimed
+at. It buys the op count: a read of 6,552 positions in 936 runs is one gather
+with 52 KB of indices instead of 936 operations, and it is the OPERATION count
+that the quadratic deduplication passes — Enzyme-JAX's `cse_slice` and XLA's
+`HloCSE` — are quadratic in. The consequence shows up in memory rather than in
+time; see the peak RSS row below.
+
+The site attribution says exactly which surface moved (one CONUS emission):
+
+| site | op | before | after |
+| --- | --- | ---: | ---: |
+| `kernel` | `slice` | 66,895 | **5** |
+| `kernel` | `gather` | 498 | 1,211 |
+| `assemble` | `slice` | 24,000 | **0** |
+| `assemble` | `gather` / `concatenate` | 0 / 1 | **0 / 0** |
+| `mat_kernel` | `slice` | 6,418 | 2,335 |
+| `mat_kernel` | `gather` / `concatenate` | 223 / 537 | 256 / 508 |
+| `canon` | `concatenate` / `gather` | — | 7 / 7 |
+
+Seven canonical bases over the whole emission, and the output assembly emits
+nothing.
+
+### `ssp_step` and `ssp_vjp` at 13x7x16
+
+The four-stage step and its reverse, one program per process, production
+compile options:
+
+| 13x7x16 | emission (`raw2`) | `@compile` | pre-pass ops |
+| --- | ---: | ---: | ---: |
+| `ssp_step` | 9.3 s | 49.1 s | 33,903 |
+| `ssp_vjp` | 10.0 s | 302.6 s | 34,162 |
+
+### The 48 h CONUS gradient on the fixed emitter
+
+`tools/diag/adjoint_conus_48h_direct.sbatch`, slurm **10575494**, scavenger
+partition, one 40-core node, **59 m 08 s all in**, exit 0. Beside it, the
+traced record it is measured against, slurm 10372969 (2026-09-05, 1 h 15 m 37 s):
+
+| 13x7x72, 576 macro steps, 48 h | traced record 10372969 | direct 10575494 |
+| --- | ---: | ---: |
+| emitter | traced, `ESS_OOP_SSA=1` | direct StableHLO |
+| Reactant | 0.2.280 (see below) | 0.2.285 |
+| EarthSciAST | main of 2026-09-05 | `retire-oop` 6cc2e807b |
+| BUILD | 230.4 s | 155.7 s |
+| `prepare_jacobian` | 65.3 s | 33.7 s |
+| plan vs the JacobianEvaluator | 0.000e+00 PASS | 0.000e+00 PASS (509.9 s) |
+| `@compile ssp_step` | 159.5 s | **27.2 s** |
+| `@compile ssp_vjp` | 345.4 s | **358.6 s** |
+| forward pass | 692.6 s (1.202 s/macro step) | **432.9 s (0.751)** |
+| backward sweep | 2,106.7 s (3.657 s/macro step) | **1,127.2 s (1.957)** |
+| loop total | 47 min | **26 min** |
+| cost ratio backward/forward | 3.04 (VJP-only 2.42) | 2.60 (VJP-only 1.72) |
+| accepted inner steps | 27,973 (1,859 T, 26,114 C) | 27,970 (1,859 T, 26,111 C) |
+| flaky-reverse retries | 0 / 27,973 | 0 / 27,970 |
+| fixed-sequence replay | — | 0.000e+00 at every checkpoint |
+| MaxRSS | 42.2 GiB (45.4 GB) | **116.4 GiB (124.9 GB)** |
+| J (ppb mean surface O3) | 30.1943301698531 | 30.1943304387531 |
+
+**The loop-cost datum**, per device call:
+
+| | traced record | direct | ratio |
+| --- | ---: | ---: | ---: |
+| transport step, forward | 18.94 ms | 9.92 ms | 1.9x |
+| transport step, replay | 19.82 ms | 9.56 ms | 2.1x |
+| **transport VJP** | **326.86 ms** | **82.18 ms** | **4.0x** |
+| chemistry step | 13.65 ms | 11.26 ms | 1.2x |
+| chemistry VJP | 30.11 ms | 15.55 ms | 1.9x |
+| forcing refresh | 3,866 ms | 1,298 ms | 3.0x |
+
+The transport VJP is the program the whole read form was about, and it is 4.0x
+the traced lane's per call. The chemistry and refresh gains are not this work's:
+they come with the same environment and are reported so the loop total is not
+attributed entirely to the emitter.
+
+**J IS NOT A REPRODUCTION AND SHOULD NOT BE READ AS ONE.** It differs from the
+record at 8.9e-9 relative, where the traced lane's own variants reproduced each
+other to 13 digits. Three things differ between the two runs and only one of
+them is this work, so the difference is not attributable:
+
+* the emitter (traced against direct), which is the point of the run;
+* Reactant against Reactant. The record's log does not print a version; the
+  production traced environment of that date is Reactant 0.2.280 (AGREEMENT.md),
+  and this run prints 0.2.285 in its own provenance block;
+* the MODEL. The record carried 160 runtime scalars, this run carries 162:
+  `Transport3D.dlat_deg` and `Transport3D.dlon_deg` became runtime scalars in
+  reseact.esm since 2026-09-05, and both are nonzero in the gradient (19
+  nonzero components then, 21 now).
+
+The window, macro step count, objective, base point and jitter are identical
+(576 x 300 s = 172,800 s, `SuperFast.O3:surf`, default initial condition,
+`ujitter=0`), and the configuration is otherwise the record's value for value.
+
+**What the ladder says about WHERE the difference is.** The TRANSPORT
+accept/reject ladder is identical to the record — 1,859 accepted transport
+steps in both — and the chemistry ladder differs by three accepted steps out of
+26,114. The half this work changed reproduced the record's step sequence
+exactly; the divergence is in the chemistry half, which is the adaptive
+controller converting ulp-level differences into a different accept/reject
+decision, the mechanism DIFFERENTIABILITY_PLAN.md section 5 documents.
+
+All nineteen gradient components the two runs share agree; sixteen of them to
+**5.2e-7 or better**, and the three largest in magnitude to 1.7e-7 or better:
+
+| parameter | traced record | direct | rel |
+| --- | ---: | ---: | ---: |
+| `NEIRegrid.scale` | -2.1143633041322 | -2.1143633236492 | 9.2e-9 |
+| `DryDepositionGas.kappa` | -1.6165013604182 | -1.6165010844056 | 1.7e-7 |
+| `Transport3D.g_acc` | +0.66916827272938 | +0.66916823753613 | 5.3e-8 |
+| `Transport3D.dlat_deg` | — (not a scalar then) | -0.67857169538 | — |
+| `NEIRegrid.g0` | -0.21560505413492 | -0.21560505612510 | 9.2e-9 |
+| `DryDepositionGas.g_const` | -0.51290882583830 | -0.51290880329965 | 4.4e-8 |
+| `Transport3D.Rd_air` | -0.022861170673268 | -0.022861169470941 | 5.3e-8 |
+| `Transport3D.lat0_deg` | +0.017701150585183 | +0.017701155404131 | 2.7e-7 |
+| `Transport3D.lon0_deg` | +1.2220503711785e-03 | +1.2221790333493e-03 | **1.1e-4** |
+| `Transport3D.dlon_deg` | — (not a scalar then) | +0.025480057104 | — |
+| `GEOSFP.dt_interp_A1` | +2.4065195865537e-03 | +2.4065029990172e-03 | 6.9e-6 |
+| `Transport3D.tau_pblmix` | -4.1311275049680e-04 | -4.1311270234881e-04 | 1.2e-7 |
+| `SuperFast.CH4` | +9.9893465281987e-05 | +9.9893466413848e-05 | 1.1e-8 |
+| `GEOSFP.t_interp_ref_A1` | +5.4698172131827e-05 | +5.4697814366183e-05 | 6.5e-6 |
+| `GEOSFP.dt_interp_A3` | +4.0513025933446e-05 | +4.0513017577183e-05 | 2.1e-7 |
+| `GEOSFP.dt_interp_I3` | +2.1403473012459e-05 | +2.1403473090578e-05 | 3.7e-9 |
+| `GEOSFP.t_interp_ref_A3` | +3.5750021994023e-06 | +3.5750015426635e-06 | 1.8e-7 |
+| `GEOSFP.t_interp_ref_I3` | +1.9464571995344e-06 | +1.9464572155646e-06 | 8.2e-9 |
+| `WetDeposition.Vdr` | +1.0197593211775e-08 | +1.0197593147603e-08 | 6.3e-9 |
+| `WetDeposition.rho_water` | -5.0987966058876e-11 | -5.0987965738013e-11 | 6.3e-9 |
+| `DryDepositionGas.theta` | -1.0376715638196e-40 | -1.0376710202812e-40 | 5.2e-7 |
+
+Three components fall outside 1e-6: `Transport3D.lon0_deg` at 1.1e-4 and the
+`GEOSFP` A1-interpolation pair `dt_interp_A1` and `t_interp_ref_A1` at 6.9e-6
+and 6.5e-6. All three are among the smallest sensitivities in the table and all
+three are differences of nearly-cancelling contributions, which is what a
+three-step change in the chemistry ladder moves first. The components that
+carry the calibration signal — `NEIRegrid.scale`, `DryDepositionGas.kappa`,
+`Transport3D.g_acc`, `NEIRegrid.g0`, `DryDepositionGas.g_const` — agree to
+1.7e-7 or better, well inside the 1e-6 this work targets.
+
+### The cost, stated plainly
+
+**Peak memory nearly tripled: 42.2 GiB for the traced record, 116.4 GiB here.**
+The gather index constants are the bulk of it — 301.8 MB per transport
+right-hand side, four stages per step, forward and reverse — and the 160 GB the
+sbatch asks for is now margin rather than headroom. That is the price of moving
+the transport step from 105,474 operations to 11,893, and at this grid it is
+worth paying, because the 105,474-operation program does not compile at all.
+The next lever, if one is wanted, is the index data rather than the op count:
+an affine run in slot space costs no index constant, and the canonical base has
+made slot space the addressing space in which that is now expressible.

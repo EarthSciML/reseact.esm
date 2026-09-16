@@ -801,25 +801,38 @@ changed step count as changed solver quality without checking the state differen
 behind it.
 
 
-## 6. Wall time — the 30-minute target (status 2026-09-05)
+## 6. Wall time — the 30-minute target (status 2026-09-16)
 
 **Goal:** the five-day CONUS gradient (`run_reseact_adjoint.jl`'s default) in
-30 minutes of loop on CPU, compile excluded. **Status:** ~1 h 57 m projected;
-~3.9x remains.
+30 minutes of loop on CPU, compile excluded. **Status:** ~1 h 05 m projected;
+~2.2x remains.
 
-Measured on the SAME 48 h window (576 macro steps, 27,973 inner steps), every
-run reproducing the August accept/reject ladder byte for byte, J to 13 digits
-and all 19 nonzero gradient components to ≤ 1.3e-11:
+Measured on the SAME 48 h window (576 macro steps of 300 s). The first three
+rows reproduce the August accept/reject ladder byte for byte, J to 13 digits and
+all 19 nonzero gradient components to ≤ 1.3e-11; the fourth does NOT, and the
+paragraph under the table says why:
 
 | 48 h CONUS, loop only | forward | backward | total | job |
 |---|---|---|---|---|
 | August, single process, stock emitter | 7,460 s | 18,762 s | 7 h 17 m | 10055533 |
 | + the SSA emitter of the day + excluded passes (4.27x step) | 1,425 s | 6,243 s | 2 h 08 m | 10359755 |
 | + 8 chemistry shards + backward refresh fix | 693 s | 2,107 s | 47 min | 10372969 |
+| + the direct StableHLO emitter, read cost model fixed | 433 s | 1,127 s | **26 min** | 10575494 |
 
-Per window at the last row: chemistry step 0.69 s, chemistry replay 0.64,
+Per window at the 10372969 row: chemistry step 0.69 s, chemistry replay 0.64,
 chemistry VJP 1.36, transport VJP 1.07, forcing refresh 0.87, transport step
 0.14, GC 0.17 → 4.86 s. Target: 1.25 s.
+
+Per window at the 2026-09-15/16 row: chemistry step 0.57 s, chemistry replay
+0.51, chemistry VJP 0.70, transport VJP 0.27, forcing refresh 0.26, transport
+step 0.03, GC 0.14 → 2.71 s, and the loop is now 2.2x from the 1.25 s target
+rather than 3.9x. The transport VJP fell 4.0x per call (326.86 ms → 82.18 ms)
+because EarthSciAST's read cost model stopped pricing a stencil property
+against a grid-sized cost; COMPILE_COST.md section 7 has the census, the
+parameter-by-parameter comparison against 10372969, and the peak-RSS cost that
+came with it (42.2 GiB → 116.4 GiB). The row is NOT a controlled comparison: the
+emitter, Reactant (0.2.280 → 0.2.285) and the model's parameter vector (160 →
+162 runtime scalars) all moved between it and the row above.
 
 **What landed (all on main, all default-on unless said):**
 * `RESEACT_EXCLUDED_PASSES=dynamic_update_to_concat,sub_const_prop` — the
