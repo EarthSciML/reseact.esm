@@ -288,6 +288,33 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
+# * THE SAME GRADIENT, BIT FOR BIT, ON AN EMITTER THAT SHIPS A FIFTEENTH OF THE
+#   INDEX DATA (slurm 10586921, 2026-09-16, 1 h 05 m 30 s all in, exit 0; log
+#   and CSV at /scratch/$USER/oopretire-logs/memfix/adj48-memfix-10586921.*).
+#   10575494's configuration value for value, on EarthSciAST
+#   `gather-index-memory` dda88a330 -- a gather's index vector interned on its
+#   CONTENTS rather than emitted once per gather, and emitted in the narrow
+#   integer type. One CONUS transport right-hand side carries 20.8 MB of index
+#   constants where 10575494 carried 301.8 MB, in 9,256 operations rather than
+#   11,893, with `slice`, `concatenate`, `select` and `broadcast_in_dim`
+#   identical -- the read form is untouched, the redundancy is gone:
+#     J          = 30.19433043875315 -- BIT-IDENTICAL to 10575494
+#     all 21 nonzero gradient components BIT-IDENTICAL; both accept/reject
+#       ladders identical (27,970 = 1,859 T + 26,111 C); the tape's clamp-bit
+#       count identical (51,308); replay 0.000e+00; 0 flaky retries
+#     forward      411.08 s, backward 1,049.58 s
+#     per-shard chemistry `compile step` 59.6 s against 179.7 s (3.0x);
+#       forcing refresh 374.76 ms/call against 1,298.08 ms (3.5x);
+#       CONUS emission 3.5 s against 7.5 s; module text 44.0 MB against 606.3 MB
+#   AND PEAK MEMORY DID NOT MOVE: 118.7 GiB against 116.4 GiB. The index
+#   constants were never the bulk of it -- four SSPRK stages of forward plus
+#   reverse is ~2.4 GB, 2% of a 116 GiB peak. THE PEAK IS THE EIGHT CHEMISTRY
+#   SHARD WORKERS, ~10.6 GB each and ~87 GB together in BOTH runs, three
+#   quarters of the job; the rest is the driver's `ssp_vjp` compile. The traced
+#   record (10372969, 42.2 GiB) ran the same eight shards at ~4 GB each, so the
+#   regression to chase is the shard worker's footprint under the direct lane
+#   and not the transport emitter. COMPILE_COST.md section 7.1 has the census,
+#   the retraction and the two levers measured and not taken.
 # * THE 48-HOUR CONUS GRADIENT IN 26 MINUTES OF LOOP, ON THE DIRECT EMITTER
 #   (slurm 10575494, 2026-09-15/16, 59 m 08 s all in, MaxRSS 116.4 GiB, exit 0;
 #   log and CSV at /scratch/$USER/oopretire-logs/conus-fix/adj48-direct-10575494.*).

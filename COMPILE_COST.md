@@ -807,3 +807,178 @@ worth paying, because the 105,474-operation program does not compile at all.
 The next lever, if one is wanted, is the index data rather than the op count:
 an affine run in slot space costs no index constant, and the canonical base has
 made slot space the addressing space in which that is now expressible.
+
+> **The sentence above about peak RSS is wrong and section 7.1 retracts it.**
+> The index data WAS nine tenths redundant and is now a fifteenth of what it
+> was; peak RSS did not move, because the gather index constants were never the
+> bulk of it. 7.1 has the measurement and names what is.
+
+### 7.1 The index data, 2026-09-16: it was nine tenths redundant, and it was not the peak
+
+The paragraph above names the index data as the next lever and the peak RSS as
+what it would buy. Half of that is right. The index data was almost all
+redundant and is now a fifteenth of what it was — and **peak RSS did not
+move**, because the gather index constants were never the bulk of it. The
+retraction is the more useful half of this measurement and is stated in full
+below.
+
+**What the index vector actually cost.** An emission was writing one index
+constant per gather, and most of the gathers were repeats. A gather's index
+vector is a property of the READ and of nothing else, while the VALUE a read
+addresses changes under it: a write to a slot map retires the map's canonical
+base, so the next read of the same slots is a different gather over a different
+value at exactly the same indices, and on a stencil the map is written between
+almost every pair of reads. Counting the distinct contents of every
+`tensor<Lx1xi64>` constant in the dumped CONUS module says how much of it was
+repeat:
+
+| one `rhsT` emission, index constants | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| emitted | 1,248 | 1,293 | 1,474 |
+| DISTINCT contents | 123 | 146 | 155 |
+| bytes emitted | 12.3 MB | 64.6 MB | 301.8 MB |
+| bytes if each distinct vector were emitted once | 1.5 MB | 8.2 MB | 41.6 MB |
+
+And the element type was the widest available. `stablehlo.gather` takes start
+indices of any integer type; a 32-bit index addresses a base far longer than a
+slot map that fits in memory (the largest index the CONUS emission uses is
+247,422), so the wide form was buying nothing.
+
+**The two commits.** EarthSciAST `gather-index-memory` 8b8ac53f9 interns the
+gather on `(value, positions)` — the emitter-side common-subexpression rule the
+slice and concatenate forms already followed, which subsumes the canonical
+base's own memo — and the index constant separately on its CONTENTS, so a
+module carries one copy of each distinct index vector however many gathers read
+at it. dda88a330 emits that vector as `i32` whenever every position into the
+base is representable in one, `i64` otherwise;
+`ESM_DIRECT_GATHER_INDEX_BITS` pins the width as the negative control.
+
+#### What the census says now
+
+Same probe, same three grids, Reactant 0.2.285. `before` is `retire-oop`
+0b216f783, the emitter slurm 10575494 ran:
+
+| one `rhsT` emission | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| total ops, before | 8,334 | 8,456 | 11,893 |
+| **total ops, after** | **6,086** | **6,162** | **9,256** |
+| `gather`, before | 1,248 | 1,293 | 1,474 |
+| **`gather`, after** | **125** | **146** | **156** |
+| `constant`, before | 1,273 | 1,317 | 1,498 |
+| `constant`, after | 148 | 170 | 179 |
+| `slice` | 686 → 686 | 562 → 562 | 2,412 → 2,412 |
+| `concatenate` | 93 → 93 | 130 → 130 | 515 → 515 |
+| index data, before | 12.3 MB | 64.6 MB | **301.8 MB** |
+| **index data, after** | **0.7 MB** | **4.1 MB** | **20.8 MB** |
+| module text, before | 25.5 MB | 130.5 MB | 606.3 MB |
+| module text, after | 2.0 MB | 9.1 MB | 44.0 MB |
+| emission wall, before | 0.8 s | 2.4 s | 7.5 s |
+| emission wall, after | 0.4 s | 1.2 s | 3.5 s |
+
+**Nothing about the READ FORM moved.** `slice`, `concatenate`, `reshape`,
+`broadcast_in_dim`, `select` and `transpose` are identical at all three grids;
+only `gather` and `constant` fall. What the emitter decided about every read is
+what it decided before — the change removes redundancy and narrows a type, and
+takes no cost-model decision at all. The op count also stays flat in the grid
+(6,086 / 6,162 / 9,256 over 22.75x the cells), which was the property the
+previous round bought and the one a fix here had to keep.
+
+The index-data row is counted twice and independently: from the emitter's own
+`stats[:gather_index]` tally, and by parsing every integer constant out of the
+dumped module text and summing its real width. 20.8 MB at CONUS is 14.5x below
+the 301.8 MB the previous round spent and well below the ~160 MB this work
+aimed at.
+
+#### The 48 h CONUS gradient, and the retraction
+
+`tools/diag/adjoint_conus_48h_direct.sbatch` with its `cd` and its
+`RESEACT_RXENV` default pointed at this worktree and its environment, and
+nothing else changed — slurm 10575494's configuration value for value, on
+EarthSciAST `gather-index-memory` dda88a330 — slurm **10586921**, scavenger,
+one 40-core node, **1 h 05 m 30 s all in**, exit 0:
+
+| 13x7x72, 576 macro steps, 48 h | direct 10575494 | this run 10586921 |
+| --- | ---: | ---: |
+| EarthSciAST | `retire-oop` 6cc2e807b | `gather-index-memory` dda88a330 |
+| J (ppb mean surface O3) | 30.19433043875315 | **30.19433043875315** |
+| all 21 gradient components | — | **bit-identical** |
+| accepted inner steps | 27,970 (1,859 T, 26,111 C) | 27,970 (1,859 T, 26,111 C) |
+| clamp bits on the tape | 51,308 | 51,308 |
+| fixed-sequence replay | 0.000e+00 | 0.000e+00 |
+| flaky-reverse retries | 0 / 27,970 | 0 / 27,970 |
+| plan vs the JacobianEvaluator | 0.000e+00 PASS | 0.000e+00 PASS |
+| forward pass | 432.85 s | 411.08 s |
+| backward sweep | 1,127.23 s | 1,049.58 s |
+| transport step, per call (exec) | 9.92 ms | 10.55 ms |
+| transport VJP, per call | 84.88 ms | 89.98 ms |
+| chemistry step, per call | 11.26 ms | 10.26 ms |
+| forcing refresh, per call | 1,298.08 ms | 374.76 ms |
+| `@compile ssp_vjp` | 358.6 s | 336.9 s |
+| per-shard `compile step` | 179.7 s | 59.6 s |
+| BUILD | 155.7 s | 192.1 s |
+| `prepare_jacobian` | 33.7 s | 126.8 s |
+| **MaxRSS** | **116.4 GiB** | **118.7 GiB** |
+
+**The numerics are unchanged in the strongest sense available.** J is
+bit-identical to all 17 digits, every one of the 21 gradient components is
+bit-identical, both accept/reject ladders are identical step for step, and the
+tape's clamp-bit count is identical. That is the reproduction the previous
+round could not claim, and it is what an emitter change that removes duplicate
+constants and narrows an index type should produce.
+
+**And MaxRSS did not fall.** 118.7 GiB against 116.4 GiB, having cut the index
+data of one transport right-hand side from 301.8 MB to 20.8 MB. The arithmetic
+says why, and it should have been done before the run rather than after: four
+SSPRK stages of forward plus reverse is at most ~2.4 GB of index constants in
+the whole job, which is 2% of a 116 GiB peak. Section 7's claim that "the
+gather index constants are the bulk of it" was an attribution by plausibility
+and it is **wrong**.
+
+**Where the peak actually is**, from the numbers both runs already printed:
+
+| at the peak | 10575494 | 10586921 |
+| --- | ---: | ---: |
+| chemistry shard workers, each | 10.0-10.2 GB | 10.0-10.1 GB |
+| worker RSS, max / total (forward) | 10.5 GB / 83.8 GB | 10.6 GB / 84.6 GB |
+| worker RSS, max / total (backward) | 10.9 GB / 86.5 GB | 11.0 GB / 87.2 GB |
+| job MaxRSS | 116.4 GiB | 118.7 GiB |
+
+**Eight chemistry shard worker processes at ~10.6 GB each are ~87 GB of the
+peak, three quarters of it, and they are the same size in both runs.** The
+remainder is the driver, whose own peak is the `ssp_vjp` compile. The traced
+record this is all measured against (10372969, 42.2 GiB) ran the same eight
+shards at ~4 GB each, so the regression to chase is the SHARD WORKER's
+footprint under the direct lane — a chemistry program, whose reads are not
+shattered and which emits almost no index data at all. The 2.3 GiB between the
+two runs here is inside the run-to-run spread of this partition: the three
+stages that precede any emission at all moved by more (BUILD +23%,
+`prepare_jacobian` +276%, the JacobianEvaluator check +22%), and the emitter
+cannot touch any of them.
+
+**What the levers bought, then, is compile time and module size, not peak
+memory.** The per-shard chemistry `compile step` is 3.0x faster (179.7 s →
+59.6 s) because the chemistry module carries a ninth of the gathers it did, the
+forcing refresh is 3.5x faster per call, emission of the CONUS transport right-
+hand side is 2.1x faster, and the module the pipeline has to hold is 44.0 MB
+of text rather than 606.3 MB. Execution cost is unchanged within noise.
+
+#### Two levers measured and NOT taken
+
+**Generating the affine lattices in-program.** The standing finding was that
+the merged-class slot vectors are affine lattices and could be produced from an
+`iota` and a handful of arithmetic ops instead of a dense constant. Counting
+the distinct index vectors of the dumped modules says how far that reaches: at
+CONUS **18 of the 155** distinct vectors are exact multi-level affine lattices,
+and they are 0.54 MB of the 20.8 MB. The other 137 are not lattices under any
+uniform decomposition (the common shapes decompose into 168, 98, 504, 6,720 and
+6,440 arithmetic runs, and the run lengths are not uniform). Generating them
+would cost ops — the thing the previous round bought — for 3% of the bytes.
+
+**Interning across emissions.** An explicit Runge-Kutta step emits the same
+right-hand side once per stage into ONE MLIR block, so a module-scoped intern
+would fold four copies into one. It is not taken, and not because it would not
+work: the cache would have to be keyed on the MLIR block, a freed block's
+address can be reused by a later one, and a stale hit is a dangling SSA
+reference rather than a wrong number. With the per-emission interning in place
+the whole four-stage step carries ~83 MB of index data, so the remaining 4x is
+not worth a use-after-free hazard in the emitter.
