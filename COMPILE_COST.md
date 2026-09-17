@@ -1012,8 +1012,12 @@ boundary of `build!`.
 | `@compile` the step | 7.58 | 5.80 / 3.65 |
 | base point steps finite | — | 5.81 / 3.67 |
 | `@compile` the VJP | 9.32 | 7.56 / 5.50 |
-| after the build's release | 8.83 | **7.06 / 5.00** |
+| what the worker settles at | **9.41** | **7.06 / 5.00** |
 | process high-water mark | **9.54** | **7.92 / 5.60** |
+
+The `before` column has no release step — that row is what `build!` returned
+with; the ledger's own trim would have taken it to 8.83 GB, which is the size
+of the release the fix now performs.
 
 Two columns after the fix because the gather-plan check now runs on one shard
 per capacity size: the first figure is that shard, the second is every other
