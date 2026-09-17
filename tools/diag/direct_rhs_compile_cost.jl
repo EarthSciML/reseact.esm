@@ -56,12 +56,34 @@
 #   RESEACT_NLON/NLAT/NLEV, RESEACT_RES, RESEACT_T0, RESEACT_ADJ_UJITTER,
 #   RESEACT_EXCLUDED_PASSES, RESEACT_ADJ_XLAFIX, RESEACT_RXENV
 #
+# Every stage prints RESIDENT SIZE beside its wall time, read from
+# /proc/self/status. A compile that is expensive in TIME and one that is
+# expensive in MEMORY are different problems with different levers, and the
+# driver's peak is a compile rather than a run, so the two have to be read
+# together.
+#
 # ONE PROGRAM PER PROCESS, and keep the heap hint small: this is meant to run
 # beside other work in a 40 GiB cgroup.
 # ===========================================================================
 const REPO = normpath(joinpath(@__DIR__, "..", ".."))
 using Printf, Statistics
 say(s) = (println(s); flush(stdout))
+
+# RESIDENT SIZE, from /proc and not from `Sys.maxrss`. Two reasons the kernel's
+# number is the one that matters here: the compile's footprint is native (MLIR
+# contexts, XLA arenas, LLVM section memory), which Julia's own accounting never
+# sees; and `Sys.maxrss` is per-PROCESS-lifetime, so it cannot say that a stage
+# handed its memory back. `VmRSS` is what the stage is holding now, `VmHWM` the
+# high-water mark the scheduler will record.
+function _rss()
+    rss = hwm = 0
+    for ln in eachline("/proc/self/status")
+        startswith(ln, "VmRSS:") && (rss = parse(Int, split(ln)[2]))
+        startswith(ln, "VmHWM:") && (hwm = parse(Int, split(ln)[2]))
+    end
+    return (rss = rss / 2^20, hwm = hwm / 2^20)   # GiB
+end
+_rssstr() = (r = _rss(); @sprintf("rss=%.2f hwm=%.2f GiB", r.rss, r.hwm))
 
 const PROG = Symbol(get(ENV, "RESEACT_CC_PROG", "ssp_step"))
 PROG in (:rhsT, :rhsC, :ssp_step, :ros_step, :ssp_vjp, :ros_vjp) ||
@@ -243,7 +265,8 @@ function _dump(nm, mod)
 end
 
 foreach(d -> d.materialize!(), dms)
-say(@sprintf("BUILD %.2f s   nstates=%d  nparams=%d", time() - tb, length(u0), length(p)))
+say(@sprintf("BUILD %.2f s   nstates=%d  nparams=%d   %s",
+             time() - tb, length(u0), length(p), _rssstr()))
 
 # `Transport3D.m` from the real GEOS-FP surface pressure, then the harnesses'
 # jitter -- the same base point every other probe and driver uses.
@@ -385,7 +408,8 @@ function run_split(f, args)
     MLIR.IR.@dispose ctx = RX.ReactantContext() begin
         t0 = time()
         mod = RXC.code_hlo(ctx, f, args; compile_options = COPTS0)
-        say(@sprintf("  %-8s %9.1f s   (emission, no passes)", "emit", time() - t0))
+        say(@sprintf("  %-8s %9.1f s   (emission, no passes)   %s",
+                     "emit", time() - t0, _rssstr()))
         MLIR.IR.activate(ctx)
         try
             report_census("emit", _dump("split-emit", mod))
@@ -395,7 +419,8 @@ function run_split(f, args)
                 say(@sprintf("  %-8s ... running", nm))
                 t = time(); RXC.run_pass_pipeline!(mod, pipe, nm); dt = time() - t
                 tot[] += dt
-                say(@sprintf("  %-8s %9.1f s   (cumulative %.1f s)", nm, dt, tot[]))
+                say(@sprintf("  %-8s %9.1f s   (cumulative %.1f s)   %s",
+                             nm, dt, tot[], _rssstr()))
                 nm in SPLIT_QUIET || report_census(nm, _dump("split-$nm", mod))
                 nm == SPLIT_STOP && break
             end
@@ -403,7 +428,7 @@ function run_split(f, args)
             MLIR.IR.deactivate(ctx)
         end
     end
-    say(@sprintf("  SPLIT TOTAL %.1f s", tot[]))
+    say(@sprintf("  SPLIT TOTAL %.1f s   %s", tot[], _rssstr()))
     return nothing
 end
 
@@ -441,7 +466,7 @@ end
 MOD0 = Ref{Any}(nothing); MOD1 = Ref{Any}(nothing); MOD2 = Ref{Any}(nothing)
 function stage(tag, f)
     t0 = time(); m = f(); dt = time() - t0
-    say(@sprintf("  %-8s %9.1f s", tag, dt))
+    say(@sprintf("  %-8s %9.1f s   %s", tag, dt, _rssstr()))
     return m
 end
 
@@ -489,4 +514,5 @@ MOD0[] === nothing || report_census("raw   (no passes)", MOD0[])
 MOD1[] === nothing || report_census("opt   (full pipeline)",  MOD1[])
 MOD2[] === nothing || report_census("raw2  (warm, no passes)", MOD2[])
 say("  module text: $DUMPDIR ($(_dumptag())-*.mlir)")
+say("  resident at exit: " * _rssstr())
 say("DONE $(PROG)")
