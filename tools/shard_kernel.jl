@@ -143,6 +143,7 @@ is pruned away and never crosses any boundary).
 """
 function prepare_doc!(cfg::Dict)
     st = ShardState(cfg["wid"], cfg["C"], cfg["NS"])
+    memlog(st, "worker start")
     tl = time()
     st.docCAP0 = Logging.with_logger(Logging.NullLogger()) do
         file = EA.load_path(cfg["model"]; metaparameters = cfg["capmp"])
@@ -153,9 +154,11 @@ function prepare_doc!(cfg::Dict)
         parts = split_system(flat, stencil_following_rule(flat); nparts = 2)
         index_promoted_refs_by_loop!(EA.flattened_to_esm(parts[2]), promoted)
     end
+    memlog(st, "model loaded+split")
     st.cd, st.meta = CC.capacity_doc(st.docCAP0, st.C; say = s -> wsay(st, s),
                                         param_coords = true)
     wsay(st, @sprintf("capacity document ready at C=%d (%.1f s)", st.C, time() - tl))
+    memlog(st, "capacity document")
     return st, (variables = collect(st.meta.variables), lane_arrays = st.meta.lane_arrays,
                 emis_arrays = st.meta.emis_arrays, lonc = st.meta.lonc)
 end
@@ -187,6 +190,7 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
                            const_arrays = ca, param_arrays = st.pa)
     end
     tbuild = time() - tb
+    memlog(st, "build_evaluator")
     length(u0c) == NS * C ||
         error("shard build: capacity build at C=$C has $(length(u0c)) states, expected NS*C = $(NS*C)")
     st.f = f; st.u0c = copy(u0c); st.pc = pc; st.vmc = vmc
@@ -215,6 +219,7 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
                                              const_arrays = ca, param_arrays = st.pa))
     end
     tjac = time() - tj
+    memlog(st, "prepare_jacobian")
     st.jacE.oop || error("shard build: the C=$C band model came back IN-PLACE")
     String(st.jacE.structure) == "block_diagonal" ||
         error("shard build: the C=$C Jacobian is $(st.jacE.structure), not block_diagonal")
@@ -228,6 +233,7 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
                                                             RXR.rx_bufs(st.jacE.fJ!)))
         w <= 1e-12 || error("shard build: the C=$C gather plan does not reproduce the Jacobian (worst relative $w)")
     end
+    memlog(st, "plan + validate")
     st.dev_bufs  = map(RX.ConcreteRArray, RXR.rx_bufs(f))
     st.dev_bufsJ = map(RX.ConcreteRArray, RXR.rx_bufs(st.jacE.fJ!))
     st.th = (p = _devp(pc), bufs = st.dev_bufs, bufsJ = st.dev_bufsJ)
@@ -251,12 +257,16 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
     tc = time()
     st.cstep = RX.@compile compile_options=copts stepfn(UD, st.th, TD, DD)
     tcs = time() - tc
+    memlog(st, "compile step")
+
     tcv = 0.0
     if cfg["want_vjp"]
         tc = time()
         st.cvjp = RX.@compile compile_options=copts vjpfn(UD, st.th, LD, TD, DD)
         tcv = time() - tc
+        memlog(st, "compile vjp")
     end
+    memlog_fields(st)
     wsay(st, @sprintf("C=%d build %.1f s  jacobian %.1f s  compile step %.1f s  vjp %.1f s  (%d params)",
                       C, tbuild, tjac, tcs, tcv, length(st.pkeys)))
     return (pkeys = String.(st.pkeys),
@@ -278,6 +288,66 @@ end
 rss_gb() = try
     parse(Float64, split(read("/proc/self/statm", String))[2]) * 4096 / 1024^3
 catch; NaN end
+
+# ---------------------------------------------------------------------------
+# THE MEMORY LEDGER, `RESEACT_SHARD_MEMLOG=1`.
+#
+# A shard worker's footprint is the number that decides how many shards fit on
+# a node, and it is not visible from the driver: the driver sees one `rss` per
+# worker at the end of `build!` and nothing about what is IN it. This prints
+# resident and Julia-live at every phase boundary of the build, so a peak can
+# be attributed to the phase that produced it and a steady footprint can be
+# told from a compile transient. Off by default; it costs a `/proc` read and a
+# `gc_live_bytes` per phase.
+# ---------------------------------------------------------------------------
+memlog_on() = get(ENV, "RESEACT_SHARD_MEMLOG", "0") == "1"
+
+
+# Ask glibc to return free arena pages to the kernel. A `GC.gc` that frees an
+# XLA executable frees NATIVE memory through a finalizer, and the allocator is
+# free to keep those pages; RSS is what a scheduler records either way.
+malloc_trim() = try
+    ccall(:malloc_trim, Cint, (Csize_t,), 0)
+catch; Cint(-1) end
+
+hwm_gb() = try
+    for ln in eachline("/proc/self/status")
+        startswith(ln, "VmHWM:") && return parse(Float64, split(ln)[2]) / 1024^2
+    end
+    NaN
+catch; NaN end
+
+function memlog(st::ShardState, phase::AbstractString)
+    memlog_on() || return nothing
+    wsay(st, @sprintf("MEM %-22s rss %6.2f GB   hwm %6.2f GB   julia-live %6.2f GB",
+                      phase, rss_gb(), hwm_gb(), Base.gc_live_bytes() / 1024^3))
+    return nothing
+end
+
+# What the worker is HOLDING once it is built, field by field, so a large
+# steady footprint names the object rather than the phase. `summarysize` walks
+# the object graph and is slow, which is why it is behind the same switch.
+function memlog_fields(st::ShardState)
+    memlog_on() || return nothing
+    for (nm, v) in (("docCAP0 (split model)", st.docCAP0),
+                    ("cd (capacity document)", st.cd),
+                    ("f (capacity RHS)", st.f),
+                    ("jacE (band model)", st.jacE),
+                    ("plan (block Jacobian)", st.plan),
+                    ("gjb (band RHS)", st.gjb),
+                    ("pa (lane buffers)", st.pa),
+                    ("cstep (compiled step)", st.cstep),
+                    ("cvjp (compiled VJP)", st.cvjp))
+        v === nothing && continue
+        sz = try Base.summarysize(v) / 1024^3 catch; NaN end
+        wsay(st, @sprintf("MEM   holds %-24s %7.3f GB (Julia side)", nm, sz))
+    end
+    GC.gc(true); GC.gc(true)
+    memlog(st, "after full GC")
+    malloc_trim()
+    memlog(st, "after malloc_trim")
+    return nothing
+end
 
 function copy_lanes!(pa::Dict{String,Any}, lanes::Dict{String,Any})
     for (k, v) in lanes
