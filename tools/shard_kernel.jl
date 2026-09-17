@@ -203,14 +203,6 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
         haskey(vmc, nm) || error("shard build: the C=$C build has no state `$nm`")
         st.capsel[(s - 1) * C + l] = vmc[nm]
     end
-    # the primed base point must evaluate finite, or the lane gather is not
-    # reaching this build (a zero lane NaNs through log(PS/Pc)). One compiled
-    # evaluation: an `:oop` build product is the IR the emitter lowers and
-    # raises E_TREEWALK_OOP_NOT_EVALUABLE if called on host arrays.
-    let du = RXR.rx_host_eval(f, pc, cfg["T0"], RXR.rx_bufs(f); var_map = vmc)(u0c)
-        nb = count(!isfinite, du)
-        nb == 0 || error("shard build: the C=$C RHS returns $nb of $(length(du)) NON-FINITE derivatives at the primed base point")
-    end
 
     tj = time()
     st.jacE = Logging.with_logger(Logging.NullLogger()) do
@@ -226,9 +218,20 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
     st.plan = RSBJ.block_jac_plan(st.jacE;
                   runner_names = first.(sort(collect(vmc), by = last)))
     st.gjb = RXR.rx_rhs(st.jacE.fJ!)
-    # a check of the BUILD: the plan's two gathers against the evaluator's own
-    # index algebra, over two compiled evaluations of the band model.
-    let w = RSBJ.validate_plan(st.plan, st.jacE, u0c, pc, cfg["T0"];
+    # A CHECK OF THE BUILD: the plan's two gathers against the evaluator's own
+    # index algebra, over two compiled evaluations of the band model. It runs
+    # ONCE PER DISTINCT CAPACITY SIZE and not once per shard. What it validates
+    # is INDEX ALGEBRA -- that the plan's padded gather and its per-block slot
+    # lists reproduce the evaluator's own `umap` and `scatter` -- and every
+    # shard built at the same C builds the identical capacity document and
+    # therefore the identical tables. The state, the parameters and the lane
+    # data are a probe for that comparison and not part of what is compared,
+    # so a second shard at the same C re-derives the same answer from another
+    # point. It costs a whole XLA:CPU compile of the band model, which is one
+    # of the largest single items in a worker's footprint, so the driver asks
+    # for it on one shard of each size (`cfg["validate_plan"]`).
+    if get(cfg, "validate_plan", true)
+        w = RSBJ.validate_plan(st.plan, st.jacE, u0c, pc, cfg["T0"];
                                eval_band = RXR.rx_host_eval(st.jacE.fJ!, pc, cfg["T0"],
                                                             RXR.rx_bufs(st.jacE.fJ!)))
         w <= 1e-12 || error("shard build: the C=$C gather plan does not reproduce the Jacobian (worst relative $w)")
@@ -259,6 +262,31 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
     tcs = time() - tc
     memlog(st, "compile step")
 
+    # THE PRIMED BASE POINT MUST STEP FINITE. This is the guard that says the
+    # lane gather reached this build: a lane the gather did not fill is a zero
+    # pressure and NaNs through log(PS/Pc), and the shard would then advance
+    # NaNs into the driver's state vector with nothing to say so.
+    #
+    # IT RUNS ON THE PROGRAM THE SHARD IS GOING TO RUN, and not on a compiled
+    # program of its own. An `:oop` build product is the IR the emitter lowers,
+    # so evaluating the right-hand side at one point is a whole XLA:CPU
+    # compile -- and a compile is the largest single item in a shard worker's
+    # footprint, so one done for a guard and never called again is memory the
+    # worker holds for the rest of the run. NaN propagates through the ROS23
+    # stage solves and through the per-cell error norm, so a non-finite
+    # right-hand side at the base point is a non-finite step at the base
+    # point. The price is that it fires after the step compiles rather than
+    # before, which costs a diagnosis its earliest moment and nothing else.
+    let res = st.cstep(RX.ConcreteRArray(copy(u0c)), st.th,
+                       RX.ConcreteRNumber(cfg["T0"]), RX.ConcreteRNumber(cfg["DT0C"]))
+        un = Array(res[1]); ce = Array(res[3])
+        nb = count(!isfinite, un) + count(!isfinite, ce)
+        nb == 0 || error("shard build: the C=$C step returns $nb NON-FINITE values " *
+                         "of $(length(un) + length(ce)) at the primed base point. The " *
+                         "lane gather is not reaching this build -- an unfilled lane is " *
+                         "a zero pressure and NaNs through log(PS/Pc).")
+    end
+    memlog(st, "check: base point steps finite")
     tcv = 0.0
     if cfg["want_vjp"]
         tc = time()
@@ -267,6 +295,14 @@ function build!(st::ShardState, cfg::Dict, ca::Dict{String,Any},
         memlog(st, "compile vjp")
     end
     memlog_fields(st)
+    # WHAT THE BUILD BORROWED GOES BACK BEFORE THE RUN STARTS. A worker spends
+    # the rest of the job holding two compiled programs and a handful of
+    # buffers; everything else the build touched -- the loaded document, the
+    # band model's own scratch, the compile's arenas -- is garbage the moment
+    # `build!` returns, and the number a scheduler records is resident size,
+    # not live size. Collect it, then ask the allocator to hand the pages back.
+    GC.gc(true); GC.gc(true); malloc_trim()
+    memlog(st, "after build release")
     wsay(st, @sprintf("C=%d build %.1f s  jacobian %.1f s  compile step %.1f s  vjp %.1f s  (%d params)",
                       C, tbuild, tjac, tcs, tcv, length(st.pkeys)))
     return (pkeys = String.(st.pkeys),

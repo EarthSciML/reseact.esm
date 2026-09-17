@@ -236,6 +236,18 @@ function build_shards(n::Int; executor::ShardExecutor = make_shard_executor())
     cfg2 = Dict{String,Any}("ov" => ov, "spnames" => spnames, "T0" => T0, "DT0C" => DT0C,
                             "ATOL_C" => ATOL_C, "RTOL" => RTOL, "JACMODE" => JACMODE,
                             "XLAFIX" => XLAFIX, "EXCLP" => EXCLP, "want_vjp" => want("adj"))
+    # THE GATHER-PLAN CHECK IS PER CAPACITY SIZE, NOT PER SHARD. It validates
+    # index algebra -- the plan's padded gather and its per-block slot lists
+    # against the band evaluator's own `umap` and `scatter` -- and two shards
+    # built at the same C build the identical capacity document and therefore
+    # the identical tables. It costs a whole XLA:CPU compile of the band model
+    # inside the worker, which is one of the largest single items in a shard
+    # worker's footprint, so it is asked for once per distinct size.
+    seen_C = Set{Int}()
+    valk = [Cs[k] in seen_C ? false : (push!(seen_C, Cs[k]); true) for k in 1:n]
+    say("  gather-plan check on shard" * (count(valk) == 1 ? " " : "s ") *
+        join(string.(findall(valk)), ", ") *
+        " (one per distinct capacity size: " * join(string.(sort(collect(seen_C))), ", ") * ")")
     t2 = time()
     binfo = exec_map(executor, 1:n) do k
         vars = metas[k].variables
@@ -243,7 +255,8 @@ function build_shards(n::Int; executor::ShardExecutor = make_shard_executor())
         pshapes = Dict{String,Any}(kk => size(v) for (kk, v) in merged_param
                                    if kk in vars && v isa AbstractArray)
         _gather_lanes!(S0, k)
-        exec_build!(executor, k, cfg2, ca, pshapes, pas[k])
+        cfgk = merge(cfg2, Dict{String,Any}("validate_plan" => valk[k]))
+        exec_build!(executor, k, cfgk, ca, pshapes, pas[k])
     end
     say(@sprintf("  shard builds + compiles done (%.1f s wall)", time() - t2))
     for k in 1:n
