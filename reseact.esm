@@ -123,7 +123,7 @@
       "variables": {
         "m": {
           "type": "unknown",
-          "units": "1",
+          "units": "Pa",
           "shape": [
             "lon",
             "lat",
