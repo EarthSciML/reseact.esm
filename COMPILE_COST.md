@@ -982,3 +982,172 @@ address can be reused by a later one, and a stale hit is a dangling SSA
 reference rather than a wrong number. With the per-emission interning in place
 the whole four-stage step carries ~83 MB of index data, so the remaining 4x is
 not worth a use-after-free hazard in the emitter.
+
+### 7.2 The chemistry shard worker, 2026-09-16/17: two compiles nobody calls
+
+Section 7.1 ended by naming the eight chemistry shard workers as three
+quarters of the 48 h CONUS peak — about 10.6 GB each and about 87 GB together,
+against about 3.4 GB each on the traced lane. This is what was in them.
+
+#### Profiling one worker
+
+A shard worker's build depends on its cell count `C` and on the model, not on
+the domain it was cut from, so ONE worker at the CONUS shard size can be
+profiled in a session: a 13x7x9 grid is 819 cells, which is exactly 6552 / 8.
+The driver's own external sampling of that worker's `/proc` agrees with the
+CONUS job's per-shard figure to within a tenth of a gigabyte, so it is the same
+worker. `RESEACT_SHARD_MEMLOG=1` (ReSEACT `gather-index-memory` 6ca0475) prints
+resident size, the process high-water mark and Julia's live heap at every phase
+boundary of `build!`.
+
+| phase, one worker at C=819 | resident, before | resident, after |
+| --- | ---: | ---: |
+| worker start, libraries loaded | 1.64 | 1.60 |
+| model loaded and split | 1.79 | 1.67 |
+| capacity document | 1.66 | 1.67 |
+| `build_evaluator` | 2.47 | 2.31 |
+| **base-point finiteness check** | **4.74** | — |
+| `prepare_jacobian` | 4.65 | 3.04 |
+| **gather-plan check** | **7.05** | 5.10 / 3.09 |
+| `@compile` the step | 7.58 | 5.80 / 3.65 |
+| base point steps finite | — | 5.81 / 3.67 |
+| `@compile` the VJP | 9.32 | 7.56 / 5.50 |
+| after the build's release | 8.83 | **7.06 / 5.00** |
+| process high-water mark | **9.54** | **7.92 / 5.60** |
+
+Two columns after the fix because the gather-plan check now runs on one shard
+per capacity size: the first figure is that shard, the second is every other
+one.
+
+**Almost none of it is Julia.** Live heap after a full collection is 0.57 GB
+against 9.4 GB resident, and `summarysize` over everything the worker holds for
+the rest of the run — the split document, the capacity document, the capacity
+right-hand side, the band model, the block-Jacobian plan, the lane buffers and
+the two compiled programs — comes to about 1.3 GB, of which the two compiled
+programs are more than half (each `Thunk` keeps its own MLIR module text). The
+loaded documents, the first candidate anyone would reach for, are eight and
+three megabytes. The footprint is native, and it arrives one compile at a time.
+
+#### The cause: four XLA:CPU compiles, of which the worker calls two
+
+Each `@compile` in this worker retains between one and two gigabytes after a
+full garbage collection and a `malloc_trim`, and it retains about the same
+amount whatever the program is: the two guards below cost as much as the step
+and the VJP the shard exists to run.
+
+The worker performs four. Two are the step and the VJP. The other two are
+BUILD-TIME GUARDS that each compile a whole program to evaluate one point and
+then drop it:
+
+* the base-point finiteness guard, which catches a lane the forcing gather did
+  not reach (an unfilled lane is a zero pressure and NaNs through
+  `log(PS/Pc)`);
+* `validate_plan`, which checks that the block-Jacobian plan's padded gather
+  and per-block slot lists reproduce the band evaluator's own `umap` and
+  `scatter`.
+
+**Both are there because the host-callable out-of-place build was retired.**
+They used to evaluate the build directly on `Vector{Float64}`s. An `:oop` build
+product is now the compiled IR a backend lowers and raises
+`E_TREEWALK_OOP_NOT_EVALUABLE` if called, so each guard reaches for
+`rx_host_eval`, which compiles. That is the whole of the regression against the
+traced lane, and it is in the shard driver rather than in the emitter.
+
+Bounding it: with both guards removed the worker's high-water mark is 5.65 GB
+against 9.54 GB, so **the two throwaway compiles are 41% of it**.
+
+**A cheaper compile is not available.** Running the two guards with
+`optimization_passes = false` was tried and does not compile at all: XLA:CPU
+fails on the unoptimized module of this program. The lever is the number of
+compiles, not their cost.
+
+#### The fix
+
+ReSEACT `gather-index-memory` a17c715. Neither guard is weakened.
+
+1. **The finiteness guard runs on the step the shard is about to run.** NaN
+   propagates through the ROS23 stage solves and through the per-cell error
+   norm, so a non-finite right-hand side at the base point is a non-finite step
+   at the base point; the guard is one device call on a program the worker
+   compiles anyway. The price is that it fires after that compile rather than
+   before it.
+2. **The gather-plan check runs once per distinct capacity size.** What it
+   validates is index algebra, and every shard built at the same `C` builds the
+   identical capacity document and therefore the identical tables; the state,
+   the parameters and the lane data are the probe for that comparison and not
+   its subject. The driver names the shards that run it.
+3. **`build!` collects and returns what the build borrowed** before the worker
+   settles, since a scheduler records resident size and not live size.
+
+#### The 48 h CONUS gradient
+
+`tools/diag/adjoint_conus_48h_direct.sbatch`'s configuration with the `cd` and
+`RESEACT_RXENV` pointed at this worktree — slurm 10586921's configuration value
+for value — slurm **10597002**, scavenger, one 40-core node, **47 m 23 s all
+in**, exit 0:
+
+| 13x7x72, 576 macro steps, 48 h | 10586921 | 10597002 |
+| --- | ---: | ---: |
+| ReSEACT | f820518 | `gather-index-memory` a17c715 |
+| J (ppb mean surface O3) | 30.19433043875315 | **30.19433043875315** |
+| all 21 gradient components | — | **bit-identical** |
+| accepted inner steps | 27,970 (1,859 T, 26,111 C) | identical |
+| clamp bits on the tape | 51,308 | identical |
+| replay / flaky retries | 0.000e+00 / 0 | identical |
+| per-shard worker resident | 10.0-10.2 GB | **5.3-5.5 GB, one at 7.3 GB** |
+| worker RSS, max / total | 10.6 / 84.6 GB | **7.9 / 46.4 GB** |
+| **job MaxRSS** | **118.7 GiB** | **78.0 GiB** |
+| forward / backward | 411.1 / 1,049.6 s | 393.0 / 989.7 s |
+| BUILD / `prepare_jacobian` | 192.1 / 126.8 s | 125.0 / 32.9 s |
+| `@compile ssp_step` / `ssp_vjp` | 87.1 / 336.9 s | 27.1 / 338.3 s |
+| wall | 1 h 05 m 30 s | **47 m 23 s** |
+
+**Peak memory falls by 40.7 GiB, a third of the job**, with J and every
+gradient component bit-identical and both accept/reject ladders identical step
+for step. The shard workers account for 38.2 GB of that, which is what the
+three changes above predicted from the single-worker profile.
+
+#### The 6x6x8 acceptance, both shard settings
+
+The demonstration preset, unsharded (`RESEACT_ADJ_SHARDS=0`, all four
+validation stages), reproduces the recorded table exactly: J =
+38.84667055571979 and all 21 nonzero gradient components BIT-IDENTICAL,
+structural identity 1.213e-15 PASS, frozen replay bit-identical, `fdtape` all
+three parameters PASS, 0 flaky retries. That arm does not run a shard worker at
+all, and it is the control that says the merge of `main` into this branch moved
+no number.
+
+The same preset at the driver's default eight shards (slurm 10597384, on a node
+of its own — eight workers plus the driver do not fit the interactive cgroup)
+gives the same J to the last bit and 20 of the 21 components bit-identical
+against that unsharded record, the twenty-first (`Transport3D.dlon_deg`, the
+smallest transport component) at 1.5e-14 relative. That difference is between
+SHARDED and UNSHARDED, not between before and after: the sharded path sums each
+shard's partial dJ/dp in shard order and the unsharded path does not. The
+before/after comparison at eight shards is the CONUS pair above, and it is
+bit-identical in every component.
+
+Its workers come out at 4.6-4.7 GB each with one at 4.7 GB, a total of 37.6 GB
+— the same shape as at CONUS, and a reminder that most of a worker is the model
+and its two compiled programs rather than its cell count: 36 cells per shard
+here against 819 there.
+
+#### What is left, and where it is
+
+The traced lane's own record at this grid and shard count (slurm 10386109,
+2026-09-08, EarthSciAST v0.1.1, Reactant 0.2.280 — the resolution-scaling
+arm's 4x5 48 h leg) had workers at 3.3-3.5 GB, a worker total of 27.7 GB and a
+job MaxRSS of 40.9 GiB. Against that:
+
+| | traced 10386109 | direct 10586921 | direct 10597002 |
+| --- | ---: | ---: | ---: |
+| worker, each | 3.3-3.5 GB | 10.0-10.2 GB | 5.3-5.5 GB |
+| worker total | 27.7 GB | 84.6 GB | 46.4 GB |
+| job MaxRSS | 40.9 GiB | 118.7 GiB | 78.0 GiB |
+| implied driver | ~15 GiB | ~40 GiB | ~35 GiB |
+
+The workers are now within about 1.6x of the traced lane, and what remains
+there is the two compiled programs themselves, which the shard genuinely runs.
+**The rest of the gap is the DRIVER**, whose peak is the `ssp_vjp` compile —
+the transport half, not the chemistry shards — and which this work did not
+touch.

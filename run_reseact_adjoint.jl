@@ -288,6 +288,33 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
+# * THE 48-HOUR CONUS GRADIENT AT 78.0 GiB, A THIRD LESS PEAK MEMORY (slurm
+#   10597002, 2026-09-17, 47 m 23 s all in, exit 0; log and CSV at
+#   /scratch/$USER/oopretire-logs/memfix2/adj48-shardfix-10597002.*). 10586921's
+#   configuration value for value, on ReSEACT `gather-index-memory` a17c715:
+#     J          = 30.19433043875315 -- BIT-IDENTICAL to 10586921
+#     all 21 nonzero gradient components BIT-IDENTICAL; both accept/reject
+#       ladders identical (27,970 = 1,859 T + 26,111 C); the tape's clamp-bit
+#       count identical (51,308); replay 0.000e+00; 0 flaky retries
+#     per-shard worker resident 5.3-5.5 GB against 10.0-10.2 GB, one shard at
+#       7.3 GB; worker RSS total 46.4 GB against 84.6 GB
+#     MaxRSS 78.0 GiB against 118.7 GiB; forward 393.0 s, backward 989.7 s
+#   WHAT WAS IN THE WORKER. A shard worker performs FOUR XLA:CPU compiles and
+#   calls two of them. Each retains one to two gigabytes whatever the program
+#   is, and the two it never calls again are BUILD-TIME GUARDS that compile a
+#   whole program to evaluate a single point: the base-point finiteness check
+#   and `validate_plan`. Both reach for `rx_host_eval` because the host-callable
+#   out-of-place build was retired and an `:oop` product is no longer callable
+#   on host vectors -- so the regression is in the shard driver, not the
+#   emitter. The finiteness guard now runs on the step the shard is about to
+#   run (NaN propagates through the ROS23 stage solves, so a non-finite
+#   right-hand side at the base point is a non-finite step at the base point),
+#   the gather-plan check runs once per distinct capacity size (it validates
+#   index algebra, and shards at the same C build identical tables), and
+#   `build!` returns what it borrowed before the worker settles. Neither guard
+#   is weakened. `RESEACT_SHARD_MEMLOG=1` prints the per-phase ledger that
+#   found this. COMPILE_COST.md section 7.2 -- including what is left, which is
+#   the DRIVER's `ssp_vjp` compile and not the chemistry shards.
 # * THE SAME GRADIENT, BIT FOR BIT, ON AN EMITTER THAT SHIPS A FIFTEENTH OF THE
 #   INDEX DATA (slurm 10586921, 2026-09-16, 1 h 05 m 30 s all in, exit 0; log
 #   and CSV at /scratch/$USER/oopretire-logs/memfix/adj48-memfix-10586921.*).
