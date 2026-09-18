@@ -1155,3 +1155,384 @@ there is the two compiled programs themselves, which the shard genuinely runs.
 **The rest of the gap is the DRIVER**, whose peak is the `ssp_vjp` compile —
 the transport half, not the chemistry shards — and which this work did not
 touch.
+
+## 8. The read cost model priced the PRIMAL, 2026-09-17/18: the reverse program is where a slice costs
+
+Section 7.2 closed on the driver: the eight chemistry shard workers were fixed,
+the 48 h CONUS job came down to 78.0 GiB and 47 m 23 s (slurm 10597002), and
+what was left was **the driver's own `@compile ssp_vjp`** — the reverse of the
+four-stage transport step, 338 s at CONUS and the largest single compile in the
+job. This is where that time goes and what moved it.
+
+**The answer.** Every read-form decision in the emitter was priced on the module
+as the emitter WRITES it: one operation against one index constant. That is the
+wrong module. Under reverse mode a `stablehlo.slice` becomes a pad-and-add that
+the first `enzyme-hlo-opt` over the differentiated module turns back into MORE
+slices — at CONUS 8,126 primal slices became 22,777 adjoint ones — while a
+`stablehlo.gather` becomes one `stablehlo.scatter`, which joins no slice
+population at all. Both deduplication passes downstream (Enzyme-JAX's
+`cse_slice`, and XLA's `HloCSE` one layer under it) compare slices pairwise and
+are quadratic in that population. **Lowering the emitter's read piece cap from
+64 to 8** — to the piece FLOOR, so a read costs at most eight slices — takes
+`@compile ssp_vjp` at CONUS from 334.5 s to **195.5 s** and the whole 48 h
+gradient from 47 m 03 s to **43 m 12 s**, with the loop slightly faster rather
+than slower. Going further is measured and REJECTED: it halves the compile again
+and costs the chemistry half half again its per-call time.
+
+EarthSciAST `direct-vjp-compile` e9f218f29; probe instrumentation ReSEACT
+83793d9 (resident size per stage) and b209eca (per-call cost).
+
+**READ EVERY WALL-CLOCK NUMBER WITH THE NODE IN MIND.** The scavenger partition
+hands out machines that differ by a factor of two on work this change cannot
+touch: `BUILD` at 13x7x72 is 125-130 s on some nodes and 230-264 s on others,
+with `prepare_jacobian` and the JacobianEvaluator check in the same ratio. Every
+before/after pair below is therefore taken with BOTH ARMS IN ONE ALLOCATION on
+ONE node, `ESM_DIRECT_GATHER_MAX_PIECES=64` being an exact reproduction of the
+emitter this replaces. Section 7.2's record is quoted for its INVARIANTS.
+
+### 8.1 Where the compile goes, before
+
+`tools/diag/direct_rhs_compile_cost.jl`, one program per process, production
+compile options, on an idle node (slurm 10602856 for the pass split, 10607123
+for the end-to-end compiles). The probe now prints resident size beside every
+stage, read from `/proc/self/status`.
+
+**`@compile ssp_vjp`, taken apart.** `raw2` is warm emission, `opt - raw2` the
+Enzyme-JAX / StableHLO pipeline, `compile - opt` XLA:CPU's own codegen:
+
+| `ssp_vjp` | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: |
+| emission | 7.8 s | 12.7 s |
+| MLIR pass pipeline | 75.7 s | 477.4 s |
+| XLA:CPU codegen | 30.0 s | ~39 s |
+| **`@compile`, warm** | **113.5 s** | **528.9 s** |
+
+**XLA is not the problem and has not been since section 7.** At the continental
+grid the MLIR pass pipeline is 90% of the compile; XLA:CPU's codegen — the layer
+that failed outright before the grid fixes — is under a tenth of it.
+
+**The twelve stages**, `RESEACT_CC_STAGES=split`, at three grids:
+
+| stage | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| `mark` | 0.1 s | 0.1 s | 0.1 s |
+| `opt1` | 1.9 s | 2.3 s | 5.6 s |
+| `ebatch` | 0.0 s | 0.0 s | 0.1 s |
+| `opt2a` | 0.7 s | 0.9 s | 3.0 s |
+| **`enzyme`** (the differentiation) | **30.5 s** | **43.7 s** | **145.7 s** |
+| **`opt2b`** (`enzyme-hlo-opt` on the adjoint) | **5.3 s** | **17.7 s** | **312.5 s** |
+| the remaining six | 2.8 s | 3.8 s | 9.8 s |
+| **total** | **41.2 s** | **68.7 s** | **477.4 s** |
+
+Two stages are 96% of it at CONUS, and the second of the two is quadratic in one
+number. The slice count entering `enzyme` (the census after `opt2a`) is 1,297 /
+1,837 / 8,126 across the three grids and `opt2b` is 5.3 / 17.7 / 312.5 s: from
+13x7x16 to CONUS the count rises 4.42x and the stage 17.7x, against 19.6x for
+the square. That is the `cse_slice` behaviour UPSTREAM_ISSUES.md records, met at
+a grid where it is the whole compile.
+
+**And it is not memory.** The twelve-stage pipeline at CONUS never exceeds
+4.96 GiB resident, and a full `@compile` of `ssp_vjp` peaks at 7.21 GiB in a
+process whose BUILD alone is 4.4 GiB. Section 7.2's "the rest of the gap is the
+DRIVER, whose peak is the `ssp_vjp` compile" is right about WHEN the peak occurs
+and must not be read as one compile's working set: the compile's own footprint
+is about 3 GiB on top of everything the driver already holds, and the job's peak
+barely moves when the compile does (8.6 below).
+
+### 8.2 What the reads were, and what reverse mode did with them
+
+The site attribution says where the slices are. One CONUS transport right-hand
+side, before: **2,335 of 2,412 slices are in the materialization kernels**, in
+508 concatenates. They are the horizontal stencil reads, emitted once per
+vertical level — 216 concatenates of eleven pieces, 148 of six, 144 of two — and
+the pieces are wide (13 longitudes, or a 91-column horizontal slab). Every one
+of them passed the cost model honestly: eleven pieces is far under the cap of
+64, and an average run of 13 is far longer than the break-even of 4, so the
+slice path was cheaper by the arithmetic the model does.
+
+What the model does not do is price the ADJOINT. Counted on the CONUS `ssp_vjp`
+module at each stage:
+
+| CONUS `ssp_vjp` | `slice` | `pad` | `gather` | `scatter` |
+| --- | ---: | ---: | ---: | ---: |
+| emitted | 9,648 | — | 624 | — |
+| after `opt2a` (what `enzyme` is given) | 8,126 | 22 | 567 | — |
+| after `enzyme` | 20,470 | 8,137 | 1,133 | 548 |
+| after `opt2b` | 22,777 | 36 | 566 | 548 |
+
+**567 gathers produce 548 scatters and nothing else; 8,126 slices produce 22,777
+slices.** `opt2b` is the pass that turns the pads back into slices and
+concatenates, and it is the pass that is quadratic in the result. So an
+operation a primal cost model prices as one op is charged downstream at the
+SQUARE of the population it joins, while the index constant it avoided is linear
+and — since EarthSciAST interns index vectors on their contents (section 7.1) —
+mostly shared with other gathers rather than paid again.
+
+### 8.3 Both halves of the trade, and why the cap is eight
+
+The cap cannot simply be driven to zero, because the trade runs the OTHER way at
+execution time: a gather is an indexed copy and a slice is a contiguous one. So
+the arms below measure the compile AND the device call.
+
+Compile, at CONUS, one process per arm (slurm 10607117). `always`
+(`ESM_DIRECT_EMIT_READ=always`) gathers every read with more than one run and
+lifts the base budget, i.e. it bounds the read form from above:
+
+| one `rhsT` emission / `ssp_vjp` pipeline | cap 64 | **cap 8** | cap 2 | `always` |
+| --- | ---: | ---: | ---: | ---: |
+| emitted `slice` | 2,412 | **1,548** | 368 | 368 |
+| emitted `gather` | 156 | **373** | 521 | 521 |
+| emitted `concatenate` | 515 | **300** | 8 | 8 |
+| index elements | 5,453,830 | **5,937,125** | 5,950,411 | 5,950,411 |
+| `slice` entering `enzyme` | 8,126 | **4,670** | 1,330 | 1,330 |
+| `enzyme` | 145.7 s | **92.7 s** | 83.2 s | 74.3 s |
+| `opt2b` | 312.5 s | **131.4 s** | 20.4 s | 17.6 s |
+| twelve stages | 477.4 s | **230.3 s** | 116.8 s | 104.1 s |
+
+(cap 2 and `always` emit the same module op for op, so 2 is where the read form
+ends rather than a point on a curve.)
+
+Execution, median of 20 device calls after warm-up, one process per arm on one
+node (slurm 10609045). `ssp_step` at 13x7x72 is the transport step the loop
+calls; `ros_step` at 13x7x9 is 819 cells, exactly one of the eight CONUS
+chemistry shards:
+
+| per device call | cap 64 | **cap 8** | cap 2 |
+| --- | ---: | ---: | ---: |
+| transport `ssp_step`, 13x7x72 | 11.78 ms | **13.55 ms** | 13.56 ms |
+| chemistry `ros_step`, 13x7x9 | 13.07 ms | **13.35 ms** | 20.43 ms |
+
+**That is the whole decision in two rows.** Going from 64 to 8 converts the
+eleven-piece stencil reads, halves the reverse pipeline, and costs 15% on the
+transport step and 2% on the chemistry step in isolation (in the driver, where
+the chemistry shard is a capacity-reduced program and the loop is dominated by
+it, it costs nothing at all — 8.6). Going below 8 converts the three-to-eight
+piece reads as well — the ones the slice path exists for, whose runs are long
+and contiguous — buys the transport step nothing more (13.55 against 13.56 ms)
+and costs the CHEMISTRY half **56%**, on a half whose reads were never shattered
+and whose compile was never the problem.
+
+The cap is therefore set to the piece FLOOR, `_DE_GATHER_MIN_PIECES`, which was
+already the width below which the emitter will not gather. One number, two
+sides: fewer runs than the floor and the read keeps its slices, more and it
+gathers, and at exactly the floor the average-run test decides.
+
+**The cap of 2 was taken all the way to a 48 h CONUS gradient before it was
+rejected** — slurm 10608138, 2 h 07 m 53 s all in, exit 0, MaxRSS 80.97 GiB, on
+a node about 1.8x slower than the paired runs below. It is the strongest form of
+the runtime evidence and is recorded rather than discarded: the accept/reject
+ladder, the clamp-bit count and the replay are identical to the record and J
+lands where cap 8 lands, `@compile ssp_vjp` fell to 222.1 s — and the forward
+pass ran 863.9 s and the backward sweep 3,987.5 s, with the transport VJP at
+252.3 ms per call against 83.1 ms. Four times the sweep to halve one compile is
+not a trade worth making.
+
+### 8.4 What the census says now
+
+Same probe, three grids, BOTH ARMS IN ONE ALLOCATION (slurm 10610093 for the two
+smaller grids, 10609912 for CONUS), one transport right-hand side emission:
+
+| one `rhsT` emission | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| total ops, cap 64 | 6,086 | 6,162 | 9,256 |
+| **total ops, cap 8** | **5,650** | **6,035** | **8,611** |
+| `slice`, cap 64 | 686 | 562 | 2,412 |
+| **`slice`, cap 8** | **198** | **372** | **1,548** |
+| `gather`, cap 64 | 125 | 146 | 156 |
+| `gather`, cap 8 | 171 | 205 | 373 |
+| `concatenate`, cap 64 | 93 | 130 | 515 |
+| `concatenate`, cap 8 | 51 | 76 | 300 |
+| index data, cap 64 | 0.74 MB | 4.11 MB | 20.81 MB |
+| index data, cap 8 | 0.90 MB | 4.99 MB | 22.65 MB |
+| module text, cap 64 | 2.0 MB | 9.1 MB | 44.0 MB |
+| module text, cap 8 | 2.3 MB | 10.8 MB | 47.6 MB |
+
+**The arithmetic is untouched at every grid**: `reshape` 132,
+`broadcast_in_dim` 1,141, `select` 256 and `transpose` 35 are identical on both
+arms at all three sizes. Only the data movement moved, and the op count stays
+flat in the grid (5,650 / 6,035 / 8,611 over 22.75x the cells), which is the
+property section 7 bought and a change here had to keep.
+
+**The index data is the price and it is small**: +21% at 6x6x8 and 13x7x16, +9%
+at CONUS, in absolute terms 0.16, 0.88 and 1.84 MB per right-hand side. It costs
+least where the module is largest, because a stencil's index vectors recur and
+are interned on their contents.
+
+The site attribution, one CONUS emission:
+
+| site | op | cap 64 | cap 8 |
+| --- | --- | ---: | ---: |
+| `mat_kernel` | `slice` | 2,335 | **1,471** |
+| `mat_kernel` | `concatenate` | 508 | **292** |
+| `mat_kernel` | `gather` | 38 | 254 |
+| `mat_scan` | `slice` | 72 | 72 |
+| `kernel` | `gather` | 111 | 111 |
+| `canon` | `concatenate` / `gather` | 7 / 7 | 8 / 8 |
+
+The 72 `mat_scan` slices are a prefix scan's own reads, one per vertical level,
+each a single affine run; a single run is not a decomposition and no cap reaches
+it.
+
+### 8.5 The reverse program, and the compile
+
+The twelve stages of `ssp_vjp`, both arms on one node per grid:
+
+| | 6x6x8 | 13x7x16 | 13x7x72 |
+| --- | ---: | ---: | ---: |
+| emitted `slice` | 2,744 → **792** | 2,248 → **1,488** | 9,648 → **6,192** |
+| emitted `gather` | 500 → 684 | 584 → 820 | 624 → 1,492 |
+| `slice` entering `enzyme` | 1,297 → **569** | 1,837 → **1,109** | 8,126 → **4,670** |
+| adjoint `slice` / `pad` after `enzyme` | 3,789 / 881 → **1,705 / 577** | 5,271 / 1,837 → **2,797 / 1,133** | 20,470 / 8,137 → **10,166 / 4,689** |
+| `scatter` after `enzyme` | 488 → 612 | 512 → 744 | 548 → 1,416 |
+| adjoint `slice` after `opt2b` | 3,562 → **1,946** | 5,748 → **3,242** | 22,777 → **12,465** |
+| `opt1` | 1.3 → 1.8 s | 1.6 → 1.7 s | 5.6 → 4.8 s |
+| `enzyme` | 25.4 → 26.7 s | 37.7 → 31.7 s | 172.0 → **111.9 s** |
+| `opt2b` | 5.1 → 3.5 s | 16.4 → **9.8 s** | 321.7 → **155.3 s** |
+| **twelve stages** | **35.1 → 35.1 s** | **60.3 → 47.6 s** | **515.4 → 287.6 s** |
+
+The 6x6x8 grid does not move, and that is the right answer: at 288 cells the
+stencil reads decompose into fewer pieces than the cap, so the shipped cap and
+the one it replaces disagree about very little and the pipeline is 35 s either
+way. The change is a GRID change, and it appears where the grid is.
+
+End to end, one program per process, both arms on one node:
+
+| | 13x7x16 (ccc0232) | 13x7x72 (ccc0274) |
+| --- | ---: | ---: |
+| `@compile ssp_step`, cap 64 | 16.9 s | 48.7 s |
+| `@compile ssp_step`, cap 8 | **14.2 s** | **44.1 s** |
+| `@compile ssp_vjp`, cap 64 | 106.5 s | 676.6 s |
+| `@compile ssp_vjp`, cap 8 | **87.6 s** | **381.6 s** |
+| peak resident over the `ssp_vjp` compile, cap 64 | 4.27 GiB | 7.21 GiB |
+| peak resident over the `ssp_vjp` compile, cap 8 | **4.16 GiB** | **6.64 GiB** |
+
+### 8.6 The 48 h CONUS gradient, both arms on one node
+
+`tools/diag/adjoint_conus_48h_direct.sbatch`'s configuration value for value —
+13x7x72, 576 macro steps of 300 s, `clamp_nonneg` ON, un-jittered, `jac=:sym`,
+8 chemistry shards, objective `SuperFast.O3:surf` — run TWICE in slurm
+**10609914** on one node (ccc0496, which is also the node slurm 10597002 got),
+first with the read piece cap restored to 64 and then with the shipped 8. Peak
+resident is sampled per arm because `sacct` reports one MaxRSS for the job.
+
+| 13x7x72, 576 macro steps, 48 h | cap 64 | **cap 8** |
+| --- | ---: | ---: |
+| BUILD | 129.85 s | 127.74 s |
+| `prepare_jacobian` | 33.9 s | 36.4 s |
+| plan vs the JacobianEvaluator | 0.000e+00 PASS (336.4 s) | 0.000e+00 PASS (338.3 s) |
+| `@compile ssp_step` | 29.8 s | **25.6 s** |
+| **`@compile ssp_vjp`** | **334.5 s** | **195.5 s** |
+| forward pass | 424.87 s | **410.80 s** |
+| backward sweep | 1,024.73 s | **976.38 s** |
+| **wall, all in** | **47 m 03 s** | **43 m 12 s** |
+| accepted inner steps | 27,970 (1,859 T, 26,111 C) | identical |
+| clamp bits on the tape | 51,308 | identical |
+| fixed-sequence replay | 0.000e+00 | 0.000e+00 |
+| flaky-reverse retries | 0 / 27,970 | 0 / 27,970 |
+| transport step, per call | 11.11 ms | 11.52 ms |
+| transport step, replay | 10.13 ms | 11.02 ms |
+| **transport VJP, per call** | **87.36 ms** | **83.98 ms** |
+| chemistry step, per call | 12.81 ms | 12.31 ms |
+| chemistry VJP, per call | 17.31 ms | 20.92 ms |
+| forcing refresh, per call | 412.70 ms | 410.99 ms |
+| worker RSS, total (forward / backward) | 45.6 / 47.9 GB | 45.6 / 47.3 GB |
+| **sampled peak resident** | **75.65 GiB** | **74.73 GiB** |
+| J (ppb mean surface O3) | 30.19433043875315 | 30.19433043875191 |
+
+**THE CAP-64 ARM REPRODUCES SLURM 10597002 BIT FOR BIT** — J to all 17 digits
+and every one of the 162 gradient components — in 47 m 03 s against its
+47 m 23 s. That is what makes the second column a measurement of this change and
+not of a machine: the control and the treatment differ in one constant.
+
+**`@compile ssp_vjp` is 1.71x faster and the loop is faster too.** The compile
+falls 139 s, the forward pass 14 s and the backward sweep 48 s, for a 3 m 51 s
+job. The per-call rows say why the loop did not pay: the transport step costs
+3.7% more per call and the transport VJP 3.9% LESS, and the chemistry shards —
+which are 87% of the loop's device time — are unchanged within their own spread.
+The 15% transport-step cost the isolated measurement in 8.3 shows is real and it
+is 2% of a macro step.
+
+**Peak memory is flat**: 74.73 against 75.65 GiB sampled, and the job's own
+MaxRSS over both arms is 78.55 GiB. The compile that is the driver's peak got
+0.57 GiB smaller at CONUS (8.5) and the job's peak moved by about that much,
+which is the arithmetic section 8.1 predicted and the confirmation that the
+remaining ~30 GiB of driver is not this compile.
+
+**THE NUMERICS MOVE, AT THE ROUNDING LEVEL.** Against the cap-64 control on the
+same node in the same job:
+
+| | cap 64 (= slurm 10597002) | cap 8 |
+| --- | ---: | ---: |
+| J | 30.19433043875315 | 30.19433043875191 (4.1e-14 rel) |
+| gradient components differing | — | 21 of 21 nonzero |
+| worst relative difference | — | 7.822e-11 (`Transport3D.lon0_deg`) |
+| `NEIRegrid.scale` | -2.114363323649 | -2.114363323649 (7.7e-14) |
+| `DryDepositionGas.kappa` | -1.616501084406 | -1.616501084407 (8.5e-13) |
+| `Transport3D.dlat_deg` | -0.6785716953838 | -0.6785716953840 (2.2e-13) |
+| `Transport3D.g_acc` | +0.6691682375361 | +0.6691682375422 (9.1e-12) |
+| `NEIRegrid.g0` | -0.2156050561251 | -0.2156050561251 (8.3e-14) |
+
+The five components that carry the calibration signal agree to 1.1e-12 or
+better; the three worst (7.8e-11, 6.5e-11, 9.1e-12) are the smallest transport
+sensitivities, which are differences of nearly-cancelling contributions. **Both
+accept/reject ladders are identical step for step and the clamp-bit count is
+identical**, so unlike the traced-against-direct comparison of section 7 nothing
+here is an adaptive controller taking a different branch: this is the same
+trajectory, differently rounded.
+
+**Why a change that copies the same values moves a rounding bit.** A gather of
+the same positions out of the same values is bit-identical to slices plus a
+concatenate of them — the data movement is exact either way, and the emitter's
+own test pins that (rtol 1e-12 against the interpreter and against the other
+form, on a 343-cell three-axis stencil). What changes is the SHAPE of the module
+XLA:CPU is given: fewer and larger data-movement operations fuse differently
+with the arithmetic that consumes them, and a multiply-add contracted in one
+schedule and not in the other is one rounding. It appears in the forward pass as
+well as in the adjoint, which is what a fusion difference should do and what a
+transposition error would not.
+
+### 8.7 The 6x6x8 acceptance
+
+The demonstration preset, unsharded, all four validation stages
+(`RESEACT_ADJ_NMACRO=3`, `RESEACT_ADJ_SHARDS=0`,
+`RESEACT_ADJ_STAGES=fwd,adj,ref,fdtape`). Every check is green: structural
+identity rel 1.733e-16 PASS, the frozen-dt replay 0.000e+00 at every checkpoint,
+`fdtape` all three parameters PASS (7.3e-11, 8.6e-10, 7.3e-11), plan vs the
+JacobianEvaluator 0.000e+00 PASS, 0 flaky retries over 251 VJP calls, and the
+`ref` stage self-skips exactly as it does in the record.
+
+| | record (7.2) | `ESM_DIRECT_GATHER_MAX_PIECES=64` | shipped (cap 8) |
+| --- | ---: | ---: | ---: |
+| J | 38.84667055571979 | **38.84667055571979** | 38.84667055571980 |
+| components differing from the record | — | **0 of 162** | 21 of 162 |
+| worst relative difference | — | **0** | 2.584e-13 (`Transport3D.lon0_deg`) |
+
+Here too the negative control reproduces the record exactly, so nothing in this
+worktree, environment or dependency set moves a number and the 1-ulp J belongs
+to the cap.
+
+### 8.8 What is left
+
+`@compile ssp_vjp` at CONUS is 195.5 s of a 43-minute job, and the twelve-stage
+pipeline is still 96% of it: `enzyme` 111.9 s and `opt2b` 155.3 s in the paired
+split, against 4.8 s for everything before them and 10 s for everything after.
+Both remain superlinear in the slice population and the population is now 4,670
+entering the differentiation. The read form has one setting left in it (cap 2),
+it is measured, and it is on the wrong side of the execution trade — so the next
+lever is not the read form. Two that have not been measured:
+
+* **The four stages.** `ssprk43_step_unrolled` emits the transport right-hand
+  side four times into one block and reverse mode differentiates all four. The
+  pipeline inlines everything before `enzyme` runs (`opt1` begins with
+  `inline{...}`), so outlining the body into a `func.func` buys nothing;
+  compiling ONE stage's VJP and calling it four times off saved stage states
+  would cut the differentiated program 4x, at the cost of a forward recompute,
+  three more host round-trips per VJP call, and a parameter gradient summed in
+  the driver rather than by Enzyme — which would not be bit-identical.
+* **The per-level emission.** The 1,548 CONUS slices that remain are the
+  materialization kernels' reads, and they are proportional to the LEVEL count
+  because the horizontal stencil is a kernel per level: 216 concatenates of
+  eleven pieces at 72 levels. That is the compiled tree-walk IR's kernel
+  formation (`src/tree_walk/`), not the read lowering, and it is where a read
+  that is one operation per level rather than per level per piece would come
+  from.

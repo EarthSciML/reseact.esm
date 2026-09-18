@@ -288,6 +288,40 @@
 # ---------------------------------------------------------------------------
 # WHAT WORKS TODAY (all measured; see DIFFERENTIABILITY_PLAN.md for provenance)
 # ---------------------------------------------------------------------------
+# * THE DRIVER'S `ssp_vjp` COMPILE, 1.71x (slurm 10609914, 2026-09-17/18, both
+#   arms in one allocation on one node; log and CSVs at
+#   /scratch/$USER/oopretire-logs/vjp/adj48pair-10609914.*). The read cost model
+#   in EarthSciAST's direct emitter decided between one gather and a slice per
+#   run on the module as the emitter WRITES it -- one operation against one
+#   index constant. That is the wrong module. Under reverse mode a
+#   `stablehlo.slice` becomes a pad-and-add that the first `enzyme-hlo-opt` over
+#   the differentiated module turns back into MORE slices (at CONUS 8,126 became
+#   22,777), while a `stablehlo.gather` becomes one `stablehlo.scatter`, which
+#   joins no slice population at all -- and both deduplication passes downstream
+#   are quadratic in that population. The read piece cap is now the piece FLOOR,
+#   8 rather than 64: a read costs at most eight slices, and anything wider
+#   gathers. EarthSciAST `direct-vjp-compile` e9f218f29.
+#     `@compile ssp_vjp` 195.5 s against 334.5 s; `ssp_step` 25.6 against 29.8
+#     forward 410.80 s against 424.87; backward 976.38 s against 1,024.73
+#     wall 43 m 12 s against 47 m 03 s; peak resident 74.73 against 75.65 GiB
+#     accept/reject ladder, clamp-bit count, replay and retries ALL IDENTICAL
+#   THE CONTROL IS IN THE SAME JOB. `ESM_DIRECT_GATHER_MAX_PIECES=64` restores
+#   the previous emission exactly, and that arm reproduces slurm 10597002 BIT
+#   FOR BIT -- J to all 17 digits and every one of the 162 gradient components.
+#   Nodes on this partition differ by 2x on work the emitter cannot touch
+#   (BUILD), so a before from one node and an after from another is not a
+#   comparison; this is why both arms share an allocation.
+#   AND THE NUMERICS MOVE, AT THE ROUNDING LEVEL, which is the one thing the
+#   change costs: J by 4.1e-14 relative and the 21 nonzero gradient components
+#   by 7.7e-14 to 7.8e-11, worst on `Transport3D.lon0_deg` and the five
+#   calibration-carrying components inside 1.1e-12. A gather of the same
+#   positions from the same values copies the same bits; what changes is the
+#   shape of the module XLA:CPU fuses the surrounding arithmetic into. It shows
+#   up in the forward pass as well as the adjoint, which a fusion difference
+#   should do and a transposition error would not. COMPILE_COST.md section 8 has
+#   the pass-by-pass profile, both halves of the read-form trade, and the cap of
+#   2 that was taken to a CONUS gradient (slurm 10608138) and REJECTED for
+#   quadrupling the backward sweep.
 # * THE 48-HOUR CONUS GRADIENT AT 78.0 GiB, A THIRD LESS PEAK MEMORY (slurm
 #   10597002, 2026-09-17, 47 m 23 s all in, exit 0; log and CSV at
 #   /scratch/$USER/oopretire-logs/memfix2/adj48-shardfix-10597002.*). 10586921's
