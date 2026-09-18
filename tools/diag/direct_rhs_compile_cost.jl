@@ -30,7 +30,12 @@
 #                        adjoint driver's own programs, defined identically
 #                        except that the Jacobian mode is `:fd`, so the probe
 #                        needs no band model and no EarthSciASTDiff prepare.
-#   RESEACT_CC_STAGES    subset of trace,opt,raw2,split,compile (default trace,opt,raw2)
+#   RESEACT_CC_STAGES    subset of trace,opt,raw2,split,compile,cost
+#                        (default trace,opt,raw2). `cost` implies `compile` and
+#                        times RESEACT_CC_NCALL device calls of the compiled
+#                        program, because a read form that compiles faster can
+#                        execute slower and the two have to be measured
+#                        together.
 #                        The stages run IN THAT ORDER and the split is
 #                        differences between them, because the first Reactant
 #                        call in a process also pays for Julia's own JIT of the
@@ -463,6 +468,27 @@ function report_sites(tag, g)
     return nothing
 end
 
+# WHAT THE PROGRAM COSTS TO RUN, which is the other half of every read-form
+# decision. A read emitted as one `stablehlo.gather` is one operation where
+# slices-plus-concatenate are several, and the passes that deduplicate slices
+# are quadratic in how many there are -- but a gather is an indexed copy at
+# runtime and a slice is a contiguous one, so a shape that compiles faster can
+# execute slower. Both numbers have to come out of the same process or the
+# trade cannot be read at all.
+const NCALL = parse(Int, get(ENV, "RESEACT_CC_NCALL", "20"))
+function cost(thunk, args)
+    thunk(args...)                                   # warm-up, not timed
+    ts = Float64[]
+    for _ in 1:NCALL
+        t0 = time(); thunk(args...); push!(ts, time() - t0)
+    end
+    sort!(ts)
+    say(@sprintf("  %-8s %9.2f ms/call median (min %.2f, max %.2f, n=%d)   %s",
+                 "cost", 1e3 * ts[(length(ts) + 1) ÷ 2], 1e3 * first(ts),
+                 1e3 * last(ts), length(ts), _rssstr()))
+    return nothing
+end
+
 MOD0 = Ref{Any}(nothing); MOD1 = Ref{Any}(nothing); MOD2 = Ref{Any}(nothing)
 function stage(tag, f)
     t0 = time(); m = f(); dt = time() - t0
@@ -475,37 +501,55 @@ if PROG === :rhsT
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 rhsT(U_R, THT, T_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 rhsT(U_R, THT, T_R))))
     want("split")   && run_split(rhsT, (U_R, THT, T_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsT(U_R, THT, T_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 rhsT(U_R, THT, T_R))
+        want("cost") && cost(th, (U_R, THT, T_R))
+    end
 elseif PROG === :rhsC
     want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 rhsC(U_R, THC, T_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 rhsC(U_R, THC, T_R))))
     want("split")   && run_split(rhsC, (U_R, THC, T_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 rhsC(U_R, THC, T_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 rhsC(U_R, THC, T_R))
+        want("cost") && cost(th, (U_R, THC, T_R))
+    end
 elseif PROG === :ssp_step
     want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ssp_step(U_R, THT, T_R, DTT_R))))
     want("split")   && run_split(ssp_step, (U_R, THT, T_R, DTT_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_step(U_R, THT, T_R, DTT_R))
+        want("cost") && cost(th, (U_R, THT, T_R, DTT_R))
+    end
 elseif PROG === :ros_step
     want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ros_step(U_R, THC, T_R, DTC_R))))
     want("split")   && run_split(ros_step, (U_R, THC, T_R, DTC_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 ros_step(U_R, THC, T_R, DTC_R))
+        want("cost") && cost(th, (U_R, THC, T_R, DTC_R))
+    end
 elseif PROG === :ssp_vjp
     want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))))
     want("split")   && run_split(ssp_vjp, (U_R, THT, LAM_R, T_R, DTT_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 ssp_vjp(U_R, THT, LAM_R, T_R, DTT_R))
+        want("cost") && cost(th, (U_R, THT, LAM_R, T_R, DTT_R))
+    end
 else
     want("trace")   && (MOD0[] = stage("trace",   () -> _dump("raw", RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("opt")     && (MOD1[] = stage("opt",     () -> _dump("opt", RX.@code_hlo compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("raw2")   && (MOD2[] = stage("raw2",    () -> _dump("raw2", RX.@code_hlo compile_options=COPTS0 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))))
     want("split")   && run_split(ros_vjp, (U_R, THC, LAM_R, T_R, DTC_R,))
-    want("compile") && stage("compile", () -> RX.@compile compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))
+    if want("compile") || want("cost")
+        th = stage("compile", () -> RX.@compile compile_options=COPTS2 ros_vjp(U_R, THC, LAM_R, T_R, DTC_R))
+        want("cost") && cost(th, (U_R, THC, LAM_R, T_R, DTC_R))
+    end
 end
 
 report_sites(PROG in (:rhsC, :ros_step, :ros_vjp) ? "chemistry" : "transport",
