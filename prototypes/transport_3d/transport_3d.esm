@@ -1,5 +1,5 @@
 {
- "esm": "1.0.0",
+ "esm": "1.2.0",
  "metadata": {
   "name": "ReSEACT_Transport3D",
   "description": "ReSEACT 3-D transport foundation: monotone PPM on the latlon3d grid over a 7x7x7 CONUS-centered NATIVE slice of GEOS-FP 4x5 (no regridding). Horizontal = regional open-wall inflow BCs (ppm_flux_D_{lon,lat}_mono_inflow_bc + face_flux_divergence_{lon,lat}_open_bc); vertical = hybrid sigma-pressure massform (ppm_flux_D_lev_mono_hybrid_noflux_bc + face_flux_divergence_lev_massform_noflux_bc). All six rules imported BY REFERENCE. Gate: CWC -- q=mq/m must stay EXACTLY 1 and dev EXACTLY 0.",
@@ -765,11 +765,11 @@
     },
     {
      "lhs": "dlon_deg",
-     "rhs": 5.0
+     "rhs": {"op": "const", "args": [], "value": 5.0, "units": "deg"}
     },
     {
      "lhs": "dlat_deg",
-     "rhs": 4.0
+     "rhs": {"op": "const", "args": [], "value": 4.0, "units": "deg"}
     },
     {
      "lhs": "phie",
@@ -1185,7 +1185,7 @@
        }
       },
       "args": [],
-      "expr": 101325.0
+      "expr": {"op": "const", "args": [], "value": 101325.0, "units": "Pa"}
      }
     },
     {

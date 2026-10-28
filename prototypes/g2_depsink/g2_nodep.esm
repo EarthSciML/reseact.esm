@@ -1,5 +1,5 @@
 {
-  "esm": "1.0.0",
+  "esm": "1.2.0",
   "metadata": {
     "name": "g2_depsink_nodep",
     "description": "G2 baseline (no deposition): SuperFast reaction system inlined from EarthSciModels/components/gaschem/superfast.esm. 0-D, 1 s."
@@ -465,7 +465,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1023.4,
-              "B": -940
+              "B": {"op": "const", "args": [], "value": -940, "units": "K"}
             },
             "args": []
           },
@@ -497,7 +497,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 6.02,
-              "B": -490
+              "B": {"op": "const", "args": [], "value": -490, "units": "K"}
             },
             "args": []
           },
@@ -529,7 +529,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 28896,
-              "B": 250
+              "B": {"op": "const", "args": [], "value": 250, "units": "K"}
             },
             "args": []
           },
@@ -756,7 +756,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1806,
-              "B": -1500
+              "B": {"op": "const", "args": [], "value": -1500, "units": "K"}
             },
             "args": []
           },
@@ -788,7 +788,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1986.6000000000001,
-              "B": 270
+              "B": {"op": "const", "args": [], "value": 270, "units": "K"}
             },
             "args": []
           },
@@ -988,7 +988,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1474.8999999999999,
-              "B": -1775
+              "B": {"op": "const", "args": [], "value": -1775, "units": "K"}
             },
             "args": []
           },
@@ -1316,7 +1316,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 3311.0000000000005,
-              "B": 125
+              "B": {"op": "const", "args": [], "value": 125, "units": "K"}
             },
             "args": []
           },
@@ -1352,7 +1352,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 246.82000000000002,
-              "B": 750
+              "B": {"op": "const", "args": [], "value": 750, "units": "K"}
             },
             "args": []
           },
@@ -1384,7 +1384,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1601.32,
-              "B": 200
+              "B": {"op": "const", "args": [], "value": 200, "units": "K"}
             },
             "args": []
           },
@@ -1416,7 +1416,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 686.28,
-              "B": 200
+              "B": {"op": "const", "args": [], "value": 200, "units": "K"}
             },
             "args": []
           },
@@ -1452,7 +1452,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 1685.6000000000001,
-              "B": 300
+              "B": {"op": "const", "args": [], "value": 300, "units": "K"}
             },
             "args": []
           },
@@ -1484,7 +1484,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 57.19,
-              "B": 390
+              "B": {"op": "const", "args": [], "value": 390, "units": "K"}
             },
             "args": []
           },
@@ -1554,7 +1554,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 16254,
-              "B": 390
+              "B": {"op": "const", "args": [], "value": 390, "units": "K"}
             },
             "args": []
           },
@@ -1582,7 +1582,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 16254,
-              "B": 390
+              "B": {"op": "const", "args": [], "value": 390, "units": "K"}
             },
             "args": []
           },
@@ -1610,7 +1610,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 16254,
-              "B": 390
+              "B": {"op": "const", "args": [], "value": 390, "units": "K"}
             },
             "args": []
           },
@@ -1642,7 +1642,7 @@
             "name": "arrh_per_molecule",
             "bindings": {
               "A": 3.3651799999999996,
-              "B": -1814
+              "B": {"op": "const", "args": [], "value": -1814, "units": "K"}
             },
             "args": []
           },
