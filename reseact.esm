@@ -9230,9 +9230,9 @@
         },
         "atol": {
           "type": "parameter",
-          "units": "1",
+          "units": "deg^2",
           "default": 1e-12,
-          "description": "Sliver floor for the gated overlap: candidate pairs whose clipped area is <= atol are dropped from both the weights and the apply."
+          "description": "Sliver floor for the gated overlap: candidate pairs whose clipped area is <= atol are dropped from both the weights and the apply. An AREA, in the units of A_ij (deg^2, planar lon-lat clipping), because the template's filter compares A_ij > atol."
         },
         "scale": {
           "type": "parameter",
