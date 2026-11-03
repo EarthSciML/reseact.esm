@@ -297,7 +297,10 @@ function reseact_forcing(dir; ndays::Integer = 1, res::AbstractString = "4x5",
         #   dry: Ts<-A1.TS, z0<-A1.Z0M, u_star<-A1.USTAR, G<-A1.SWGDN,
         #        L<-MoninObhukov(rho,TS,USTAR,A1.HFLUX), rho_A<-P/(R T) MW_air,
         #        del_P<-first_level_pressure_thickness(PS), z<-Z_agl
-        #   wet: cloudFrac<-A3cld.CLOUD, qrain<-(A3mstE.PFLCU+PFLLSAN)/Vdr/rho_air
+        #   wet: cloudFrac<-A3cld.CLOUD,
+        #        qrain<-(A3mstE.PFLCU+PFLLSAN+PFICU+PFILSAN)/Vdr/rho_air, each flux
+        #        the mean of the layer's two level edges (the reference reads only
+        #        the liquid fluxes, at the bottom edge)
         "GEOSFP.TS"       => mk("A1", "TS", 1800.0, 3600.0, 24),
         "GEOSFP.Z0M"      => mk("A1", "Z0M", 1800.0, 3600.0, 24),
         "GEOSFP.USTAR"    => mk("A1", "USTAR", 1800.0, 3600.0, 24),
@@ -305,7 +308,9 @@ function reseact_forcing(dir; ndays::Integer = 1, res::AbstractString = "4x5",
         "GEOSFP.HFLUX"    => mk("A1", "HFLUX", 1800.0, 3600.0, 24),
         "GEOSFP.CLOUD" => mk("A3cld", "CLOUD", 5400.0, 10800.0, 8),
         "GEOSFP.PFLCU"   => mk("A3mstE", "PFLCU", 5400.0, 10800.0, 8),
-        "GEOSFP.PFLLSAN" => mk("A3mstE", "PFLLSAN", 5400.0, 10800.0, 8))
+        "GEOSFP.PFLLSAN" => mk("A3mstE", "PFLLSAN", 5400.0, 10800.0, 8),
+        "GEOSFP.PFICU"   => mk("A3mstE", "PFICU", 5400.0, 10800.0, 8),
+        "GEOSFP.PFILSAN" => mk("A3mstE", "PFILSAN", 5400.0, 10800.0, 8))
     params = Dict(
         "GEOSFP.t_interp_ref_I3" => 0.0, "GEOSFP.dt_interp_I3" => 10800.0,
         "GEOSFP.t_interp_ref_A3" => 5400.0, "GEOSFP.dt_interp_A3" => 10800.0,
