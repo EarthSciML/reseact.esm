@@ -298,9 +298,9 @@ function reseact_forcing(dir; ndays::Integer = 1, res::AbstractString = "4x5",
         #        L<-MoninObhukov(rho,TS,USTAR,A1.HFLUX), rho_A<-P/(R T) MW_air,
         #        del_P<-first_level_pressure_thickness(PS), z<-Z_agl
         #   wet: cloudFrac<-A3cld.CLOUD,
-        #        qrain<-(A3mstE.PFLCU+PFLLSAN+PFICU+PFILSAN)/Vdr/rho_air, each flux
-        #        the mean of the layer's two level edges (the reference reads only
-        #        the liquid fluxes, at the bottom edge)
+        #        qrain<-(A3mstE.PFLCU+PFLLSAN + [T>=268K]*(PFICU+PFILSAN))/Vdr/rho_air,
+        #        each flux the mean of the layer's two level edges (the reference
+        #        reads only the liquid fluxes, at the bottom edge)
         "GEOSFP.TS"       => mk("A1", "TS", 1800.0, 3600.0, 24),
         "GEOSFP.Z0M"      => mk("A1", "Z0M", 1800.0, 3600.0, 24),
         "GEOSFP.USTAR"    => mk("A1", "USTAR", 1800.0, 3600.0, 24),

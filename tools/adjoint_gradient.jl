@@ -428,7 +428,9 @@ say("  NS=$NS species, NC=$NC cells, N=$N states")
 # dot-product identity to 5.3e-16. It also compiles 4x cheaper than :fd
 # (12.0 s vs 49.9 s standalone; 109k lines of MLIR vs 323k).
 #
-# The band model carries ITS OWN forcing buffers (15 of them), so meteorology
+# The band model carries ITS OWN forcing buffers (15 when last measured, before
+# the ice fluxes PFICU and PFILSAN; the run prints the live count as `band
+# buffers=`), so meteorology
 # stays a runtime operand there too rather than being baked into the program.
 # They are built from the same `merged_param` dict the RHS uses, which is what
 # makes `refresh_forcing` reach them.
@@ -922,7 +924,8 @@ function refresh_forcing(t)
 end
 # The forcing at an epoch is a function of the epoch alone (`provider_sample`
 # at `t`), so re-sampling it when the epoch has not changed is pure cost -- and
-# it is NOT small: a refresh re-reads and re-materialises 15 GEOS-FP providers
+# it is NOT small: a refresh re-reads and re-materialises 17 GEOS-FP providers
+# (15 when the timings below were taken)
 # and pushes ~40 buffers to the device, ~9 s at CONUS (slurm 10372581's
 # everything-else: 29 s of a 53 s sweep, 3 windows, 3 refreshes). The forward
 # pass refreshes only at the 64 epoch boundaries of a 48 h window; the backward
