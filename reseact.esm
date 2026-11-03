@@ -62,6 +62,273 @@
       "description": "Row count of the NEI2016 12US1 source grid (IOAPI NROWS)."
     }
   },
+  "data_sources": {
+    "GEOSFP_A1": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.A1.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T00:30:00Z",
+        "file_period": "P1D",
+        "frequency": "PT1H",
+        "records_per_file": 24,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP A1 collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "A1",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A1, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    },
+    "GEOSFP_A3cld": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.A3cld.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T01:30:00Z",
+        "file_period": "P1D",
+        "frequency": "PT3H",
+        "records_per_file": 8,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP A3cld collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "A3cld",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ],
+          "lev_layer_index": [
+            1,
+            72
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46,
+          "lev": 72
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3cld, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    },
+    "GEOSFP_A3dyn": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.A3dyn.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T01:30:00Z",
+        "file_period": "P1D",
+        "frequency": "PT3H",
+        "records_per_file": 8,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP A3dyn collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "A3dyn",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ],
+          "lev_layer_index": [
+            1,
+            72
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46,
+          "lev": 72
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3dyn, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    },
+    "GEOSFP_A3mstC": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.A3mstC.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T01:30:00Z",
+        "file_period": "P1D",
+        "frequency": "PT3H",
+        "records_per_file": 8,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP A3mstC collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "A3mstC",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ],
+          "lev_layer_index": [
+            1,
+            72
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46,
+          "lev": 72
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3mstC, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    },
+    "GEOSFP_A3mstE": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.A3mstE.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T01:30:00Z",
+        "file_period": "P1D",
+        "frequency": "PT3H",
+        "records_per_file": 8,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP A3mstE collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "A3mstE",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ],
+          "lev_layer_index": [
+            1,
+            72
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46,
+          "lev": 73
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3mstE, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    },
+    "GEOSFP_I3": {
+      "kind": "grid",
+      "source": {
+        "url_template": "https://geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/{date:%Y}/{date:%m}/GEOSFP.{date:%Y%m%d}.I3.4x5.nc"
+      },
+      "temporal": {
+        "start": "2013-01-01T00:00:00Z",
+        "file_period": "P1D",
+        "frequency": "PT3H",
+        "records_per_file": 8,
+        "time_variable": "time"
+      },
+      "reference": {
+        "citation": "GEOS-FP I3 collection, 4x5 GEOS-Chem regridding. NASA GMAO. AWS mirror: geos-chem.s3-us-west-2.amazonaws.com/GEOS_4x5/GEOS_FP/",
+        "url": "http://geoschemdata.wustl.edu/ExtData/"
+      },
+      "metadata": {
+        "filetype": "I3",
+        "domain": "4x5",
+        "native_resolution_deg": {
+          "longitude": 5.0,
+          "latitude": 4.0
+        },
+        "native_extent": {
+          "longitude": [
+            -180.0,
+            180.0
+          ],
+          "latitude": [
+            -90.0,
+            90.0
+          ],
+          "lev_layer_index": [
+            1,
+            72
+          ]
+        },
+        "native_dimensions": {
+          "lon": 72,
+          "lat": 46,
+          "lev": 72
+        },
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_I3, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+      }
+    }
+  },
   "models": {
     "GEOSFP": {
       "ref": "../EarthSciModels/components/earthsci_data/geosfp.esm"
