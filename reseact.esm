@@ -270,9 +270,9 @@
             -90.0,
             90.0
           ],
-          "lev_layer_index": [
+          "lev_edge_index": [
             1,
-            72
+            73
           ]
         },
         "native_dimensions": {
@@ -280,7 +280,8 @@
           "lat": 46,
           "lev": 73
         },
-        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3mstE, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ."
+        "overrides": "EarthSciModels components/earthsci_data/geosfp.esm data_sources.GEOSFP_A3mstE, which names the 0.25x0.3125 files. Same collection, cadence and variable names; only the directory and filename token differ.",
+        "vertical_note": "A3mstE fields live on the 73 level EDGES of the 72-layer grid, so lev has 73 entries where the other collections have 72. Edge 1 is the surface and edge 73 the model top (~1 Pa), the same surface-first order as the layer collections: edge k is the bottom edge of layer k. Matches EarthSciModels geosfp.esm after EarthSciML/EarthSciModels#39."
       }
     },
     "GEOSFP_I3": {
