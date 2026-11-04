@@ -1,5 +1,5 @@
 {
-  "esm": "1.0.0",
+  "esm": "1.2.0",
   "metadata": {
     "name": "ReSEACT3D",
     "description": "ReSEACT 3-D transport on a 7x7x7 NATIVE slice of the GEOS-FP 4x5 grid centred over the central US, driven by real GEOS-FP meteorology. NO REGRIDDING: the local grid IS the native grid (lon cells 15..21 -> centres -110..-80; lat points 30..36 -> 26..50; levels 1..7, k=1 = surface), so the whole conservative-overlap chain collapses to an index shift.\n\nTransport is the monotone flux-form PPM stack imported BY REFERENCE from EarthSciDiscretizations: regional open-wall inflow BCs on lon/lat, and the HYBRID sigma-pressure massform vertical (dp = dA[k] + dB[k]*PS(i,j,t)) on lev. The horizontal and vertical rule stack is byte-identical to the verified prototypes/transport_3d/transport_3d.esm; only the FORCING differs — the analytic test winds and constant PS are replaced by GEOS-FP U/V/OMEGA/PS, each supplied by an EarthSciIO discrete_provider returning the TWO records bracketing the solver time and blended continuously in time (records_per_sample=2 + w_time, the era5 pattern).\n\nGEOS-FP's collections are not co-phased, so three independent weights are used: w_I3 (PS, 3-hourly instantaneous at 00:00Z), w_A3 (U/V/OMEGA, 3-hourly means at 01:30Z) and w_A1 (PBLH, hourly means at 00:30Z).\n\nFace fluxes follow the metric the ESD divergence stencils imply on the unit sphere: Mx = dp_face*U_face/a and My = dp_face*V_face/a (Pa/s, matching m in Pa), with the A-grid GEOS-FP winds averaged to faces. Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD; Mz is +ve UPWARD at each cell's LOWER edge).\n\nCAVEATS. (1) PS is read in hPa and scaled by 100 — the loader declares Pa but EarthSciIO returns raw file values. (2) The lev no-flux BC is baked into the stencils (they never read Mz[1] or Mz[NLEV+1]), so the 7-level slab is CLOSED at its ~906 hPa top even though real air flows through it — a truncated-column artifact, negligible over the 1 s first-light window but not for long runs. (3) The two end lat rows are half-width (lat_edge clamps them) while native lat cells are a full 4 deg. (4) Using OMEGA directly means m drifts from dp: the mass fluxes are not the ones that reproduce the observed surface-pressure tendency (Jockel et al. 2001). CWC still holds EXACTLY — both continuity and tracer use the same fluxes — which is what the q == 1 gate tests.",
@@ -853,11 +853,11 @@
         },
         {
           "lhs": "dlon_deg",
-          "rhs": 5.0
+          "rhs": {"op": "const", "args": [], "value": 5.0, "units": "deg"}
         },
         {
           "lhs": "dlat_deg",
-          "rhs": 4.0
+          "rhs": {"op": "const", "args": [], "value": 4.0, "units": "deg"}
         },
         {
           "lhs": "phie",
@@ -963,7 +963,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1058,7 +1058,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1281,7 +1281,7 @@
                     }
                   ]
                 },
-                6371000.0
+                {"op": "const", "args": [], "value": 6371000.0, "units": "m"}
               ]
             }
           }
@@ -1348,7 +1348,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1455,7 +1455,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1714,7 +1714,7 @@
                     }
                   ]
                 },
-                6371000.0
+                {"op": "const", "args": [], "value": 6371000.0, "units": "m"}
               ]
             }
           }
@@ -1858,7 +1858,7 @@
             "expr": {
               "op": "*",
               "args": [
-                100.0,
+                {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                 {
                   "op": "+",
                   "args": [

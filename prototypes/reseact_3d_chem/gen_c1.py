@@ -33,7 +33,7 @@ OUT = "/Users/ctessum/code/earthsciml/reseact.esm/prototypes/reseact_3d_chem/res
 SF  = "../../../EarthSciModels/components/gaschem/superfast.esm"
 SF_ABS = "/Users/ctessum/code/earthsciml/EarthSciModels/components/gaschem/superfast.esm"
 LON_OFF, LAT_OFF = 14, 29
-HPA_TO_PA = 100.0
+HPA_TO_PA = {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"}  # esm-spec §4.8.5; unused here, SRC carries it
 
 def op(o,*a): return {"op":o,"args":list(a)}
 def idx(a,*ix): return {"op":"index","args":[a,*ix]}
@@ -78,6 +78,13 @@ WALL_AX = collections.OrderedDict([("w",["lat","lev"]), ("e",["lat","lev"]),
 def qbc_name(sp, wall):
     return f"qbc_{wall}_{sp}"
 
+def ppb(bg):
+    """The inflow value as a literal carrying its unit (esm-spec §4.8.5): at the next
+    major esm version a bare literal is dimensionless (§4.8.6), and qbc_* is declared
+    ppb. Zero needs no unit."""
+    bg = float(bg)
+    return bg if bg == 0.0 else {"op": "const", "args": [], "value": bg, "units": "ppb"}
+
 def add_qbc(sp, bg):
     for wall, ax in WALL_AX.items():
         V[qbc_name(sp, wall)] = collections.OrderedDict([
@@ -87,7 +94,7 @@ def add_qbc(sp, bg):
                             f"for {sp}. Bound to the PPM inflow rule's `qbc_{wall}` PARAM at "
                             f"this species' call site, so it is independent of every other "
                             f"species' halo."),
-            ("expression", agg(["ga","gb"], [("ga",ax[0]),("gb",ax[1])], float(bg), []))])
+            ("expression", agg(["ga","gb"], [("ga",ax[0]),("gb",ax[1])], ppb(bg), []))])
 T["equations"] = [e for e in T["equations"]
                   if not any(f'"{n}"' in json.dumps(e["lhs"]) for n in ("mq","dev"))]
 T.pop("tests", None)
