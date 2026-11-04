@@ -6,7 +6,10 @@
 # windowed-read plan is about: the model keeps two records of one variable and
 # the reader hands over every variable and all eight records of the file.
 #
-# MEASURED 2026-09-05/06 (login node, warm cache, t = 64800 s):
+# MEASURED 2026-09-05/06 (login node, warm cache, t = 64800 s), with the 15
+# providers of that time. The ice fluxes PFICU and PFILSAN have since added two
+# more A3mstE providers (17 now), so a re-run pays two more whole-file A3mstE decodes
+# per sample than these figures:
 #
 #   4x5     15 discrete providers, one sample of each = 6.95 s, 31.0 MB kept
 #   2x2.5   15 discrete providers                     = 18.04 s, 122.7 MB kept
@@ -16,7 +19,7 @@
 # six consumers each pay for all 47 of its.
 #
 # Over 48 h at macro_dt = 300 the cadences fire ~432 samples (A1 hourly x 6
-# providers, A3 3-hourly x 7, I3 3-hourly x 2): ~0.35 s per macro step at 4x5,
+# providers, A3 3-hourly x 7 -- x 9 with the ice fluxes, I3 3-hourly x 2): ~0.35 s per macro step at 4x5,
 # ~0.90 s at 2x2.5, against a 4x5 window budget of 4.86 s.
 #
 #   julia --project=run-model-jl tools/diag/decode_cost.jl
