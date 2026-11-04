@@ -22,8 +22,16 @@ NLON = NLAT = 7
 NLEV = 72   # FULL GEOS-FP column to the true TOA: the no-flux top BC is now PHYSICAL
             # (air mass doesn't cross TOA, OMEGA->0 there), so m no longer piles up at
             # a false 906 hPa lid. Ap/Bp/dA/dB supplied via const_arrays as 73/72 values.
-A_EARTH = 6371000.0          # IUGG mean radius (m); the grid metrics are unit-sphere, so `a` only scales Mx/My.
-HPA_TO_PA = 100.0            # PS is hPa in file, declared Pa by the loader. MEASURED.
+def uconst(value, units):
+    """A unit-bearing literal (esm-spec §4.8.5, esm >= 1.2.0). At the next major esm
+    version a bare literal is dimensionless (§4.8.6), so a number that carries a unit
+    must say so."""
+    return {"op": "const", "args": [], "value": value, "units": units}
+
+# IUGG mean radius. The grid metrics are unit-sphere, so `a` only scales Mx/My, and
+# it is what turns dp*U [Pa m/s] into the Pa/s flux the stencils read.
+A_EARTH = uconst(6371000.0, "m")
+HPA_TO_PA = uconst(100.0, "Pa/hPa")   # PS is hPa in file, declared Pa by the loader. MEASURED.
 LON_OFF, LAT_OFF = 14, 29    # native index shifts (verified against the real coord arrays)
 
 # ---- expression helpers ----------------------------------------------------

@@ -963,7 +963,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1058,7 +1058,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1281,7 +1281,7 @@
                     }
                   ]
                 },
-                6371000.0
+                {"op": "const", "args": [], "value": 6371000.0, "units": "m"}
               ]
             }
           }
@@ -1348,7 +1348,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1455,7 +1455,7 @@
                                     {
                                       "op": "*",
                                       "args": [
-                                        100.0,
+                                        {"op": "const", "args": [], "value": 100.0, "units": "Pa/hPa"},
                                         {
                                           "op": "+",
                                           "args": [
@@ -1714,7 +1714,7 @@
                     }
                   ]
                 },
-                6371000.0
+                {"op": "const", "args": [], "value": 6371000.0, "units": "m"}
               ]
             }
           }

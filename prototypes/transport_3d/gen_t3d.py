@@ -30,8 +30,9 @@ v['lon0_deg']={"type":"parameter","units":"deg","default":-112.5,
   "description":"West EDGE of the slice. GEOS-FP 4x5 lon cell edges are -182.5+5*(i-1); -112.5 is the edge of native cell i=15, so cells i=15..21 (centers -110..-80) map to lon_local 1..7 with NO interpolation."}
 v['lat0_deg']={"type":"parameter","units":"deg","default":26.0,
   "description":"Southern-most lat POINT of the slice. GEOS-FP 4x5 lat points are -90+4*(j-1); 26 is native j=30, so points j=30..36 (26..50) map to lat_local 1..7 with NO interpolation."}
-v['dlon_deg']={"type":"observed","units":"deg","expression":5.0,"description":"GEOS-FP 4x5 native zonal spacing. Open west/east walls (regional, not periodic)."}
-v['dlat_deg']={"type":"observed","units":"deg","expression":4.0,"description":"GEOS-FP 4x5 native meridional spacing. Open south/north walls (regional, not polar)."}
+def uconst(value, units): return {"op":"const","args":[],"value":value,"units":units}  # esm-spec §4.8.5
+v['dlon_deg']={"type":"observed","units":"deg","expression":uconst(5.0,"deg"),"description":"GEOS-FP 4x5 native zonal spacing. Open west/east walls (regional, not periodic)."}
+v['dlat_deg']={"type":"observed","units":"deg","expression":uconst(4.0,"deg"),"description":"GEOS-FP 4x5 native meridional spacing. Open south/north walls (regional, not polar)."}
 
 def agg(idx, ranges, args, expr):
     return {"op":"aggregate","output_idx":idx,"ranges":{k:{"from":r} for k,r in ranges.items()},"args":args,"expr":expr}
@@ -48,7 +49,7 @@ v['dB']={"type":"parameter","units":"1","shape":["lev"],"default":0.0,
   "description":"dB[k] = Bp[k]-Bp[k+1] from the native GEOS-FP hybrid table at integer edges k=1..8. Supplied via const_arrays."}
 
 # 3. PS (constant for this stage; replaced by the GEOS-FP slice in Stage A)
-PS0 = 101325.0
+PS0 = uconst(101325.0, "Pa")
 v['PS']={"type":"observed","units":"Pa","shape":["lon","lat"],
   "description":"Surface pressure. STAGE B: constant 101325 Pa. Stage A replaces this with the GEOS-FP I3.PS native slice (i=14+lon, j=29+lat).",
   "expression":agg(["gi","gj"],{"gi":"lon","gj":"lat"},[],PS0)}
@@ -75,7 +76,7 @@ s = {"op":"/","args":[{"op":"-","args":["ck",1]},float(NLEV)]}
 v['Mz']={"type":"observed","units":"Pa/s","shape":["lon","lat","lev_nodes"],
   "description":"Vertical face-normal air-mass flux at the LOWER edge of each cell, positive UPWARD. Vanishes exactly at k=1 (surface) and k=NLEV+1 (lid), consistent with the no-flux hybrid BC. STAGE B: analytic. Stage A: Mz = -OMEGA (OMEGA is dP/dt, +ve DOWNWARD, and is already lev-interface staggered in GEOS-FP).",
   "expression":agg(["ci","cj","ck"],{"ci":"lon","cj":"lat","ck":"lev_nodes"},[],
-     {"op":"*","args":[0.05,{"op":"*","args":[4.0,s,{"op":"-","args":[1.0,s]},{"op":"-","args":[1.0,{"op":"*","args":[2.0,s]}]}]}]})}
+     {"op":"*","args":[uconst(0.05,"Pa/s"),{"op":"*","args":[4.0,s,{"op":"-","args":[1.0,s]},{"op":"-","args":[1.0,{"op":"*","args":[2.0,s]}]}]}]})}
 
 # 7. add the vertical term to the three tendency equations
 def Dlev(a): return {"op":"D","args":[a],"wrt":"lev"}
@@ -91,6 +92,7 @@ for e in m['equations']:
     else:
         e['rhs']['args'][0]['args'].append(inner)
 
+d['esm']="1.2.0"   # the first version with a unit-bearing const (esm-spec §4.8.5)
 d['metadata']['name']="ReSEACT_Transport3D"
 d['metadata']['description']=("ReSEACT 3-D transport foundation: monotone PPM on the latlon3d grid over a 7x7x7 "
   "CONUS-centered NATIVE slice of GEOS-FP 4x5 (no regridding). Horizontal = regional open-wall inflow BCs "

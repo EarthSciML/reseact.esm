@@ -1271,7 +1271,7 @@
       "expr": {
        "op": "*",
        "args": [
-        0.05,
+        {"op": "const", "args": [], "value": 0.05, "units": "Pa/s"},
         {
          "op": "*",
          "args": [
