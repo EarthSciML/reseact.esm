@@ -28,18 +28,19 @@ decode is Float64, so double the on-disk float32):
 | A1     | 47 | 29.9 MB | 6 (PBLH, TS, Z0M, USTAR, SWGDN, HFLUX) |
 | A3dyn  |  5 | 76.3 MB | 4 (U, V, OMEGA, RH) |
 | A3cld  |  7 | 106.8 MB | 1 (CLOUD) |
-| A3mstE |  5 | 77.4 MB | 2 (PFLCU, PFLLSAN) |
+| A3mstE |  5 | 77.4 MB | 4 (PFLCU, PFLLSAN, PFICU, PFILSAN) |
 | I3     |  4 | 46.0 MB | 2 (PS, T) |
 
 Each provider decodes its file **whole** — every variable, all 8 records — and
-keeps two records of one variable. That is ~840 MB of decode per cadence tick at
-4x5 to retain a few MB, and it scales with the native grid: **×4.0 at 2x2.5**
-(~3.3 GB/tick) and **×251 at 0.25x0.3125** (~211 GB/tick).
+keeps two records of one variable. That is ~990 MB of decode per cadence tick at
+4x5 to retain a few MB (~840 MB before the ice fluxes PFICU and PFILSAN added
+two more A3mstE providers), and it scales with the native grid: **×4.0 at 2x2.5**
+(~4.0 GB/tick) and **×251 at 0.25x0.3125** (~250 GB/tick).
 
 Timed directly, with every file already in the cache so this is decode and
 nothing else (`tools/diag/decode_cost.jl`):
 
-| | one sample of all 15 discrete providers | kept |
+| | one sample of all 15 discrete providers (before PFICU, PFILSAN: 17 now) | kept |
 |---|---|---|
 | 4x5 | **6.95 s** | 31.0 MB |
 | 2x2.5 | **18.04 s** | 122.7 MB |

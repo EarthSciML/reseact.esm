@@ -592,14 +592,18 @@ five-day 0.25° forward pass rather than 18.8%.
 
 ## D. What the fix is worth, now that the term is measured
 
-Refresh at 0.25° decodes **327 variable-days to keep 15**:
+Refresh at 0.25° decodes **337 variable-decodes to keep 17** (327 to keep 15
+before the ice fluxes PFICU and PFILSAN joined A3mstE; the cell, GB and timing
+figures in this section were measured at 15 and are not rescaled — the two ice
+providers add ~4.9 G cells ≈ 39 GB per tick, and with `variables` pushdown ~1 G
+cells ≈ 8 GB):
 
 | collection | file | data vars | providers on it | variable-decodes per refresh |
 |---|---|---|---|---|
 | A3dyn | 3.80 GB | 5 | 4 (U, V, OMEGA, RH) | 20 |
 | A1 | 1.06 GB | 47 | 6 (PBLH, TS, Z0M, USTAR, SWGDN, HFLUX) | **282** |
 | A3cld | 1.59 GB | 7 | 1 (CLOUD) | 7 |
-| A3mstE | 0.69 GB | 5 | 2 (PFLCU, PFLLSAN) | 10 |
+| A3mstE | 0.69 GB | 5 | 4 (PFLCU, PFLLSAN, PFICU, PFILSAN) | 20 |
 | I3 | 2.26 GB | 4 | 2 (PS, T) | 8 |
 
 ~27.4 G decoded cells ≈ 219 GB per tick, independently reproducing the 211 GB of

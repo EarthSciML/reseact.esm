@@ -615,6 +615,30 @@
           "default": 0.0,
           "description": "GEOS-FP A3mstE large-scale+anvil rain flux PFLLSAN, two bracketing records, NATIVE [time,edge,lat,lon]. It is a downward flux through the level EDGES, so it has 73 levels, one more than the layer fields: edge k is the bottom of layer k, edge 1 the surface, edge 73 the model top (where it is 0). gf_lev_edge is gf_lev's 73 interfaces in the same surface-first order: layer k of gf_lev sits between edges k and k+1. 3-hourly mean cadence -> blends with w_A3."
         },
+        "F_PFICU": {
+          "type": "parameter",
+          "units": "kg/m^2/s",
+          "shape": [
+            "gf_t",
+            "gf_lev_edge",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3mstE convective ice/snow flux PFICU, two bracketing records, NATIVE [time,edge,lat,lon]. It is a downward flux through the level EDGES, so it has 73 levels, one more than the layer fields: edge k is the bottom of layer k, edge 1 the surface, edge 73 the model top (where it is 0). gf_lev_edge is gf_lev's 73 interfaces in the same surface-first order: layer k of gf_lev sits between edges k and k+1. 3-hourly mean cadence -> blends with w_A3. A MASS flux (kg of ice per m^2 per s), added to the liquid fluxes as water-equivalent precipitation in qrainc, ONLY in layers with Tc >= 268 K (see qrainc)."
+        },
+        "F_PFILSAN": {
+          "type": "parameter",
+          "units": "kg/m^2/s",
+          "shape": [
+            "gf_t",
+            "gf_lev_edge",
+            "gf_lat",
+            "gf_lon"
+          ],
+          "default": 0.0,
+          "description": "GEOS-FP A3mstE large-scale+anvil ice/snow flux PFILSAN, two bracketing records, NATIVE [time,edge,lat,lon]. It is a downward flux through the level EDGES, so it has 73 levels, one more than the layer fields: edge k is the bottom of layer k, edge 1 the surface, edge 73 the model top (where it is 0). gf_lev_edge is gf_lev's 73 interfaces in the same surface-first order: layer k of gf_lev sits between edges k and k+1. 3-hourly mean cadence -> blends with w_A3. A MASS flux (kg of ice per m^2 per s), added to the liquid fluxes as water-equivalent precipitation in qrainc, ONLY in layers with Tc >= 268 K (see qrainc)."
+        },
         "TSc": {
           "type": "unknown",
           "units": "K",
@@ -733,7 +757,7 @@
             "lat",
             "lev"
           ],
-          "description": "Rain mass mixing ratio from the EMEP inversion the reference uses: qrain = P/Vdr/rho_air with droplet velocity Vdr = 5 m/s, where P is the liquid rain flux PFLCU + PFLLSAN taken as the MEAN over the layer: P[k] = 0.5*(P_edge[k] + P_edge[k+1]), the average of the fluxes through the layer's bottom edge (k) and top edge (k+1). EMEP's scavenging rate W*P/(Dz*rho_water) needs one rain intensity for the whole layer, and the trapezoidal mean of the two bounding edges is that layer average to second order. Reading one edge alone is one-sided: the bottom edge (what AtmosphericDeposition.jl's reference effectively reads, since EarthSciData treats A3mstE as layer-centred and indexes the 73-edge array at lev = k) credits a cloud-top layer with all the rain it produces as if that rain fell through its whole depth, and the top edge misses rain formed in the layer. Over the CONUS slice on 2016-05-02 the mean is 0.96x the bottom-edge value summed over the column, within 1-3% in the lowest 10 layers and ~0.6x at the rain tops. The edge array has 73 entries, so gk+1 <= NLEV+1 <= 73 is always in range. The remaining constants and formulas are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim."
+          "description": "Water-equivalent precipitation 'mixing ratio' fed to WetDeposition.qrain, from the EMEP inversion the reference uses: qrain = P/Vdr/rho_air with raindrop speed Vdr = 5 m/s, where P is the precipitation mass flux (kg m^-2 s^-1): the liquid fluxes PFLCU + PFLLSAN everywhere, plus the ice fluxes PFICU + PFILSAN (kg of ice = kg of water equivalent) ONLY where the layer temperature Tc >= 268 K; each taken as the MEAN over the layer: P[k] = 0.5*(P_edge[k] + P_edge[k+1]), the average of the fluxes through the layer's bottom edge (k) and top edge (k+1). EMEP's scavenging rate W*P/(Dz*rho_water) needs one rain intensity for the whole layer, and the trapezoidal mean of the two bounding edges is that layer average to second order. Reading one edge alone is one-sided: the bottom edge (what AtmosphericDeposition.jl's reference effectively reads, since EarthSciData treats A3mstE as layer-centred and indexes the 73-edge array at lev = k) credits a cloud-top layer with all the rain it produces as if that rain fell through its whole depth, and the top edge misses rain formed in the layer. Over the CONUS slice on 2016-05-02 the mean is 0.96x the bottom-edge value summed over the column, within 1-3% in the lowest 10 layers and ~0.6x at the rain tops. The edge array has 73 entries, so gk+1 <= NLEV+1 <= 73 is always in range. Why ice counts, and only at Tc >= 268 K. EMEP scales wet deposition by the meteorology's total precipitation (rain + snow) at every temperature: MSC-W Met_mod profiles surface total precipitation with the rain AND snow mass fractions, and Aqueous_n_WetDep_mod applies one W_sca/W_sub to it. But the only wet rate reseact wires to a sink is k_othergas, and it acts on H2O2, CH2O and CH3OOH, soluble gases whose washout GEOS-Chem (wetscav_mod.F90) switches off below 268 K and whose cold in-cloud uptake it limits to ice co-condensation, which in practice is HNO3 only. Counting ice at every temperature would wash those HOx reservoirs out of the upper troposphere by snow down to ~220 K, a sink neither GEOS-Chem nor the liquid-only reference has. So the ice term is gated at GEOS-Chem's 268 K cutoff (Tc is the layer-centre GEOS-FP I3 temperature, blended to the current time): colder snow and ice scavenge nothing, as with liquid-only P. KNOWN GAP: HNO3 shares k_othergas, so it is gated too, while GEOS-Chem still removes HNO3 below 268 K (washout at all temperatures, co-condensation onto ice below 248 K). Cold-layer HNO3 scavenging is therefore under-counted, as it was with liquid-only P, until HNO3 gets its own wet rate in superfast_deposition_sink.esm. CAUTION, the ice part is NOT rain: qrain = P/Vdr/rho_air assumes every kg falls at the 5 m/s raindrop speed, and snow falls at ~1 m/s. That is harmless for WetDeposition's gas rates, k_SO2 and k_othergas, which are proportional to qrain*rho_air*Vdr = P, so Vdr cancels and only the water-equivalent flux P matters (this is why ice can be added as mass). It is WRONG for k_particle, whose below-cloud term A_wd*E*qrain*rho_air = A_wd*E*P/Vdr keeps 1/Vdr and would under-scavenge the ice part by ~5x; EMEP and GEOS-Chem also treat aerosol washout by snow with different coefficients. k_particle is wired to no species today. Before wiring it, give it a liquid-only qrain or a snow-aware rate. Apart from the precipitation flux itself (both edges averaged, and gated ice, where this departs from AtmosphericDeposition.jl, which reads only the liquid fluxes, at the bottom edge), the constants and the qrain formula are AtmosphericDeposition.jl ext/EarthSciDataExt.jl verbatim."
         },
         "qbc_w_NO": {
           "type": "unknown",
@@ -6321,6 +6345,9 @@
             "args": [
               "F_PFLCU",
               "F_PFLLSAN",
+              "F_PFICU",
+              "F_PFILSAN",
+              "Tc",
               "rhoA"
             ],
             "ranges": {
@@ -6351,33 +6378,66 @@
                               "op": "+",
                               "args": [
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
                                     {
-                                      "op": "-",
+                                      "op": "*",
                                       "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_PFLCU",
-                                        1,
-                                        "gk",
                                         {
-                                          "op": "+",
+                                          "op": "-",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
+                                            1.0,
+                                            "w_A3"
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "index",
                                           "args": [
-                                            "LON0",
-                                            "gi"
+                                            "F_PFLCU",
+                                            1,
+                                            "gk",
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        "w_A3",
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "F_PFLCU",
+                                            2,
+                                            "gk",
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6385,27 +6445,66 @@
                                   ]
                                 },
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
-                                    "w_A3",
                                     {
-                                      "op": "index",
+                                      "op": "*",
                                       "args": [
-                                        "F_PFLCU",
-                                        2,
-                                        "gk",
                                         {
-                                          "op": "+",
+                                          "op": "-",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
+                                            1.0,
+                                            "w_A3"
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "index",
                                           "args": [
-                                            "LON0",
-                                            "gi"
+                                            "F_PFLLSAN",
+                                            1,
+                                            "gk",
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        "w_A3",
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "F_PFLLSAN",
+                                            2,
+                                            "gk",
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6418,33 +6517,78 @@
                               "op": "+",
                               "args": [
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
                                     {
-                                      "op": "-",
+                                      "op": "*",
                                       "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_PFLLSAN",
-                                        1,
-                                        "gk",
                                         {
-                                          "op": "+",
+                                          "op": "-",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
+                                            1.0,
+                                            "w_A3"
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "index",
                                           "args": [
-                                            "LON0",
-                                            "gi"
+                                            "F_PFLCU",
+                                            1,
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "gk",
+                                                1
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        "w_A3",
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "F_PFLCU",
+                                            2,
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "gk",
+                                                1
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6452,27 +6596,78 @@
                                   ]
                                 },
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
-                                    "w_A3",
                                     {
-                                      "op": "index",
+                                      "op": "*",
                                       "args": [
-                                        "F_PFLLSAN",
-                                        2,
-                                        "gk",
                                         {
-                                          "op": "+",
+                                          "op": "-",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
+                                            1.0,
+                                            "w_A3"
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "index",
                                           "args": [
-                                            "LON0",
-                                            "gi"
+                                            "F_PFLLSAN",
+                                            1,
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "gk",
+                                                1
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "*",
+                                      "args": [
+                                        "w_A3",
+                                        {
+                                          "op": "index",
+                                          "args": [
+                                            "F_PFLLSAN",
+                                            2,
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "gk",
+                                                1
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LAT0",
+                                                "gj"
+                                              ]
+                                            },
+                                            {
+                                              "op": "+",
+                                              "args": [
+                                                "LON0",
+                                                "gi"
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6484,45 +6679,159 @@
                           ]
                         },
                         {
-                          "op": "+",
+                          "op": "ifelse",
                           "args": [
+                            {
+                              "op": ">=",
+                              "args": [
+                                {
+                                  "op": "index",
+                                  "args": [
+                                    "Tc",
+                                    "gi",
+                                    "gj",
+                                    "gk"
+                                  ]
+                                },
+                                268.0
+                              ]
+                            },
                             {
                               "op": "+",
                               "args": [
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
                                     {
-                                      "op": "-",
+                                      "op": "+",
                                       "args": [
-                                        1.0,
-                                        "w_A3"
+                                        {
+                                          "op": "*",
+                                          "args": [
+                                            {
+                                              "op": "-",
+                                              "args": [
+                                                1.0,
+                                                "w_A3"
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFICU",
+                                                1,
+                                                "gk",
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "op": "*",
+                                          "args": [
+                                            "w_A3",
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFICU",
+                                                2,
+                                                "gk",
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
                                       ]
                                     },
                                     {
-                                      "op": "index",
+                                      "op": "+",
                                       "args": [
-                                        "F_PFLCU",
-                                        1,
                                         {
-                                          "op": "+",
+                                          "op": "*",
                                           "args": [
-                                            "gk",
-                                            1
+                                            {
+                                              "op": "-",
+                                              "args": [
+                                                1.0,
+                                                "w_A3"
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFILSAN",
+                                                1,
+                                                "gk",
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "*",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "LON0",
-                                            "gi"
+                                            "w_A3",
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFILSAN",
+                                                2,
+                                                "gk",
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6530,33 +6839,162 @@
                                   ]
                                 },
                                 {
-                                  "op": "*",
+                                  "op": "+",
                                   "args": [
-                                    "w_A3",
                                     {
-                                      "op": "index",
+                                      "op": "+",
                                       "args": [
-                                        "F_PFLCU",
-                                        2,
                                         {
-                                          "op": "+",
+                                          "op": "*",
                                           "args": [
-                                            "gk",
-                                            1
+                                            {
+                                              "op": "-",
+                                              "args": [
+                                                1.0,
+                                                "w_A3"
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFICU",
+                                                1,
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "gk",
+                                                    1
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "*",
                                           "args": [
-                                            "LAT0",
-                                            "gj"
+                                            "w_A3",
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFICU",
+                                                2,
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "gk",
+                                                    1
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "op": "+",
+                                      "args": [
+                                        {
+                                          "op": "*",
+                                          "args": [
+                                            {
+                                              "op": "-",
+                                              "args": [
+                                                1.0,
+                                                "w_A3"
+                                              ]
+                                            },
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFILSAN",
+                                                1,
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "gk",
+                                                    1
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
                                           ]
                                         },
                                         {
-                                          "op": "+",
+                                          "op": "*",
                                           "args": [
-                                            "LON0",
-                                            "gi"
+                                            "w_A3",
+                                            {
+                                              "op": "index",
+                                              "args": [
+                                                "F_PFILSAN",
+                                                2,
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "gk",
+                                                    1
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LAT0",
+                                                    "gj"
+                                                  ]
+                                                },
+                                                {
+                                                  "op": "+",
+                                                  "args": [
+                                                    "LON0",
+                                                    "gi"
+                                                  ]
+                                                }
+                                              ]
+                                            }
                                           ]
                                         }
                                       ]
@@ -6565,85 +7003,7 @@
                                 }
                               ]
                             },
-                            {
-                              "op": "+",
-                              "args": [
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        1.0,
-                                        "w_A3"
-                                      ]
-                                    },
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_PFLLSAN",
-                                        1,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "gk",
-                                            1
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "LAT0",
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "LON0",
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    "w_A3",
-                                    {
-                                      "op": "index",
-                                      "args": [
-                                        "F_PFLLSAN",
-                                        2,
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "gk",
-                                            1
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "LAT0",
-                                            "gj"
-                                          ]
-                                        },
-                                        {
-                                          "op": "+",
-                                          "args": [
-                                            "LON0",
-                                            "gi"
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                }
-                              ]
-                            }
+                            0.0
                           ]
                         }
                       ]
@@ -12558,6 +12918,20 @@
       "to": "Transport3D.F_PFLLSAN",
       "transform": "param_to_var",
       "description": "GEOS-FP PFLLSAN -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.PFICU",
+      "to": "Transport3D.F_PFICU",
+      "transform": "param_to_var",
+      "description": "GEOS-FP PFICU (ice precipitation flux) -> the native-slice deposition driver."
+    },
+    {
+      "type": "variable_map",
+      "from": "GEOSFP.PFILSAN",
+      "to": "Transport3D.F_PFILSAN",
+      "transform": "param_to_var",
+      "description": "GEOS-FP PFILSAN (ice precipitation flux) -> the native-slice deposition driver."
     },
     {
       "type": "variable_map",
