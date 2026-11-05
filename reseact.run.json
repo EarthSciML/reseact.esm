@@ -1,0 +1,12 @@
+{
+  "esm_integrator": "0.1.0",
+  "description": "EarthSciIntegrator run config for reseact.esm (spec/run-config.md). Names the roles of the grid's index sets for the planner: lon and lat horizontal, lev vertical. Without this, the planner's default makes every index set that shapes a state horizontal, which is more than two here and is refused (axes_unresolved, spec/plan.md section 5.2.1). Everything else is automatic; the 300 s macro step and the 01:30Z start, 1 h window, match run_reseact.jl's defaults (RESEACT_MACRO_DT, RESEACT_T0).",
+  "model": "reseact.esm",
+  "time": {"start": 5400, "duration": "1 h"},
+  "axes": {
+    "horizontal": ["lon", "lat"],
+    "vertical": "lev"
+  },
+  "step": {"dt": 300},
+  "schedule": "auto"
+}
