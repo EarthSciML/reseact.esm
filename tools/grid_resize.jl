@@ -19,10 +19,13 @@
 #   NLAT in 1..17   (top lat point native 29+NLAT must be <= 46)
 #   NLEV in 1..72   (hybrid_coefs table length)
 #
-# dA/dB/Ap/Bp are supplied as const_arrays at build time; when NLEV < 72 the
-# caller must slice them to NLEV (see `slice_hybrid_coefs`), because the model's
-# `lev` axis is now shorter than the 72-entry table. This helper only rewrites
-# the .esm; the coef slice happens in the runner's forcing wiring.
+# dA/dB/Ap/Bp carry the full 72-level (73-edge) GEOS-FP table as their .esm
+# defaults, and the runners ALSO supply them as const_arrays at build time (the
+# same values, from hybrid_coefs.json). When NLEV < 72 the caller must slice them
+# to NLEV (see `slice_hybrid_coefs`), because the model's `lev` axis is now
+# shorter than the 72-entry default -- the defaults only fit NLEV = 72. This
+# helper only rewrites the .esm; the coef slice happens in the runner's forcing
+# wiring.
 # ===========================================================================
 module GridResize
 

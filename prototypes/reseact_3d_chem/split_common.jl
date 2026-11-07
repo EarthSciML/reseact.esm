@@ -348,6 +348,9 @@ function reseact_forcing(dir; ndays::Integer = 1, res::AbstractString = "4x5",
             cache, nei_url; format = "netcdf", variables = [sp])
     end
 
+    # The .esm's own defaults for these four are this same table (so a bare load
+    # has a physical vertical grid), but only at NLEV = 72; they are still passed
+    # here so `GridResize.slice_hybrid_coefs` can cut them for a shorter column.
     co = JSON3.read(read(joinpath(dir, "hybrid_coefs.json"), String))
     const_arrays = Dict{String,Any}(
         "Transport3D.dA" => Float64.(co.dA), "Transport3D.dB" => Float64.(co.dB),
