@@ -10243,6 +10243,12 @@
         {
           "ref": "../EarthSciDiscretizations/reprojection/lambert_conformal.esm",
           "prefix": "lcc"
+        },
+        {
+          "ref": "esm:std/interp.esm",
+          "only": [
+            "linear"
+          ]
         }
       ],
       "variables": {
@@ -11787,10 +11793,11 @@
             "op": "+",
             "args": [
               {
-                "op": "fn",
-                "name": "interp.linear",
-                "args": [
-                  {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "linear",
+                "bindings": {
+                  "table": {
                     "op": "const",
                     "args": [],
                     "value": [
@@ -11808,7 +11815,7 @@
                       31
                     ]
                   },
-                  {
+                  "axis": {
                     "op": "const",
                     "args": [],
                     "value": [
@@ -11826,18 +11833,20 @@
                       12
                     ]
                   },
-                  "month_utc"
-                ]
+                  "x": "month_utc",
+                  "n": 12
+                }
               },
               {
                 "op": "*",
                 "args": [
                   "is_leap_year_utc",
                   {
-                    "op": "fn",
-                    "name": "interp.linear",
-                    "args": [
-                      {
+                    "op": "apply_expression_template",
+                    "args": [],
+                    "name": "linear",
+                    "bindings": {
+                      "table": {
                         "op": "const",
                         "args": [],
                         "value": [
@@ -11855,7 +11864,7 @@
                           0
                         ]
                       },
-                      {
+                      "axis": {
                         "op": "const",
                         "args": [],
                         "value": [
@@ -11873,8 +11882,9 @@
                           12
                         ]
                       },
-                      "month_utc"
-                    ]
+                      "x": "month_utc",
+                      "n": 12
+                    }
                   }
                 ]
               }
@@ -12127,10 +12137,11 @@
               "local_hour"
             ],
             "expr": {
-              "op": "fn",
-              "name": "interp.linear",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "linear",
+              "bindings": {
+                "table": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12160,7 +12171,7 @@
                     0.45
                   ]
                 },
-                {
+                "axis": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12190,14 +12201,15 @@
                     24
                   ]
                 },
-                {
+                "x": {
                   "op": "index",
                   "args": [
                     "local_hour",
                     "gi"
                   ]
-                }
-              ]
+                },
+                "n": 24
+              }
             }
           }
         },
@@ -12217,10 +12229,11 @@
               "local_hour"
             ],
             "expr": {
-              "op": "fn",
-              "name": "interp.linear",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "linear",
+              "bindings": {
+                "table": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12250,7 +12263,7 @@
                     0.5741503
                   ]
                 },
-                {
+                "axis": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12280,14 +12293,15 @@
                     24
                   ]
                 },
-                {
+                "x": {
                   "op": "index",
                   "args": [
                     "local_hour",
                     "gi"
                   ]
-                }
-              ]
+                },
+                "n": 24
+              }
             }
           }
         },
@@ -12307,10 +12321,11 @@
               "local_hour"
             ],
             "expr": {
-              "op": "fn",
-              "name": "interp.linear",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "linear",
+              "bindings": {
+                "table": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12340,7 +12355,7 @@
                     0
                   ]
                 },
-                {
+                "axis": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12370,14 +12385,15 @@
                     24
                   ]
                 },
-                {
+                "x": {
                   "op": "index",
                   "args": [
                     "local_hour",
                     "gi"
                   ]
-                }
-              ]
+                },
+                "n": 24
+              }
             }
           }
         },
@@ -12397,10 +12413,11 @@
               "day_of_week"
             ],
             "expr": {
-              "op": "fn",
-              "name": "interp.linear",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "linear",
+              "bindings": {
+                "table": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12413,7 +12430,7 @@
                     0.784
                   ]
                 },
-                {
+                "axis": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12426,14 +12443,15 @@
                     7
                   ]
                 },
-                {
+                "x": {
                   "op": "index",
                   "args": [
                     "day_of_week",
                     "gi"
                   ]
-                }
-              ]
+                },
+                "n": 7
+              }
             }
           }
         },
@@ -12453,10 +12471,11 @@
               "day_of_week"
             ],
             "expr": {
-              "op": "fn",
-              "name": "interp.linear",
-              "args": [
-                {
+              "op": "apply_expression_template",
+              "args": [],
+              "name": "linear",
+              "bindings": {
+                "table": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12469,7 +12488,7 @@
                     0.683
                   ]
                 },
-                {
+                "axis": {
                   "op": "const",
                   "args": [],
                   "value": [
@@ -12482,14 +12501,15 @@
                     7
                   ]
                 },
-                {
+                "x": {
                   "op": "index",
                   "args": [
                     "day_of_week",
                     "gi"
                   ]
-                }
-              ]
+                },
+                "n": 7
+              }
             }
           }
         },
