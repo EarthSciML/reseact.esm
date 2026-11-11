@@ -62,6 +62,11 @@
       "description": "Row count of the NEI2016 12US1 source grid (IOAPI NROWS)."
     }
   },
+  "domain": {
+    "temporal": {
+      "reference_time": "2016-01-01T00:00:00Z"
+    }
+  },
   "data_sources": {
     "GEOSFP_A1": {
       "kind": "grid",
@@ -80,6 +85,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "A1",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -120,6 +126,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "A3cld",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -165,6 +172,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "A3dyn",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -210,6 +218,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "A3mstC",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -255,6 +264,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "A3mstE",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -301,6 +311,7 @@
         "url": "http://geoschemdata.wustl.edu/ExtData/"
       },
       "metadata": {
+        "esio_format": "netcdf",
         "filetype": "I3",
         "domain": "4x5",
         "native_resolution_deg": {
@@ -2030,104 +2041,14 @@
       },
       "equations": [
         {
+          "_comment": "Air mass starts at the hydrostatic layer thickness dp = dA[k] + dB[k]*PS, the field the continuity equation keeps it on (caveat 4): the two inline tables are Transport3D's dA and dB defaults, and the surface pressure is 100 Pa/hPa * 0.5*(F_PS[1] + F_PS[2]). The weight 0.5 is w_I3 at the configured start, 01:30Z (reseact.run.json time.start = 5400 s past domain.temporal.reference_time, halfway between the 00Z and 03Z I3 records), so m == dp exactly at t0; a run starting at another time should change it to that start's w_I3. Why not ic(m) = dp: dp reads PS, which reads w_I3, which reads the clock t, so dp is not a state-free observed (esm-spec 11.4). Why the tables are inlined rather than read from the dA/dB parameters: esm-spec 6.6.5 puts a shaped parameter's inline column in build-time scope, but EarthSciAST's Rust initial-state evaluation binds only SCALAR parameters and refuses the array ones ('neither a provider-served loaded field, a constant, nor a per-cell coordinate expression'). If dA/dB change, change these tables with them. The previous initial field was an analytic ~2 Pa test pattern, far from dp (~10^3 Pa near the surface); with it the chemistry failed in the second macro step.",
           "lhs": {
             "op": "ic",
             "args": [
               "m"
             ]
           },
-          "rhs": {
-            "op": "aggregate",
-            "output_idx": [
-              "i",
-              "j",
-              "k"
-            ],
-            "ranges": {
-              "i": {
-                "from": "lon"
-              },
-              "j": {
-                "from": "lat"
-              },
-              "k": {
-                "from": "lev"
-              }
-            },
-            "args": [],
-            "expr": {
-              "op": "+",
-              "args": [
-                {"op": "const", "args": [], "value": 2.0, "units": "Pa"},
-                {
-                  "op": "*",
-                  "args": [
-                    {"op": "const", "args": [], "value": 0.5, "units": "Pa"},
-                    {
-                      "op": "sin",
-                      "args": [
-                        {
-                          "op": "*",
-                          "args": [
-                            0.017453292519943295,
-                            {
-                              "op": "+",
-                              "args": [
-                                20.0,
-                                {
-                                  "op": "*",
-                                  "args": [
-                                    {
-                                      "op": "-",
-                                      "args": [
-                                        "j",
-                                        1
-                                      ]
-                                    },
-                                    5.0
-                                  ]
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "op": "*",
-                  "args": [
-                    {"op": "const", "args": [], "value": 0.1, "units": "Pa"},
-                    {
-                      "op": "cos",
-                      "args": [
-                        {
-                          "op": "*",
-                          "args": [
-                            0.017453292519943295,
-                            {
-                              "op": "*",
-                              "args": [
-                                {
-                                  "op": "-",
-                                  "args": [
-                                    "i",
-                                    0.5
-                                  ]
-                                },
-                                5.0
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
-          }
+          "rhs": {"op": "aggregate", "output_idx": ["i", "j", "k"], "ranges": {"i": {"from": "lon"}, "j": {"from": "lat"}, "k": {"from": "lev"}}, "args": ["F_PS"], "expr": {"op": "+", "args": [{"op": "index", "args": [{"op": "const", "args": [], "value": [-4.804826, -654.5703739999999, -654.1048000000001, -647.8309999999999, -647.8900000000001, -647.8800000000001, -641.1199999999999, -635.6999999999998, -635.71, -635.71, -630.9430000000002, -625.9340000000002, -821.2239999999993, -1026.5700000000006, -1026.5290000000005, -981.6489999999994, -977.6900000000005, -973.7299999999996, -1421.4099999999999, -1335.0, -1334.9000000000015, -1201.0, -1147.7999999999993, -1016.2000000000007, -889.0999999999985, -662.5999999999985, -512.2000000000007, -46.5, 749.7999999999993, 1567.2999999999993, 2426.2000000000007, 2653.7000000000007, 2255.5999999999985, 1917.4000000000015, 1629.7279999999992, 1385.3410000000003, 1190.8899999999994, 1021.5500000000002, 874.4000000000005, 746.8499999999995, 636.54, 544.2200000000003, 463.7399999999998, 393.8810000000001, 333.45000000000005, 281.3700000000001, 236.64999999999986, 198.3958, 167.31000000000006, 140.30409999999995, 117.00000000000006, 97.02299999999997, 80.01400000000001, 65.62200000000001, 53.524099999999976, 43.418000000000006, 35.02800000000002, 28.106999999999985, 22.43059000000001, 17.835499999999996, 14.097299999999997, 11.076500000000003, 8.651499999999999, 6.71771, 5.185399999999998, 3.9792000000000005, 3.0357979999999998, 2.3345010000000004, 1.8415, 1.4885009999999999, 1.27, 1.0]}, "k"]}, {"op": "*", "args": [{"op": "index", "args": [{"op": "const", "args": [], "value": [0.01504799999999995, 0.021546000000000065, 0.021541000000000032, 0.021477999999999997, 0.021478999999999915, 0.021479000000000026, 0.02141100000000007, 0.021357099999999907, 0.02135700000000007, 0.02135699999999996, 0.021309400000000034, 0.02125929999999998, 0.02821220000000002, 0.03526609999999997, 0.03526499999999999, 0.03481650000000003, 0.0347769, 0.03473729999999997, 0.05171400000000004, 0.050850000000000006, 0.05084909999999998, 0.04951, 0.04897800000000002, 0.04766199999999998, 0.04639099999999999, 0.044126, 0.04262200000000001, 0.04988204, 0.035710019999999995, 0.021050015, 0.006960016824587, 8.175413e-09, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}, "k"]}, {"op": "*", "args": [50.0, {"op": "+", "args": [{"op": "index", "args": ["F_PS", 1, {"op": "+", "args": ["LAT0", "j"]}, {"op": "+", "args": ["LON0", "i"]}]}, {"op": "index", "args": ["F_PS", 2, {"op": "+", "args": ["LAT0", "j"]}, {"op": "+", "args": ["LON0", "i"]}]}]}]}]}]}}
         },
         {
           "_comment": "Air-mass continuity, dm/dt = -(divh_fix + D(Mz, lev)). NOTE divh_fix, NOT the raw D(Mx,lon)+D(My,lat): Mz is DIAGNOSED by integrating -(dB[k]*dPSdt + divh_fix[k]) up the column, so its own difference D(Mz,lev)_k = Mz[k+1]-Mz[k] already carries the corrected horizontal divergence. Pairing that with the RAW divergence here leaves the correction uncancelled and dm/dt inherits it verbatim: dm_k/dt = dB[k]*dPSdt + (divh_fix - divh)_k, i.e. a residual (-dPSdt - divh_col)*dp_k/dp_col whose dp-RELATIVE size (-dPSdt - divh_col)/dp_col is the SAME at every level. That is exactly what was measured before this line was changed -- 3.0e-6 1/s rms, constant down each column to 1e-11, indistinguishable between interior and wall cells, and unmoved by halving the step. With divh_fix here the two cancel term for term and dm_k/dt = dB[k]*dPSdt to roundoff.\n\nWHAT THIS MEANS PHYSICALLY. The column budget is over-determined: sum_k dm_k/dt is pinned to -divh_col by the no-flux top and bottom walls whatever Mz does, while the target sums to dPSdt. GEOS-FP's time-AVERAGED A3 winds and INSTANTANEOUS I3 surface pressure do not agree, so divh_col != -dPSdt and no choice of vertical flux can satisfy both. Making m track dp therefore REQUIRES a mass source of exactly that imbalance (~4e-6 1/s, ~1.3% of column mass per hour here). This form absorbs it, distributed by dp weight. It does NOT touch composition: the species stay in CWC mixing-ratio form dq/dt = [-div(Mq) + q div(M)]/m with the RAW div(M), which is precisely the mixing-ratio equation implied by carrying the source at the local mixing ratio (d(mq)/dt = -(div(Mq) + c*q) together with dm/dt = -(div(M) + c) gives back this equation with the c terms cancelling identically). So q == 1 still holds bitwise -- see tools/cwc_gate.jl.\n\nThe alternative -- eliminating the source rather than absorbing it -- means adjusting Mx and My so divh_col == -dPSdt, which is a 2-D Poisson solve for a velocity potential (Jockel et al. 2001), not a column-local operation. That is a bigger change and is NOT what this is.",
@@ -10199,7 +10120,8 @@
       "ref": "../EarthSciModels/components/atmospheric_deposition/superfast_deposition_sink.esm"
     },
     "NEI2016Emis": {
-      "ref": "../EarthSciModels/components/earthsci_data/nei2016_monthly.esm"
+      "ref": "../EarthSciModels/components/earthsci_data/nei2016_monthly.esm",
+      "url_substitutions": {"sector": "mrggrid_withbeis_withrwc"}
     },
     "NEIRegrid": {
       "expression_template_imports": [
@@ -10358,9 +10280,8 @@
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "NEI2016 NO on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "description": "NEI2016 NO on the native 12US1 grid, in the file's own [LAY, ROW, COL] dim order (measured off the provider, not assumed); the file's TSTEP axis is its record axis, which the source drops at one record per sample (esm-spec 8.5.1). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
           "shape": [
-            "nei_t",
             "nei_lay",
             "nei_row",
             "nei_col"
@@ -10370,9 +10291,8 @@
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "NEI2016 NO2 on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO2 below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "description": "NEI2016 NO2 on the native 12US1 grid, in the file's own [LAY, ROW, COL] dim order (measured off the provider, not assumed); the file's TSTEP axis is its record axis, which the source drops at one record per sample (esm-spec 8.5.1). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_NO2 below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
           "shape": [
-            "nei_t",
             "nei_lay",
             "nei_row",
             "nei_col"
@@ -10382,9 +10302,8 @@
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "NEI2016 CO on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_CO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "description": "NEI2016 CO on the native 12US1 grid, in the file's own [LAY, ROW, COL] dim order (measured off the provider, not assumed); the file's TSTEP axis is its record axis, which the source drops at one record per sample (esm-spec 8.5.1). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_CO below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
           "shape": [
-            "nei_t",
             "nei_lay",
             "nei_row",
             "nei_col"
@@ -10394,9 +10313,8 @@
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "NEI2016 ISOP on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_ISOP below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "description": "NEI2016 ISOP on the native 12US1 grid, in the file's own [LAY, ROW, COL] dim order (measured off the provider, not assumed); the file's TSTEP axis is its record axis, which the source drops at one record per sample (esm-spec 8.5.1). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_ISOP below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
           "shape": [
-            "nei_t",
             "nei_lay",
             "nei_row",
             "nei_col"
@@ -10406,9 +10324,8 @@
           "type": "parameter",
           "units": "1",
           "default": 0.0,
-          "description": "NEI2016 FORM on the native 12US1 grid, in the file's own [TSTEP, LAY, ROW, COL] dim order (measured off the provider, not assumed). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_FORM below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
+          "description": "NEI2016 FORM on the native 12US1 grid, in the file's own [LAY, ROW, COL] dim order (measured off the provider, not assumed); the file's TSTEP axis is its record axis, which the source drops at one record per sample (esm-spec 8.5.1). UNITS ARE A MONTHLY TOTAL IN SHORT TONS PER CELL despite the file's `tons/day` attribute and the loader's declared kg/m^2/s: the EPA gridded-merge monthly files store a whole month's emissions on a single 24-hour TSTEP. The ESM loader is pure I/O and converts nothing, so PHI_FORM below carries the whole chain (/days_in_month, short tons -> kg, / cell area). Same class of gap as F_PS's hPa-vs-Pa. See EarthSciData.jl issue #209.",
           "shape": [
-            "nei_t",
             "nei_lay",
             "nei_row",
             "nei_col"
@@ -11086,7 +11003,6 @@
                   "args": [
                     "F_NO",
                     1,
-                    1,
                     {
                       "op": "+",
                       "args": [
@@ -11224,7 +11140,6 @@
                   "op": "index",
                   "args": [
                     "F_NO2",
-                    1,
                     1,
                     {
                       "op": "+",
@@ -11364,7 +11279,6 @@
                   "args": [
                     "F_CO",
                     1,
-                    1,
                     {
                       "op": "+",
                       "args": [
@@ -11503,7 +11417,6 @@
                   "args": [
                     "F_ISOP",
                     1,
-                    1,
                     {
                       "op": "+",
                       "args": [
@@ -11641,7 +11554,6 @@
                   "op": "index",
                   "args": [
                     "F_FORM",
-                    1,
                     1,
                     {
                       "op": "+",
@@ -13356,10 +13268,6 @@
     "gf_lon": {
       "kind": "interval",
       "size": "GF_NLON"
-    },
-    "nei_t": {
-      "kind": "interval",
-      "size": 1
     },
     "nei_lay": {
       "kind": "interval",
