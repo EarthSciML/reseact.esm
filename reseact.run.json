@@ -1,6 +1,6 @@
 {
   "esm_integrator": "0.1.0",
-  "description": "EarthSciIntegrator run config for reseact.esm (spec/run-config.md). Axes: lon and lat horizontal, lev vertical; the planner's default would make every index set that shapes a state horizontal, which is more than two here (axes_unresolved, spec/plan.md section 5.2.1). Schedule: the prototype's Lie split, written out because both halves read GEOS-FP and NEI data-fed parameters, so the planner cannot classify their stiffness automatically (auto_stiffness_reads_forcing) and each leaf names its method: transport (horizontal stencil, vertical column and any global terms) with explicit SSPRK43, then the pointwise chemistry, photolysis, deposition and emissions with Rosenbrock23. forcing_refresh is a tstop source, as every model that reads time-varying data must have (forcing_refresh_not_hit); GEOS-FP and NEI record times all fall on the 300 s macro-step grid. The 300 s macro step, 01:30Z start and tolerances follow run_reseact.jl's defaults (RESEACT_MACRO_DT, RESEACT_T0) and the prototype integrator.",
+  "description": "EarthSciIntegrator run config for reseact.esm (spec/run-config.md). Axes: lon and lat horizontal, lev vertical; the planner's default would make every index set that shapes a state horizontal, which is more than two here (axes_unresolved, spec/plan.md section 5.2.1). Schedule: the prototype's Lie split, written out because both halves read GEOS-FP and NEI data-fed parameters, so the planner cannot classify their stiffness automatically (auto_stiffness_reads_forcing) and each leaf names its method: transport (horizontal stencil, vertical column and any global terms) with explicit SSPRK43, then the pointwise chemistry, photolysis, deposition and emissions with TRBDF2 (Rosenbrock23 until EarthSciIntegrator M2 refused a Rosenbrock method on time-dependent operators, unsupported_time_derivative: planned operators do not yet supply the time derivative ft; switch back to Rosenbrock23 once they do). forcing_refresh is a tstop source, as every model that reads time-varying data must have (forcing_refresh_not_hit); GEOS-FP and NEI record times all fall on the 300 s macro-step grid. The 300 s macro step, 01:30Z start and tolerances follow run_reseact.jl's defaults (RESEACT_MACRO_DT, RESEACT_T0) and the prototype integrator.",
   "model": "reseact.esm",
   "time": {"start": 5400, "duration": "1 h"},
   "axes": {
@@ -15,7 +15,7 @@
     "sequence": [
       {"leaf": "transport", "alg": "SSPRK43",
        "control": {"reltol": 1e-4, "abstol": 1e-6, "dt0": 15}},
-      {"leaf": "chemistry", "alg": "Rosenbrock23", "jacobian": "symbolic",
+      {"leaf": "chemistry", "alg": "TRBDF2", "jacobian": "symbolic",
        "control": {"reltol": 1e-4, "abstol": 1e-9, "dt0": 0.5},
        "domain": {"nonnegative": "all", "on_violation": "reject"}}
     ]
