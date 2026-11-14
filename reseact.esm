@@ -60,6 +60,11 @@
       "type": "integer",
       "default": 299,
       "description": "Row count of the NEI2016 12US1 source grid (IOAPI NROWS)."
+    },
+    "RING_NV": {
+      "type": "integer",
+      "default": 4,
+      "description": "Vertex slots per cell ring in NEIRegrid, source and target alike (cartesian_cell_rings builds quads). Sizes the overlap library's overlap_cell_verts axis (its NVERT binding) AND is the narrow phase's src_nv / tgt_nv, so the two cannot drift apart."
     }
   },
   "domain": {
@@ -10143,7 +10148,7 @@
                 "NLAT"
               ]
             },
-            "NVERT": 4
+            "NVERT": "RING_NV"
           }
         },
         {
@@ -10410,7 +10415,7 @@
         "A_ij": {
           "type": "unknown",
           "units": "deg^2",
-          "description": "Overlap area of every (source, target) pair that survives the join.overlap broad phase -- the 'overlap index' method: an STRtree over inflated ring bounding boxes admits a product term only for candidate pairs, so one polygon clip runs per candidate instead of per (i,j) of the 137,241 x 91 product. Planar manifold: the spherical clip needs the GeometryOps extension, and src_coslat/A_full already carry the area correction that matters at these latitudes.",
+          "description": "Overlap area of every (source, target) pair that survives the join.overlap broad phase -- the 'overlap index' method: the candidate set is built once from the inflated ring bounding boxes and admits a product term only for candidate pairs, so one polygon clip runs per candidate instead of per (i,j) of the 137,241 x 91 product. Planar (conservative_overlap_A_ij_gated_planar, the esm:std overlap_area_planar template): the library's broad phase is planar only, and src_coslat/A_full already carry the area correction that matters at these latitudes.",
           "shape": [
             "ov.src_cells",
             "ov.tgt_cells"
@@ -10978,11 +10983,13 @@
           "lhs": "A_ij",
           "rhs": {
             "op": "apply_expression_template",
-            "name": "ov.conservative_overlap_A_ij_gated",
+            "name": "ov.conservative_overlap_A_ij_gated_planar",
             "args": [],
             "bindings": {
               "src_poly": "src_poly",
-              "tgt_poly": "tgt_poly"
+              "tgt_poly": "tgt_poly",
+              "src_nv": "RING_NV",
+              "tgt_nv": "RING_NV"
             }
           }
         },
