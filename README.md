@@ -17,7 +17,7 @@ the runner's default and projects to about 2 h of loop.
 | Path | What it is |
 |---|---|
 | `reseact.esm` | The model. Imports rules and components BY REFERENCE from sibling repos (see below). |
-| `reseact.run.json` | [EarthSciIntegrator](https://github.com/EarthSciML/EarthSciIntegrator) run config for the model: names `lon` and `lat` the horizontal axes and `lev` the vertical one, which the planner cannot infer here, and splits it as the prototype does: transport with SSPRK43, then chemistry with Rosenbrock23, landing on every forcing refresh. |
+| `reseact.run.json` | [EarthSciIntegrator](https://github.com/EarthSciML/EarthSciIntegrator) run config for the model: names `lon` and `lat` the horizontal axes and `lev` the vertical one, which the planner cannot infer here, and splits it as the prototype does: transport with SSPRK43, then chemistry with TRBDF2 (Rosenbrock23 once EarthSciIntegrator's planned operators supply the time derivative; it refuses a Rosenbrock method on a time-dependent operator until then), landing on every forcing refresh. |
 | `run_reseact.jl` | Native runner: SciML operator splitting on the CPU. The reference. |
 | `run_reseact_reactant.jl` | Compiled runner: the same split through Reactant/XLA. |
 | `run_reseact_adjoint.jl` | **The gradient runner.** Defaults to the 5-day CONUS adjoint. Its header is the authoritative record of what has been run, what it cost, and what is still unproven. |
